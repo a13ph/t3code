@@ -599,11 +599,17 @@ function fifoOpened(cli: string, name: string) {
 }
 
 describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI in t3-keeper", () => {
+  // The CLI does not get T3_KEEPER_SOCKET: a nested T3 server or test run
+  // would otherwise spawn its own CLIs into the outer keeper.
   it.effect("runs the CLI as a child of the keeper, named after the thread", () =>
     Effect.gen(function* () {
       const { keeper } = yield* keeperSocket;
       const cli = fakeClaudeCli(
-        ['exec 3> "$(dirname "$0")/started"', "cat > /dev/null"].join("\n"),
+        [
+          'echo "${T3_KEEPER_SOCKET-unset}" > "$(dirname "$0")/socket-env"',
+          'exec 3> "$(dirname "$0")/started"',
+          "cat > /dev/null",
+        ].join("\n"),
       );
       const started = fifoOpened(cli, "started");
       const session = yield* openFakeCli(cli);
@@ -612,6 +618,10 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI in 
       assert.deepEqual(
         list.handles.map((h: { name: string; alive: boolean }) => [h.name, h.alive]),
         [["thread-fake-cli", true]],
+      );
+      assert.equal(
+        NodeFS.readFileSync(NodePath.join(NodePath.dirname(cli), "socket-env"), "utf8").trim(),
+        "unset",
       );
       yield* session.close;
       yield* Effect.promise(() => started.closed);
