@@ -31,6 +31,11 @@ import {
   layerQueryRunner,
   spawnClaudeProcessGroup,
 } from "./ClaudeAdapterV2.ts";
+import { keeperSpawnProcess } from "./ClaudeKeeperSpawn.ts";
+// @ts-ignore - plain ESM without types
+import { startKeeper } from "../../t3Keeper/keeper.mjs";
+// @ts-ignore - plain ESM without types
+import { request as keeperRequest } from "../../t3Keeper/shim.mjs";
 
 vi.mock("@anthropic-ai/claude-agent-sdk", { spy: true });
 
@@ -411,6 +416,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
   // The leftover child holds a FIFO open; its death produces EOF without polling.
   it.effect("stops what the CLI left running when the session closes", () =>
     Effect.gen(function* () {
+      yield* keeperSocketEnv(undefined);
       const cli = fakeClaudeCli(
         [
           'dir=$(dirname "$0")',
@@ -539,5 +545,132 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
       yield* Effect.promise(() => agentReleased);
       assert.equal(runningAgents, 0);
     }).pipe(Effect.provide(runner));
+  });
+});
+
+/** Sets T3_KEEPER_SOCKET, or unsets it, while the test runs. */
+function keeperSocketEnv(value: string | undefined) {
+  return Effect.acquireRelease(
+    Effect.sync(() => {
+      const previous = process.env.T3_KEEPER_SOCKET;
+      if (value === undefined) delete process.env.T3_KEEPER_SOCKET;
+      else process.env.T3_KEEPER_SOCKET = value;
+      return previous;
+    }),
+    (previous) =>
+      Effect.sync(() => {
+        if (previous === undefined) delete process.env.T3_KEEPER_SOCKET;
+        else process.env.T3_KEEPER_SOCKET = previous;
+      }),
+  );
+}
+
+/** A keeper serving a fresh socket, named in T3_KEEPER_SOCKET while the test runs. */
+const keeperSocket = Effect.gen(function* () {
+  const { keeper } = yield* Effect.acquireRelease(
+    Effect.promise(async () => {
+      const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-keeper-"));
+      const keeper = await startKeeper({
+        socketPath: NodePath.join(dir, "keeper.sock"),
+        log: () => {},
+      });
+      return { keeper, dir };
+    }),
+    ({ keeper, dir }) =>
+      Effect.promise(async () => {
+        await keeper.close();
+        NodeFS.rmSync(dir, { recursive: true, force: true });
+      }),
+  );
+  yield* keeperSocketEnv(keeper.socketPath);
+  return { keeper };
+});
+
+/** Resolves once the fake CLI opened the FIFO `name` in its directory for writing. */
+function fifoOpened(cli: string, name: string) {
+  const fifo = NodePath.join(NodePath.dirname(cli), name);
+  NodeChildProcess.execFileSync("mkfifo", [fifo]);
+  const stream = NodeFS.createReadStream(fifo);
+  stream.resume();
+  return {
+    opened: new Promise<void>((resolve) => stream.once("open", () => resolve())),
+    closed: new Promise<void>((resolve) => stream.once("close", () => resolve())),
+  };
+}
+
+describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI in t3-keeper", () => {
+  it.effect("runs the CLI as a child of the keeper, named after the thread", () =>
+    Effect.gen(function* () {
+      const { keeper } = yield* keeperSocket;
+      const cli = fakeClaudeCli(
+        ['exec 3> "$(dirname "$0")/started"', "cat > /dev/null"].join("\n"),
+      );
+      const started = fifoOpened(cli, "started");
+      const session = yield* openFakeCli(cli);
+      yield* Effect.promise(() => started.opened);
+      const list = yield* Effect.promise(() => keeperRequest(keeper.socketPath, { op: "list" }));
+      assert.deepEqual(
+        list.handles.map((h: { name: string; alive: boolean }) => [h.name, h.alive]),
+        [["thread-fake-cli", true]],
+      );
+      yield* session.close;
+      yield* Effect.promise(() => started.closed);
+    }).pipe(Effect.provide(realQueryRunner)),
+  );
+
+  it.effect("stops what the CLI left running when the session closes", () =>
+    Effect.gen(function* () {
+      yield* keeperSocket;
+      const cli = fakeClaudeCli(
+        [
+          'dir=$(dirname "$0")',
+          'sleep 600 > "$dir/alive" &',
+          'echo $! > "$dir/leftover.pid"',
+          "cat > /dev/null",
+        ].join("\n"),
+      );
+      const dir = NodePath.dirname(cli);
+      const leftover = fifoOpened(cli, "alive");
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          try {
+            process.kill(Number(NodeFS.readFileSync(NodePath.join(dir, "leftover.pid"), "utf8")));
+          } catch {}
+          NodeFS.rmSync(dir, { recursive: true, force: true });
+        }),
+      );
+      const session = yield* openFakeCli(cli);
+      yield* Effect.promise(() => leftover.opened);
+      yield* session.close;
+      yield* Effect.promise(() => leftover.closed);
+    }).pipe(Effect.provide(realQueryRunner)),
+  );
+
+  it.effect("spawns the CLI itself when the keeper socket is gone", () =>
+    Effect.gen(function* () {
+      const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-keeper-gone-"));
+      const spawn = keeperSpawnProcess(ThreadId.make("thread-no-keeper"), {
+        env: { T3_KEEPER_SOCKET: NodePath.join(dir, "keeper.sock") },
+        connectRetryMs: 0,
+      });
+      assert.isDefined(spawn);
+      const cli = fakeClaudeCli('exec 3> "$(dirname "$0")/started"; cat > /dev/null');
+      const started = fifoOpened(cli, "started");
+      const child = spawn!({
+        command: cli,
+        args: [],
+        cwd: dir,
+        env: { ...process.env },
+        signal: new AbortController().signal,
+      });
+      yield* Effect.promise(() => started.opened);
+      child.stdin.end();
+      yield* Effect.promise(() => started.closed);
+      NodeFS.rmSync(dir, { recursive: true, force: true });
+    }),
+  );
+
+  it("leaves the SDK's own spawn in place without T3_KEEPER_SOCKET", () => {
+    assert.isUndefined(keeperSpawnProcess(ThreadId.make("thread-plain"), { env: {} }));
   });
 });
