@@ -1688,52 +1688,68 @@ export const layer: Layer.Layer<
             ),
           ),
           Effect.catchCause((cause) =>
-            Effect.logError("orchestration V2 provider turn start failed", {
-              runId: input.run.id,
-              cause,
-            }).pipe(
-              Effect.andThen(Fiber.interrupt(providerEventFiber)),
-              Effect.andThen(Ref.get(latestProviderThread)),
-              Effect.flatMap((providerThread) =>
-                Ref.get(latestTurnItemOrdinal).pipe(
-                  Effect.flatMap((latestItemOrdinal) =>
-                    Ref.get(openRunOwnedSubagents).pipe(
-                      Effect.flatMap((openSubagents) =>
-                        writeFinalRunEvents({
-                          run: input.run,
-                          rootNode: input.rootNode,
-                          checkpointScope: input.checkpointScope,
-                          providerThread,
-                          attempt: input.attempt,
-                          writeIfRunCurrent: {
-                            activeAttemptId: input.attempt.id,
-                            expectedStatus: "running",
-                          },
-                          openRunOwnedSubagents: openSubagents,
-                          terminal: makeFailedTerminalEvent(
-                            makeProviderFailure({
-                              cause: Cause.squash(cause),
-                              class: Exit.isFailure(shouldStart) ? "unknown" : "provider_error",
+            // A failed reattach is written off by its caller, as a restart
+            // would, so "Continue where you left off." can resume it.
+            input.reattach !== undefined
+              ? Fiber.interrupt(providerEventFiber).pipe(
+                  Effect.andThen(
+                    Effect.fail(
+                      new RunExecutionStartError({
+                        commandId: input.commandId,
+                        runId: input.run.id,
+                        cause: { start: cause },
+                      }),
+                    ),
+                  ),
+                )
+              : Effect.logError("orchestration V2 provider turn start failed", {
+                  runId: input.run.id,
+                  cause,
+                }).pipe(
+                  Effect.andThen(Fiber.interrupt(providerEventFiber)),
+                  Effect.andThen(Ref.get(latestProviderThread)),
+                  Effect.flatMap((providerThread) =>
+                    Ref.get(latestTurnItemOrdinal).pipe(
+                      Effect.flatMap((latestItemOrdinal) =>
+                        Ref.get(openRunOwnedSubagents).pipe(
+                          Effect.flatMap((openSubagents) =>
+                            writeFinalRunEvents({
+                              run: input.run,
+                              rootNode: input.rootNode,
+                              checkpointScope: input.checkpointScope,
+                              providerThread,
+                              attempt: input.attempt,
+                              writeIfRunCurrent: {
+                                activeAttemptId: input.attempt.id,
+                                expectedStatus: "running",
+                              },
+                              openRunOwnedSubagents: openSubagents,
+                              terminal: makeFailedTerminalEvent(
+                                makeProviderFailure({
+                                  cause: Cause.squash(cause),
+                                  class: Exit.isFailure(shouldStart)
+                                    ? "unknown"
+                                    : "provider_error",
+                                }),
+                                latestItemOrdinal + 1,
+                              ),
+                              failureItemPersisted: false,
+                              refreshAfterTurn,
                             }),
-                            latestItemOrdinal + 1,
                           ),
-                          failureItemPersisted: false,
-                          refreshAfterTurn,
-                        }),
+                        ),
                       ),
                     ),
                   ),
+                  Effect.mapError(
+                    (writeCause) =>
+                      new RunExecutionStartError({
+                        commandId: input.commandId,
+                        runId: input.run.id,
+                        cause: { start: cause, write: writeCause },
+                      }),
+                  ),
                 ),
-              ),
-              Effect.mapError(
-                (writeCause) =>
-                  new RunExecutionStartError({
-                    commandId: input.commandId,
-                    runId: input.run.id,
-                    cause: { start: cause, write: writeCause },
-                  }),
-              ),
-            ),
           ),
         );
       }),
