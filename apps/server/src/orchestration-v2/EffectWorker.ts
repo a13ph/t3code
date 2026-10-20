@@ -162,6 +162,24 @@ export const layerExecutor: Layer.Layer<
                     }),
                 ),
               );
+          case "provider-turn.reattach":
+            return (
+              providerTurnStart.reattach?.({
+                threadId: effect.threadId,
+                runId: effect.request.runId,
+                handle: effect.request.handle,
+                adapterState: effect.request.adapterState,
+              }) ?? Effect.void
+            ).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationEffectExecutionError({
+                    effectId: effect.id,
+                    effectType: effect.request.type,
+                    cause,
+                  }),
+              ),
+            );
           case "provider-turn.interrupt": {
             const request = effect.request;
             return providerTurnControl
