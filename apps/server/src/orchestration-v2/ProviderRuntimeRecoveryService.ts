@@ -757,6 +757,15 @@ export const make = Effect.gen(function* () {
         if (run === undefined) return;
         const now = DateTime.formatIso(yield* DateTime.now);
         const commandId = keeperReattachCommandId(run.id);
+        // A reattach this server was still running when the shutdown cut it
+        // would hold the thread's effect lane; the new record replaces it.
+        yield* outbox.signalCancellations(
+          yield* outbox.cancelUnsettled({
+            threadId,
+            effectTypes: ["provider-turn.reattach"],
+            reason: "Replaced by the reattach recorded at the next shutdown.",
+          }),
+        );
         yield* eventSink.writeWithEffects({
           commandId,
           events: [],
