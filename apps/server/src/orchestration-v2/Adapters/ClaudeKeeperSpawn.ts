@@ -11,22 +11,34 @@
  * (`detachKeeperChildren`, on SIGTERM and SIGINT), so the SDK's own close,
  * which ends stdin and then signals, no longer reaches them, and a turn in
  * flight keeps running in the keeper. A stop of one session still ends its
- * CLI.
+ * CLI. The next server lists the keeper (`listKeeperThreads`) and attaches
+ * to a thread's CLI again (`keeperAttachProcess`), from the last line it
+ * acknowledged.
+ *
+ * The keeper holds every stdout line until it is acknowledged. A line is
+ * acknowledged only once the adapter has handled the message it carried, and
+ * a second or two later still, so the events it produced have reached the
+ * database before the keeper may drop it. A restart replays the lines after
+ * that point; the few handled just before the restart arrive twice.
  *
  * When the keeper cannot be reached for 10 s, the shim spawns the CLI
  * itself, as the SDK would have; that CLI still dies with the server.
  */
 import type { SpawnOptions, SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
 // @effect-diagnostics nodeBuiltinImport:off -- the socket path is a host path.
-import { isAbsolute, join } from "node:path";
+import * as NodePath from "node:path";
+import type * as NodeStream from "node:stream";
 
 // @ts-ignore - plain ESM without types
-import { spawnNew } from "../../t3Keeper/shim.mjs";
+import { attachExisting, request, spawnNew } from "../../t3Keeper/shim.mjs";
+
+/** How long a handled line waits before the keeper is told it may drop it. */
+export const KEEPER_ACK_LAG_MS = 1_000;
 
 function keeperSocketPath(env: NodeJS.ProcessEnv): string | undefined {
   const raw = env.T3_KEEPER_SOCKET;
   if (!raw) return undefined;
-  if (isAbsolute(raw)) return raw;
+  if (NodePath.isAbsolute(raw)) return raw;
   const runtimeDir = env.XDG_RUNTIME_DIR;
   if (!runtimeDir) {
     console.warn(
@@ -34,49 +46,263 @@ function keeperSocketPath(env: NodeJS.ProcessEnv): string | undefined {
     );
     return undefined;
   }
-  return join(runtimeDir, raw);
-}
-
-/** The SDK's `spawnClaudeCodeProcess` for one thread, or undefined without a keeper socket. */
-export function keeperSpawnProcess(
-  threadId: string,
-  options: { readonly env?: NodeJS.ProcessEnv; readonly connectRetryMs?: number } = {},
-): ((options: SpawnOptions) => SpawnedProcess) | undefined {
-  const socketPath = keeperSocketPath(options.env ?? process.env);
-  if (socketPath === undefined) return undefined;
-  const spawner = spawnNew({
-    socketPath,
-    name: threadId,
-    group: true,
-    // nothing reattaches, so the keeper may drop each line once delivered
-    autoAck: true,
-    // a keeper that is restarting still gets the CLI
-    connectRetryMs: options.connectRetryMs ?? 10_000,
-    fallbackLocal: true,
-    onFallback: (error: NodeJS.ErrnoException) => {
-      console.warn(
-        `t3-keeper: ${socketPath} unreachable (${error.code ?? error.message}), spawning claude locally for thread ${threadId}`,
-      );
-    },
-  });
-  // The CLI and its commands do not get the socket, so a T3 server or
-  // test run started by the CLI never spawns into this keeper.
-  return (spawnOptions) => {
-    const { T3_KEEPER_SOCKET: _, ...env } = spawnOptions.env;
-    const child: KeeperChild = spawner({ ...spawnOptions, env });
-    liveChildren.add(child);
-    child.once("exit", () => liveChildren.delete(child));
-    child.once("error", () => liveChildren.delete(child));
-    return child;
-  };
+  return NodePath.join(runtimeDir, raw);
 }
 
 interface KeeperChild extends SpawnedProcess {
   readonly local: boolean;
+  readonly detached: boolean;
+  readonly cursor: number;
+  ack(after: number): Promise<unknown>;
   detach(): unknown;
 }
 
-const liveChildren = new Set<KeeperChild>();
+/** One CLI in the keeper, as the SDK's spawner plus the hooks that acknowledge its lines. */
+export interface KeeperSpawner {
+  /** The SDK's `spawnClaudeCodeProcess`. */
+  readonly spawn: (options: SpawnOptions) => SpawnedProcess;
+  /** Called for each message the SDK yields, in order: ties it to its stdout line. */
+  readonly yielded: (message: { readonly type?: unknown }) => void;
+  /** Called once a yielded message is handled: its line may be acknowledged. */
+  readonly handled: (message: object) => void;
+}
+
+// Lines the SDK consumes itself and never yields as a message
+// (Query.readMessages in @anthropic-ai/claude-agent-sdk).
+const UNYIELDED_LINE_TYPES = new Set([
+  "control_request",
+  "control_response",
+  "control_cancel_request",
+  "keep_alive",
+  "transcript_mirror",
+]);
+const LINE_TYPE_PREFIX = /^\s*\{\s*"type"\s*:\s*"([^"\\]*)"/;
+
+/** The `type` of the message the SDK yields for a stdout line, or undefined when it yields none. */
+function yieldedLineType(line: string): string | undefined {
+  let type = LINE_TYPE_PREFIX.exec(line)?.[1];
+  if (type === undefined) {
+    if (line.trim() === "") return undefined;
+    try {
+      const parsed: unknown = JSON.parse(line);
+      const parsedType: unknown =
+        typeof parsed === "object" && parsed !== null ? Reflect.get(parsed, "type") : undefined;
+      type = typeof parsedType === "string" ? parsedType : "";
+    } catch {
+      return undefined;
+    }
+  }
+  return UNYIELDED_LINE_TYPES.has(type) ? undefined : type;
+}
+
+/**
+ * Tracks which stdout line carried each yielded message and acknowledges
+ * handled lines to the keeper, `KEEPER_ACK_LAG_MS` to twice that after they
+ * were handled. Stops acknowledging for good once the child is detached, and
+ * when a yielded message does not match the next line it expected.
+ */
+function makeLineCursor(threadId: string, start: number) {
+  let child: KeeperChild | undefined;
+  const lines: Array<{ readonly n: number; readonly type: string }> = [];
+  const lineOf = new WeakMap<object, number>();
+  let broken = false;
+  let handledThrough = start;
+  let snapshot = start;
+  let acked = start;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const tick = () => {
+    timer = undefined;
+    if (child === undefined || child.detached || child.local) return;
+    if (snapshot > acked) {
+      acked = snapshot;
+      child.ack(acked).catch(() => {});
+    }
+    snapshot = handledThrough;
+    if (handledThrough > acked) schedule();
+  };
+  const schedule = () => {
+    timer = setTimeout(tick, KEEPER_ACK_LAG_MS);
+    timer.unref?.();
+  };
+  const stopTracking = (reason: string) => {
+    if (broken) return;
+    broken = true;
+    lines.length = 0;
+    console.warn(`t3-keeper: thread ${threadId} stops acknowledging lines: ${reason}`);
+  };
+
+  return {
+    bind(spawned: KeeperChild) {
+      child = spawned;
+      const stdout = spawned.stdout as NodeStream.PassThrough;
+      const write = stdout.write;
+      // The shim moves its cursor to a line's number, then writes the line.
+      stdout.write = function (
+        this: NodeStream.PassThrough,
+        chunk: unknown,
+        ...rest: Array<unknown>
+      ) {
+        if (!broken && !spawned.local && typeof chunk === "string") {
+          const type = yieldedLineType(chunk.endsWith("\n") ? chunk.slice(0, -1) : chunk);
+          if (type !== undefined) lines.push({ n: spawned.cursor, type });
+        }
+        return Reflect.apply(write, this, [chunk, ...rest]);
+      } as NodeStream.PassThrough["write"];
+    },
+    yielded(message: { readonly type?: unknown }) {
+      if (broken || child === undefined || child.local) return;
+      const line = lines.shift();
+      const type = typeof message.type === "string" ? message.type : "";
+      if (line === undefined || line.type !== type) {
+        stopTracking(`message ${type} does not match line ${line?.n ?? "none"} (${line?.type})`);
+        return;
+      }
+      lineOf.set(message, line.n);
+    },
+    handled(message: object) {
+      const n = lineOf.get(message);
+      if (n === undefined || broken) return;
+      if (n > handledThrough) handledThrough = n;
+      if (timer === undefined) {
+        snapshot = handledThrough;
+        schedule();
+      }
+    },
+  };
+}
+
+function makeSpawner(
+  threadId: string,
+  start: number,
+  spawner: (options: SpawnOptions) => SpawnedProcess,
+): KeeperSpawner {
+  const cursor = makeLineCursor(threadId, start);
+  return {
+    // The CLI and its commands do not get the socket, so a T3 server or
+    // test run started by the CLI never spawns into this keeper.
+    spawn: (spawnOptions) => {
+      const { T3_KEEPER_SOCKET: _, ...env } = spawnOptions.env;
+      const child = spawner({ ...spawnOptions, env }) as KeeperChild;
+      cursor.bind(child);
+      liveChildren.set(child, threadId);
+      child.once("exit", () => liveChildren.delete(child));
+      child.once("error", () => liveChildren.delete(child));
+      return child;
+    },
+    yielded: cursor.yielded,
+    handled: cursor.handled,
+  };
+}
+
+/** A new CLI in the keeper for one thread, or undefined without a keeper socket. */
+export function keeperSpawnProcess(
+  threadId: string,
+  options: { readonly env?: NodeJS.ProcessEnv; readonly connectRetryMs?: number } = {},
+): KeeperSpawner | undefined {
+  const socketPath = keeperSocketPath(options.env ?? process.env);
+  if (socketPath === undefined) return undefined;
+  return makeSpawner(
+    threadId,
+    0,
+    spawnNew({
+      socketPath,
+      name: threadId,
+      group: true,
+      // a keeper that is restarting still gets the CLI
+      connectRetryMs: options.connectRetryMs ?? 10_000,
+      fallbackLocal: true,
+      onFallback: (error: NodeJS.ErrnoException) => {
+        console.warn(
+          `t3-keeper: ${socketPath} unreachable (${error.code ?? error.message}), spawning claude locally for thread ${threadId}`,
+        );
+      },
+    }),
+  );
+}
+
+/**
+ * Attaches to a thread's CLI that outlived the previous server, from the
+ * line after `after`; undefined without a keeper socket. The SDK's argv is
+ * ignored: the CLI already runs.
+ */
+export function keeperAttachProcess(
+  threadId: string,
+  attach: { readonly handle: string; readonly after: number },
+  options: { readonly env?: NodeJS.ProcessEnv } = {},
+): KeeperSpawner | undefined {
+  const socketPath = keeperSocketPath(options.env ?? process.env);
+  if (socketPath === undefined) return undefined;
+  return makeSpawner(
+    threadId,
+    attach.after,
+    attachExisting({ socketPath, handle: attach.handle, after: attach.after }),
+  );
+}
+
+/** A CLI in the keeper a restarted server can attach to. */
+export interface KeeperThread {
+  readonly handle: string;
+  /** The last line the previous server acknowledged. */
+  readonly after: number;
+}
+
+/**
+ * The keeper's CLIs by thread id: those still running, or exited with lines
+ * nobody acknowledged. Undefined without a keeper socket or when the keeper
+ * does not answer.
+ */
+export async function listKeeperThreads(
+  options: { readonly env?: NodeJS.ProcessEnv } = {},
+): Promise<ReadonlyMap<string, KeeperThread> | undefined> {
+  const socketPath = keeperSocketPath(options.env ?? process.env);
+  if (socketPath === undefined) return undefined;
+  let reply: { readonly ok?: boolean; readonly handles?: ReadonlyArray<KeeperListEntry> };
+  try {
+    reply = await request(socketPath, { op: "list" }, { timeoutMs: 5_000 });
+  } catch (error) {
+    console.warn(`t3-keeper: ${socketPath} did not answer list (${String(error)})`);
+    return undefined;
+  }
+  if (reply.ok !== true || reply.handles === undefined) return undefined;
+  const newest = new Map<string, KeeperListEntry>();
+  for (const entry of reply.handles) {
+    if (typeof entry.name !== "string" || typeof entry.handle !== "string") continue;
+    if (!entry.alive && entry.last <= entry.acked) continue;
+    const seen = newest.get(entry.name);
+    if (seen === undefined || seen.created < entry.created) newest.set(entry.name, entry);
+  }
+  return new Map(
+    [...newest].map(([threadId, entry]) => [
+      threadId,
+      { handle: entry.handle, after: entry.acked },
+    ]),
+  );
+}
+
+interface KeeperListEntry {
+  readonly handle: string;
+  readonly name: string | null;
+  readonly alive: boolean;
+  readonly last: number;
+  readonly acked: number;
+  readonly created: string;
+}
+
+/** A CLI shutdown left running in the keeper, and what the adapter knew of its turn then. */
+export interface KeeperDetachedThread {
+  readonly handle: string;
+  readonly adapterState: unknown;
+}
+
+const liveChildren = new Map<KeeperChild, string>();
+const turnStateReaders = new Map<string, () => unknown>();
+const detachedThreads = new Map<string, KeeperDetachedThread>();
+
+/** How the adapter's live turn state of a thread is read when shutdown detaches its CLI. */
+export function registerKeeperTurnState(threadId: string, read: () => unknown): void {
+  turnStateReaders.set(threadId, read);
+}
 
 /**
  * Leaves every live keeper child running: drops its connection without an
@@ -84,9 +310,16 @@ const liveChildren = new Set<KeeperChild>();
  */
 export function detachKeeperChildren(): number {
   let detached = 0;
-  for (const child of liveChildren) {
+  for (const [child, threadId] of liveChildren) {
     if (child.local) continue;
     child.detach();
+    const handle: unknown = Reflect.get(child, "handle");
+    if (typeof handle === "string") {
+      detachedThreads.set(threadId, {
+        handle,
+        adapterState: turnStateReaders.get(threadId)?.() ?? null,
+      });
+    }
     detached += 1;
   }
   liveChildren.clear();
@@ -94,4 +327,13 @@ export function detachKeeperChildren(): number {
     console.warn(`t3-keeper: shutdown detached ${detached} claude process(es)`);
   }
   return detached;
+}
+
+/**
+ * Threads whose CLI shutdown left running in the keeper, by thread id.
+ * Shutdown records nothing as ended for them: the next server attaches to the
+ * CLI again.
+ */
+export function keeperDetachedThreads(): ReadonlyMap<string, KeeperDetachedThread> {
+  return detachedThreads;
 }
