@@ -91,6 +91,26 @@ const watch = (predicate: (event: OrchestrationV2DomainEvent) => boolean) =>
 describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
   "T3 restart during a Claude turn",
   () => {
+    // A detached CLI whose thread got no reattach record (an open subagent,
+    // a pending approval) would otherwise work on unseen until its turn ends.
+    it("closes the detached CLIs no reattach was recorded for", async () => {
+      const closed: Array<string> = [];
+      const result = await ProviderRuntimeRecoveryService.closeUnrecordedKeeperThreads(
+        new Map([
+          ["thread:recorded", { handle: "h-recorded" }],
+          ["thread:subagent", { handle: "h-subagent" }],
+          ["thread:approval", { handle: "h-approval" }],
+        ]),
+        new Set(["thread:recorded"]),
+        async (handle) => {
+          closed.push(handle);
+          return true;
+        },
+      );
+      assert.deepEqual([...result].sort(), ["h-approval", "h-subagent"]);
+      assert.deepEqual(closed.sort(), ["h-approval", "h-subagent"]);
+    });
+
     // The done condition of the keeper reattach: a restart during a running
     // Bash call leaves the turn running, and its later output lands in the
     // same run, which completes with its checkpoint.
