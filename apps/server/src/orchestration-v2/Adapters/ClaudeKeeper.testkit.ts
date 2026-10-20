@@ -138,7 +138,10 @@ export const firstKeeperAck = Effect.gen(function* () {
     after: number,
   ) {
     const sent = this._request({ op: "ack", after });
-    void sent.then(() => Deferred.doneUnsafe(acked, Exit.succeed(after)));
+    void sent.then(
+      () => Deferred.doneUnsafe(acked, Exit.succeed(after)),
+      () => {},
+    );
     return sent;
   });
   yield* Effect.addFinalizer(() => Effect.sync(() => ack.mockRestore()));
