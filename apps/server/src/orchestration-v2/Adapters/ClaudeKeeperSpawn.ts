@@ -95,17 +95,44 @@ function yieldedLineType(line: string): string | undefined {
   return UNYIELDED_LINE_TYPES.has(type) ? undefined : type;
 }
 
+type ControlLineType = "control_request" | "control_response" | "control_cancel_request";
+
+/** The `request_id` of a control request, response or cancel line, or undefined. */
+function controlRequestId(line: string, type: ControlLineType): string | undefined {
+  if (!line.includes(type)) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(line);
+    if (typeof parsed !== "object" || parsed === null || Reflect.get(parsed, "type") !== type) {
+      return undefined;
+    }
+    const holder: unknown = type === "control_response" ? Reflect.get(parsed, "response") : parsed;
+    const id: unknown =
+      typeof holder === "object" && holder !== null ? Reflect.get(holder, "request_id") : undefined;
+    return typeof id === "string" ? id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
- * Tracks which stdout line carried each yielded message and acknowledges
- * handled lines to the keeper, `KEEPER_ACK_LAG_MS` to twice that after they
- * were handled. Stops acknowledging for good once the child is detached, and
- * when a yielded message does not match the next line it expected.
+ * Tracks the stdout lines T3 must act on and acknowledges them to the keeper,
+ * `KEEPER_ACK_LAG_MS` to twice that after they were handled. A yielded
+ * message's line is handled once the adapter handled the message. A control
+ * request's line (a permission prompt, a hook callback) is handled once the
+ * SDK wrote its control_response to stdin, or the CLI cancelled it, so a
+ * restart does not ask an answered prompt again and still replays an open
+ * one. The acknowledged point is the highest line below every open line.
+ * Stops acknowledging for good once the child is detached, and when a
+ * yielded message does not match the next line it expected.
  */
 function makeLineCursor(threadId: string, start: number) {
   let child: KeeperChild | undefined;
   const lines: Array<{ readonly n: number; readonly type: string }> = [];
   const lineOf = new WeakMap<object, number>();
+  const open = new Set<number>();
+  const requestLines = new Map<string, number>();
   let broken = false;
+  let lastHandled = start;
   let handledThrough = start;
   let snapshot = start;
   let acked = start;
@@ -129,7 +156,34 @@ function makeLineCursor(threadId: string, start: number) {
     if (broken) return;
     broken = true;
     lines.length = 0;
+    open.clear();
+    requestLines.clear();
     console.warn(`t3-keeper: thread ${threadId} stops acknowledging lines: ${reason}`);
+  };
+  const markHandled = (n: number, yielded: boolean) => {
+    if (broken || !open.delete(n)) return;
+    // Messages are handled in the order they were yielded, so one handled
+    // message settles the yielded lines before it; a control request waits
+    // for its own answer.
+    if (yielded) {
+      const requests = new Set(requestLines.values());
+      for (const pending of open) if (pending < n && !requests.has(pending)) open.delete(pending);
+    }
+    if (n > lastHandled) lastHandled = n;
+    let through = lastHandled;
+    for (const pending of open) if (pending - 1 < through) through = pending - 1;
+    if (through > handledThrough) handledThrough = through;
+    if (timer === undefined && handledThrough > acked) {
+      snapshot = handledThrough;
+      schedule();
+    }
+  };
+  const settleRequest = (requestId: string | undefined) => {
+    if (requestId === undefined) return;
+    const n = requestLines.get(requestId);
+    if (n === undefined) return;
+    requestLines.delete(requestId);
+    markHandled(n, false);
   };
 
   return {
@@ -144,11 +198,34 @@ function makeLineCursor(threadId: string, start: number) {
         ...rest: Array<unknown>
       ) {
         if (!broken && !spawned.local && typeof chunk === "string") {
-          const type = yieldedLineType(chunk.endsWith("\n") ? chunk.slice(0, -1) : chunk);
-          if (type !== undefined) lines.push({ n: spawned.cursor, type });
+          const line = chunk.endsWith("\n") ? chunk.slice(0, -1) : chunk;
+          const type = yieldedLineType(line);
+          if (type !== undefined) {
+            lines.push({ n: spawned.cursor, type });
+            open.add(spawned.cursor);
+          } else {
+            const requestId = controlRequestId(line, "control_request");
+            if (requestId !== undefined) {
+              requestLines.set(requestId, spawned.cursor);
+              open.add(spawned.cursor);
+            } else {
+              settleRequest(controlRequestId(line, "control_cancel_request"));
+            }
+          }
         }
         return Reflect.apply(write, this, [chunk, ...rest]);
       } as NodeStream.PassThrough["write"];
+      // The SDK answers a control request with one write of one line.
+      const stdin = spawned.stdin as NodeStream.Writable;
+      const writeIn = stdin.write;
+      stdin.write = function (this: NodeStream.Writable, chunk: unknown, ...rest: Array<unknown>) {
+        if (!broken && !spawned.local && typeof chunk === "string" && requestLines.size > 0) {
+          for (const line of chunk.split("\n")) {
+            settleRequest(controlRequestId(line, "control_response"));
+          }
+        }
+        return Reflect.apply(writeIn, this, [chunk, ...rest]);
+      } as NodeStream.Writable["write"];
     },
     yielded(message: { readonly type?: unknown }) {
       if (broken || child === undefined || child.local) return;
@@ -162,12 +239,7 @@ function makeLineCursor(threadId: string, start: number) {
     },
     handled(message: object) {
       const n = lineOf.get(message);
-      if (n === undefined || broken) return;
-      if (n > handledThrough) handledThrough = n;
-      if (timer === undefined) {
-        snapshot = handledThrough;
-        schedule();
-      }
+      if (n !== undefined) markHandled(n, true);
     },
   };
 }
