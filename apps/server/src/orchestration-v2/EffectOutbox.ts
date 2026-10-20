@@ -44,6 +44,17 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     type: Schema.Literal("provider-turn.start"),
     runId: RunId,
   }),
+  /**
+   * A running run whose provider process a server shutdown left in t3-keeper:
+   * the next server attaches to it and lets the run finish there. Neither
+   * process-bound nor replayed after a crash: a later startup decides again.
+   */
+  Schema.Struct({
+    type: Schema.Literal("provider-turn.reattach"),
+    runId: RunId,
+    handle: Schema.String,
+    adapterState: Schema.Unknown,
+  }),
   Schema.Struct({
     type: Schema.Literal("provider-turn.interrupt"),
     providerSessionId: ProviderSessionId,

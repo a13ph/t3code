@@ -17,6 +17,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
+import { keeperDetachedThreads, listKeeperThreads } from "./Adapters/ClaudeKeeperSpawn.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -166,6 +167,35 @@ function latestStartedRun(
         : latest,
     undefined,
   );
+}
+
+/** Effects a reconcile cancels: those of the process that ended, and its reattach. */
+const RECONCILE_CANCELLED_EFFECT_TYPES = [
+  ...EffectOutbox.PROCESS_BOUND_EFFECT_TYPES,
+  "provider-turn.reattach",
+] as const satisfies ReadonlyArray<EffectOutbox.OrchestrationEffectRequestV2["type"]>;
+
+export const keeperReattachCommandId = (
+  runId: OrchestrationV2ThreadProjection["runs"][number]["id"],
+) => CommandId.make(`command:keeper-reattach:${runId}`);
+
+/**
+ * The run a t3-keeper reattach can continue: the thread's only unfinished
+ * run, running a root turn with nothing waiting on an answer and no
+ * subagent open. Approvals and subagents are not carried across a restart.
+ */
+export function keeperReattachableRun(projection: ProjectionStore.ProjectionRuntimeRecoveryState) {
+  const unfinished = nonterminalRuns(projection);
+  const run = unfinished[0];
+  if (unfinished.length !== 1 || run === undefined || run.status !== "running") return undefined;
+  if (projection.runtimeRequests.some((request) => request.status === "pending")) return undefined;
+  if ((projection.subagents ?? []).some((subagent) => isOrchestrationV2WorkActive(subagent.status)))
+    return undefined;
+  const attempt = projection.attempts.find((candidate) => candidate.id === run.activeAttemptId);
+  const providerTurn = projection.providerTurns.find(
+    (candidate) => candidate.runAttemptId === attempt?.id && candidate.status === "running",
+  );
+  return attempt?.status === "running" && providerTurn !== undefined ? run : undefined;
 }
 
 export const make = Effect.gen(function* () {
@@ -636,7 +666,7 @@ export const make = Effect.gen(function* () {
         const retiredEffectIds = yield* outbox
           .cancelUnsettled({
             threadId: projection.thread.id,
-            effectTypes: EffectOutbox.PROCESS_BOUND_EFFECT_TYPES,
+            effectTypes: RECONCILE_CANCELLED_EFFECT_TYPES,
             reason: detail,
           })
           .pipe(
@@ -661,7 +691,7 @@ export const make = Effect.gen(function* () {
             events,
             effects,
             cancelUnsettledEffects: {
-              effectTypes: EffectOutbox.PROCESS_BOUND_EFFECT_TYPES,
+              effectTypes: RECONCILE_CANCELLED_EFFECT_TYPES,
               reason: detail,
             },
           })
@@ -686,6 +716,76 @@ export const make = Effect.gen(function* () {
     },
   );
 
+  // A reattach recorded at shutdown for this thread's running run and the
+  // keeper handle it still has.
+  const awaitsKeeperReattach = (
+    projection: ProjectionStore.ProjectionRuntimeRecoveryState,
+    handle: string,
+  ) =>
+    Effect.gen(function* () {
+      const run = keeperReattachableRun(projection);
+      if (run === undefined) return false;
+      const effects = yield* outbox.listByCommandId(keeperReattachCommandId(run.id)).pipe(
+        Effect.mapError(
+          (cause) =>
+            new ProviderRuntimeRecoveryError({
+              operation: "reconcile",
+              threadId: projection.thread.id,
+              cause,
+            }),
+        ),
+      );
+      return effects.some(
+        (effect) =>
+          effect.status === "pending" &&
+          effect.request.type === "provider-turn.reattach" &&
+          effect.request.runId === run.id &&
+          effect.request.handle === handle,
+      );
+    });
+
+  // Shutdown, before the sessions are released: for each thread whose CLI
+  // was left in t3-keeper mid-turn, records the reattach the next server runs.
+  const recordKeeperReattaches = Effect.gen(function* () {
+    const recorded = new Set<ThreadId>();
+    for (const [rawThreadId, detached] of keeperDetachedThreads()) {
+      const threadId = ThreadId.make(rawThreadId);
+      if (detached.adapterState === null) continue;
+      yield* Effect.gen(function* () {
+        const projection = yield* projections.getRuntimeRecoveryProjection(threadId);
+        const run = keeperReattachableRun(projection);
+        if (run === undefined) return;
+        const now = DateTime.formatIso(yield* DateTime.now);
+        const commandId = keeperReattachCommandId(run.id);
+        yield* eventSink.writeWithEffects({
+          commandId,
+          events: [],
+          effects: [
+            {
+              id: `effect:keeper-reattach:${run.id}:${now}`,
+              commandId,
+              threadId,
+              request: {
+                type: "provider-turn.reattach",
+                runId: run.id,
+                handle: detached.handle,
+                adapterState: detached.adapterState,
+              },
+            },
+          ],
+        });
+        recorded.add(threadId);
+      }).pipe(
+        Effect.catchCauseIf(
+          (cause) => !Cause.hasInterruptsOnly(cause),
+          (cause) =>
+            Effect.logWarning("Failed to record a t3-keeper reattach", { threadId, cause }),
+        ),
+      );
+    }
+    return recorded;
+  });
+
   const reconcile = Effect.fn("ProviderRuntimeRecoveryService.reconcile")(function* (
     trigger: "startup" | "shutdown",
   ) {
@@ -697,6 +797,17 @@ export const make = Effect.gen(function* () {
           (cause) => new ProviderRuntimeRecoveryError({ operation: "read-projections", cause }),
         ),
       );
+    // Shutdown leaves alone a thread whose CLI it left in t3-keeper; startup
+    // leaves it to its reattach while the keeper still holds that CLI.
+    const keeperThreads =
+      trigger === "startup"
+        ? yield* Effect.promise(() => listKeeperThreads())
+        : new Map(
+            [...keeperDetachedThreads()].map(([threadId, detached]) => [
+              threadId,
+              { handle: detached.handle },
+            ]),
+          );
     let terminalizedRuns = 0;
     let stoppedSessions = 0;
     let closedRequests = 0;
@@ -713,6 +824,12 @@ export const make = Effect.gen(function* () {
             }),
         ),
       );
+      const keeperThread = keeperThreads?.get(threadId);
+      if (
+        keeperThread !== undefined &&
+        (yield* awaitsKeeperReattach(projection, keeperThread.handle))
+      )
+        continue;
       const enabled =
         continueAfterRestart !== null &&
         resolveProjectSettings(continueAfterRestart, projection.thread.projectId).settings
@@ -743,10 +860,13 @@ export const make = Effect.gen(function* () {
   });
 
   const prepareForShutdown = Effect.gen(function* () {
+    const reattaching = yield* recordKeeperReattaches;
     const enabled = yield* settings.getSettings.pipe(Effect.orElseSucceed(() => null));
     if (!enabled) return;
     const threadIds = yield* projections.getRecoveryThreadIds("runtime");
     for (const threadId of threadIds) {
+      // Its turn goes on in t3-keeper: nothing to continue.
+      if (reattaching.has(threadId)) continue;
       yield* Effect.gen(function* () {
         const projection = yield* projections.getRuntimeRecoveryProjection(threadId);
         if (

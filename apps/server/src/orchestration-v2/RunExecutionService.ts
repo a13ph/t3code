@@ -574,6 +574,8 @@ export interface RunExecutionServiceV2StartRootRunInput {
   readonly message: ProviderAdapter.ProviderAdapterV2TurnMessage;
   readonly modelSelection: ModelSelection;
   readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
+  /** The run is already running in a provider process that outlived a restart. */
+  readonly reattach?: ProviderAdapter.ProviderAdapterV2Reattach;
 }
 
 export interface RunExecutionServiceV2Shape {
@@ -1648,6 +1650,7 @@ export const layer: Layer.Layer<
           modelSelection: input.modelSelection,
           runtimePolicy: input.runtimePolicy,
           ...(appContext.length === 0 ? {} : { appContext }),
+          ...(input.reattach === undefined ? {} : { reattach: input.reattach }),
         };
         // Check after the context read: ingestion can settle the run while
         // it awaits. A failed ownership read fails the start below.
