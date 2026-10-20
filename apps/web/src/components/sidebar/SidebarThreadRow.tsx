@@ -159,6 +159,19 @@ function JumpHintBadge(props: { label: string }) {
   );
 }
 
+// The always-on jump number: a muted digit in the row's left gutter, where it
+// covers no label, so the first nine threads read like numbered tabs.
+function JumpNumberMark(props: { label: string }) {
+  return (
+    <span
+      aria-hidden
+      className="pointer-events-none absolute left-0 top-1/2 z-10 -translate-y-1/2 font-mono text-3xs leading-none text-muted-foreground/70"
+    >
+      {props.label}
+    </span>
+  );
+}
+
 function WorkingDuration(props: { startedAt: string | null }) {
   const startedMs = props.startedAt !== null ? Date.parse(props.startedAt) : Number.NaN;
   if (Number.isNaN(startedMs)) return null;
@@ -556,6 +569,8 @@ type SidebarThreadRowProps = {
   isRouteThread: boolean;
   openPullRequestsInRightPanel: boolean;
   jumpLabel: string | null;
+  /** The row's jump number, shown at all times when "Always show thread numbers" is on. */
+  jumpNumber: string | null;
   currentEnvironmentId: string | null;
   environmentLabel: string | null;
   environmentMachine: EnvironmentMachineKind;
@@ -1372,6 +1387,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               {props.sweepAction !== null ? dragDestination : null}
             </div>
             {multiline ? metaLine : null}
+            {props.jumpNumber ? <JumpNumberMark label={props.jumpNumber} /> : null}
             {props.jumpLabel ? <JumpHintBadge label={props.jumpLabel} /> : null}
           </TooltipTrigger>
           {detailsTooltip}
@@ -1573,7 +1589,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             </div>
             {metaLine}
           </div>
-          {props.jumpLabel ? <JumpHintBadge label={props.jumpLabel} /> : null}
+          {props.jumpNumber ? <JumpNumberMark label={props.jumpNumber} /> : null}
+            {props.jumpLabel ? <JumpHintBadge label={props.jumpLabel} /> : null}
         </TooltipTrigger>
         {detailsTooltip}
       </Tooltip>
