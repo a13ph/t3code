@@ -212,6 +212,8 @@ import {
   resolveTimelineMinimapInteractiveWidth,
   resolveTimelineMinimapNavigationInteractive,
   resolveTimelineMinimapTopPercent,
+  resolveTimelineTurnNavigationIndex,
+  timelineTurnNavigationFromCommand,
   resolveWorkGroupScrollIndex,
   shouldCollapseUserMessage,
   shouldFollowWorkGroupAppend,
@@ -231,6 +233,10 @@ import {
   type WorkGroupScrollAnchor,
 } from "./MessagesTimeline.logic";
 import { type ThreadFindMatch } from "./threadFind";
+import { resolveShortcutCommand } from "../../keybindings";
+import { isEditableFocused } from "../../lib/editableFocus";
+import { isTerminalFocused } from "../../lib/terminalFocus";
+import { primaryServerKeybindingsAtom } from "../../state/server";
 import { useThreadFindNavigation } from "./useThreadFindNavigation";
 import { readThreadFindPosition } from "./threadFindPosition";
 import type { ThreadFindPositionReader } from "./threadFind";
@@ -1126,6 +1132,44 @@ const ConversationTimeline = memo(function ConversationTimeline({
   }, [citationAlwaysRender, restoringAlwaysRender, fullscreenAppRowId]);
   const [minimapHitStripWidth, setMinimapHitStripWidth] = useState(0);
   const [minimapCurrentIndex, setMinimapCurrentIndex] = useState<number | null>(null);
+  // The turn navigation keys move between the minimap's turns, as its
+  // buttons do. Refs keep the listener from re-binding on every scroll tick.
+  const keybindings = useAtomValue(primaryServerKeybindingsAtom);
+  const minimapCurrentIndexRef = useRef(minimapCurrentIndex);
+  minimapCurrentIndexRef.current = minimapCurrentIndex;
+  const minimapItemsRef = useRef(minimapItems);
+  minimapItemsRef.current = minimapItems;
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      const command = resolveShortcutCommand(event, keybindings, {
+        context: {
+          terminalFocus: isTerminalFocused(),
+          editableFocus: isEditableFocused(event.target),
+        },
+      });
+      const direction = timelineTurnNavigationFromCommand(command);
+      if (direction === null) return;
+      const items = minimapItemsRef.current;
+      const targetIndex = resolveTimelineTurnNavigationIndex({
+        itemCount: items.length,
+        currentIndex: minimapCurrentIndexRef.current,
+        direction,
+      });
+      const target = targetIndex === null ? undefined : items[targetIndex];
+      if (!target) return;
+      event.preventDefault();
+      event.stopPropagation();
+      onManualNavigation();
+      void listRef.current?.scrollToIndex({
+        index: target.rowIndex,
+        animated: true,
+        viewOffset: 24,
+      });
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [keybindings, listRef, onManualNavigation]);
   const handleAnchorReady = useCallback(
     (info: { anchorIndex: number | undefined }) => {
       if (anchorMessageId !== null && info.anchorIndex !== undefined) {

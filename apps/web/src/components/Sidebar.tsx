@@ -146,7 +146,8 @@ import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useSidebarProjectGroups } from "../hooks/useSidebarProjectGroups";
 import { useTerminalFocus } from "../hooks/useTerminalFocus";
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
-import { registerSettleAndAdvance } from "../settleAndAdvance";
+import { registerSettleAndAdvance, registerSnoozeAndAdvance } from "../settleAndAdvance";
+import { registerJumpToLastThread } from "../jumpToLastThread";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { useClientSettings } from "../hooks/useSettings";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
@@ -207,6 +208,8 @@ import {
   planSidebarThreadDrop,
   reduceSidebarProjectScopeMenuState,
   resolveAdjacentThreadId,
+  buildThreadJumpNumbers,
+  resolveLastQueueThreadKey,
   resolveSidebarSweepKeys,
   resolveSidebarDropTarget,
   resolveSidebarDropVerb,
@@ -363,6 +366,19 @@ function JumpHintBadge(props: { label: string }) {
     <span
       aria-hidden
       className="pointer-events-none absolute right-1.5 top-1/2 z-10 inline-flex h-5 -translate-y-1/2 items-center rounded-full border border-border/80 bg-background/95 px-1.5 font-mono text-3xs font-medium tracking-tight text-foreground shadow-sm"
+    >
+      {props.label}
+    </span>
+  );
+}
+
+// The always-on jump number: a muted digit in the row's left gutter, where it
+// covers no label, so the first nine threads read like numbered tabs.
+function JumpNumberMark(props: { label: string }) {
+  return (
+    <span
+      aria-hidden
+      className="pointer-events-none absolute left-0 top-1/2 z-10 -translate-y-1/2 font-mono text-3xs leading-none text-muted-foreground/70"
     >
       {props.label}
     </span>
@@ -1149,6 +1165,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   isActive: boolean;
   openPullRequestsInRightPanel: boolean;
   jumpLabel: string | null;
+  /** The row's jump number, shown at all times when "Always show thread numbers" is on. */
+  jumpNumber: string | null;
   currentEnvironmentId: string | null;
   environmentLabel: string | null;
   environmentMachine: EnvironmentMachineKind;
@@ -1948,6 +1966,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
               </span>
             )}
             {props.sweepAction !== null ? dragDestination : null}
+            {props.jumpNumber ? <JumpNumberMark label={props.jumpNumber} /> : null}
             {props.jumpLabel ? <JumpHintBadge label={props.jumpLabel} /> : null}
           </TooltipTrigger>
           {detailsTooltip}
@@ -2225,6 +2244,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
               </span>
             </div>
           </div>
+          {props.jumpNumber ? <JumpNumberMark label={props.jumpNumber} /> : null}
           {props.jumpLabel ? <JumpHintBadge label={props.jumpLabel} /> : null}
         </TooltipTrigger>
         {detailsTooltip}
@@ -3120,6 +3140,17 @@ export default function Sidebar() {
   // rendered at click time.
   const orderedThreadKeysRef = useRef(orderedThreadKeys);
   orderedThreadKeysRef.current = orderedThreadKeys;
+  // The cards waiting on the user, top to bottom; the last-chat shortcuts
+  // open the bottom one.
+  const queueThreadKeys = useMemo(
+    () =>
+      [...pinnedThreads, ...activeThreads].map((thread) =>
+        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+      ),
+    [pinnedThreads, activeThreads],
+  );
+  const queueThreadKeysRef = useRef(queueThreadKeys);
+  queueThreadKeysRef.current = queueThreadKeys;
   const threadByKey = useMemo(
     () =>
       new Map(
@@ -3172,6 +3203,11 @@ export default function Sidebar() {
     }
     return mapping;
   }, [keybindings, orderedThreadKeys]);
+  const alwaysShowJumpHints = useClientSettings((s) => s.sidebarAlwaysShowJumpHints);
+  const jumpNumberByKey = useMemo(
+    () => buildThreadJumpNumbers(alwaysShowJumpHints ? orderedThreadKeys : [], jumpLabelByKey),
+    [alwaysShowJumpHints, jumpLabelByKey, orderedThreadKeys],
+  );
   const { showThreadJumpHints: showJumpHints, updateThreadJumpHintsVisibility } =
     useThreadJumpHintVisibility();
 
@@ -3194,6 +3230,21 @@ export default function Sidebar() {
     },
     [clearSelection, isMobile, router, setOpenMobile, setSelectionAnchor],
   );
+  const openLastQueueThread = useCallback(
+    (leavingThreadKey: string | null) => {
+      const targetKey = resolveLastQueueThreadKey({
+        queueThreadKeys: queueThreadKeysRef.current,
+        leavingThreadKey,
+      });
+      const target = targetKey ? threadByKeyRef.current.get(targetKey) : undefined;
+      if (!target) return false;
+      void navigateToThread(scopeThreadRef(target.environmentId, target.id));
+      return true;
+    },
+    [navigateToThread],
+  );
+  // The composer's send-and-jump shortcut opens the last chat through this.
+  useEffect(() => registerJumpToLastThread(openLastQueueThread), [openLastQueueThread]);
 
   const queuePendingFileDrop = useSidebarPendingFileDropStore((s) => s.queuePendingFileDrop);
   const clearPendingFileDrop = useSidebarPendingFileDropStore((s) => s.clearPendingFileDrop);
@@ -4275,6 +4326,14 @@ export default function Sidebar() {
     },
     [performSnooze],
   );
+  // The thread.snooze shortcut parks the open thread through this same path.
+  useEffect(
+    () =>
+      registerSnoozeAndAdvance((threadRef, snoozedUntil) =>
+        attemptSnooze(threadRef, { snoozedUntil }),
+      ),
+    [attemptSnooze],
+  );
 
   const removeFromSelection = useThreadSelectionStore((s) => s.removeFromSelection);
   const handleMultiSelectContextMenu = useStableCallback(
@@ -4905,6 +4964,12 @@ export default function Sidebar() {
         );
         return;
       }
+      if (command === "thread.jumpLast") {
+        navigateToThreadKey(
+          resolveLastQueueThreadKey({ queueThreadKeys, leavingThreadKey: routeThreadKey }),
+        );
+        return;
+      }
       const jumpIndex = threadJumpIndexFromCommand(command ?? "");
       if (jumpIndex === null) return;
       navigateToThreadKey(orderedThreadKeys[jumpIndex] ?? null);
@@ -4915,6 +4980,7 @@ export default function Sidebar() {
     keybindings,
     navigateToThread,
     orderedThreadKeys,
+    queueThreadKeys,
     routeTerminalOpen,
     routeThreadKey,
     threadByKey,
@@ -5327,6 +5393,7 @@ export default function Sidebar() {
                             jumpLabel={
                               showJumpHints ? (jumpLabelByKey.get(threadKey) ?? null) : null
                             }
+                            jumpNumber={jumpNumberByKey.get(threadKey) ?? null}
                             currentEnvironmentId={primaryEnvironmentId}
                             environmentLabel={
                               environmentLabelById.get(thread.environmentId) ?? null

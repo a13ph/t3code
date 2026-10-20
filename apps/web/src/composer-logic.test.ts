@@ -96,6 +96,14 @@ describe("composerSubmissionIntentForKey", () => {
     ).toBe(expected);
   });
 
+  it("sends and goes to the last thread on Alt+Shift+Enter, never from a draft", () => {
+    const altShiftEnter = { ...enter, altKey: true, shiftKey: true };
+    expect(composerSubmissionIntentForKey({ ...input, event: altShiftEnter })).toBe("jumpLast");
+    expect(
+      composerSubmissionIntentForKey({ ...input, isDraftThread: true, event: altShiftEnter }),
+    ).toBeNull();
+  });
+
   it.each(["MacIntel", "Win32", "Linux"])("uses the configured actions on %s", (platform) => {
     const modEnter = {
       ...enter,
