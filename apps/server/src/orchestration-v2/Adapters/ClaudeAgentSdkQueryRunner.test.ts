@@ -398,7 +398,7 @@ function fakeClaudeCli(script: string): string {
   return cli;
 }
 
-const openFakeCli = (cli: string) =>
+const openFakeCli = (cli: string, extra: Pick<ClaudeSdk.Options, "canUseTool"> = {}) =>
   Effect.gen(function* () {
     const runner = yield* ClaudeAgentSdkQueryRunner;
     return yield* runner.open({
@@ -410,9 +410,32 @@ const openFakeCli = (cli: string) =>
         tools: [],
         permissionMode: "default",
         pathToClaudeCodeExecutable: cli,
+        ...extra,
       },
     });
   });
+
+/** A status line the SDK yields as a message, quoted for a shell `printf`. */
+const statusLine = (uuid: string) =>
+  `'{"type":"system","subtype":"status","status":null,"session_id":"s","uuid":"${uuid}"}'`;
+
+/** A can_use_tool control request, quoted for a shell `printf`. */
+const permissionLine = (requestId: string) =>
+  `'{"type":"control_request","request_id":"${requestId}","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"true"},"tool_use_id":"toolu_${requestId}"}}'`;
+
+/** Resolves with the first line number acknowledged to the keeper. */
+const spyFirstKeeperAck = Effect.gen(function* () {
+  const first = Promise.withResolvers<number>();
+  const ack = vi.spyOn(KeeperProcess.prototype, "ack").mockImplementation(function (
+    this: { _request: (msg: unknown) => Promise<unknown> },
+    after: number,
+  ) {
+    first.resolve(after);
+    return this._request({ op: "ack", after });
+  });
+  yield* Effect.addFinalizer(() => Effect.sync(() => ack.mockRestore()));
+  return first.promise;
+});
 
 describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI process", () => {
   // The leftover child holds a FIFO open; its death produces EOF without polling.
@@ -700,6 +723,61 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI in 
       assert.deepEqual(acks, [3]);
       const list = yield* Effect.promise(() => keeperRequest(keeper.socketPath, { op: "list" }));
       assert.equal(list.handles[0].acked, 3);
+      yield* session.close;
+    }).pipe(Effect.provide(realQueryRunner)),
+  );
+
+  // A permission prompt is a control request the SDK answers itself. Once
+  // answered, its line must be acked even when no message follows it (a long
+  // Bash call), or a restart replays it and asks for the tool a second time.
+  it.effect("acks a permission prompt once the SDK answered it", () =>
+    Effect.gen(function* () {
+      yield* keeperSocket;
+      const cli = fakeClaudeCli(
+        [
+          `printf '%s\\n' ${statusLine("u1")} ${permissionLine("perm-1")}`,
+          'while read -r line; do case "$line" in *control_response*perm-1*) break;; esac; done',
+          `printf '%s\\n' ${statusLine("u2")}`,
+          "cat > /dev/null",
+        ].join("\n"),
+      );
+      const firstAck = yield* spyFirstKeeperAck;
+      const session = yield* openFakeCli(cli, {
+        canUseTool: async () => ({ behavior: "allow", updatedInput: {} }),
+      });
+      const received = yield* Queue.unbounded<ClaudeSdk.SDKMessage>();
+      yield* session.messages.pipe(
+        Stream.runForEach((message) => Queue.offer(received, message)),
+        Effect.forkScoped,
+      );
+      const u1 = yield* Queue.take(received);
+      // The CLI prints u2 only after it read the answer.
+      assert.equal((yield* Queue.take(received)).uuid, "u2");
+      session.handled?.(u1);
+      assert.equal(yield* Effect.promise(() => firstAck), 2);
+      yield* session.close;
+    }).pipe(Effect.provide(realQueryRunner)),
+  );
+
+  it.effect("holds the ack below a permission prompt nobody answered", () =>
+    Effect.gen(function* () {
+      yield* keeperSocket;
+      const cli = fakeClaudeCli(
+        `printf '%s\\n' ${statusLine("u1")} ${permissionLine("perm-2")} ${statusLine("u2")}; cat > /dev/null`,
+      );
+      const firstAck = yield* spyFirstKeeperAck;
+      const session = yield* openFakeCli(cli, {
+        canUseTool: () => new Promise<never>(() => {}),
+      });
+      const received = yield* Queue.unbounded<ClaudeSdk.SDKMessage>();
+      yield* session.messages.pipe(
+        Stream.runForEach((message) => Queue.offer(received, message)),
+        Effect.forkScoped,
+      );
+      yield* Queue.take(received);
+      // Handling u2 settles u1 before it, but not the open prompt between.
+      session.handled?.(yield* Queue.take(received));
+      assert.equal(yield* Effect.promise(() => firstAck), 1);
       yield* session.close;
     }).pipe(Effect.provide(realQueryRunner)),
   );
