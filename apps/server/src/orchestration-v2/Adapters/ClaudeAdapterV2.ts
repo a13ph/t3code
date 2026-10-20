@@ -6,6 +6,7 @@ import {
   keeperAttachProcess,
   keeperSpawnProcess,
   registerKeeperTurnState,
+  unregisterKeeperTurnState,
 } from "./ClaudeKeeperSpawn.ts";
 import {
   dynamicToolTitle,
@@ -514,7 +515,10 @@ export interface ClaudeAgentSdkQueryOpenInput {
 
 export interface ClaudeAgentSdkQuerySession {
   readonly messages: Stream.Stream<SDKMessage, ClaudeAgentSdkQueryRunnerError>;
-  /** Called once a message from `messages` is handled; t3-keeper may then drop its line. */
+  /**
+   * Called once a message from `messages` is handled; t3-keeper may then drop
+   * its line. Present only for a CLI spawned through t3-keeper.
+   */
   readonly handled?: (message: SDKMessage) => void;
   readonly offer: (
     message: SDKUserMessage,
@@ -1174,7 +1178,7 @@ export const layerQueryRunner: Layer.Layer<
                 ),
               ),
             ),
-            handled: (message) => keeper?.handled(message),
+            ...(keeper === undefined ? {} : { handled: keeper.handled }),
             offer: (message, onQueued) =>
               Effect.uninterruptibleMask((restore) =>
                 restore(Queue.offer(promptQueue, message)).pipe(
@@ -10143,7 +10147,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           yield* Ref.set(queryContext, context);
           // Read when a shutdown leaves this CLI in t3-keeper: what the next
           // server needs to tell this turn's result from another turn's.
-          registerKeeperTurnState(turnInput.threadId, () => {
+          // Dropped when this query ends.
+          const readKeeperTurnState = () => {
             const turn = Ref.getUnsafe(activeTurn);
             return turn === null || Ref.getUnsafe(queryContext) !== context
               ? null
@@ -10154,7 +10159,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   promptStarted: turn.promptStarted,
                   promptEchoMode: context.promptEchoMode,
                 } satisfies ClaudeKeeperTurnState);
-          });
+          };
+          if (querySession.handled !== undefined) {
+            registerKeeperTurnState(turnInput.threadId, readKeeperTurnState);
+          }
           yield* querySession.messages.pipe(
             Stream.runForEach((message) =>
               sdkMessageLock.withPermits(1)(
@@ -10207,7 +10215,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 }
               }),
             ),
-            Effect.ensuring(Deferred.succeed(closed, undefined)),
+            Effect.ensuring(
+              Effect.sync(() =>
+                unregisterKeeperTurnState(turnInput.threadId, readKeeperTurnState),
+              ).pipe(Effect.andThen(Deferred.succeed(closed, undefined))),
+            ),
             Effect.forkIn(sessionScope),
           );
           return context;
