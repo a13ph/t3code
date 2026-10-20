@@ -396,6 +396,16 @@ export function registerKeeperTurnState(threadId: string, read: () => unknown): 
   turnStateReaders.set(threadId, read);
 }
 
+/** Drops a thread's turn state reader, unless a later query replaced it. */
+export function unregisterKeeperTurnState(threadId: string, read: () => unknown): void {
+  if (turnStateReaders.get(threadId) === read) turnStateReaders.delete(threadId);
+}
+
+/** The threads with a registered turn state reader. */
+export function keeperTurnStateThreads(): ReadonlyArray<string> {
+  return [...turnStateReaders.keys()];
+}
+
 /**
  * Leaves every live keeper child running: drops its connection without an
  * EOF. A local fallback child is left alone and dies with the server.
