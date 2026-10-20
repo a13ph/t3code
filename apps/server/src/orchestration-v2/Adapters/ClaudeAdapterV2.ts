@@ -4,7 +4,6 @@ import { claudeTaskOutputRoot, tailClaudeTaskOutput } from "./ClaudeTaskOutputTa
 import {
   detachKeeperChildren,
   keeperAttachProcess,
-  keeperDetachedThreads,
   keeperSpawnProcess,
   registerKeeperTurnState,
 } from "./ClaudeKeeperSpawn.ts";
@@ -10196,9 +10195,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 const ownsLiveQuery = yield* Ref.modify(queryContext, (current) =>
                   current?.query === querySession ? [true, null] : [false, current],
                 );
-                // Shutdown left this CLI running in t3-keeper, and the next
-                // server attaches to it: its turn has not ended.
-                if (ownsLiveQuery && !keeperDetachedThreads().has(turnInput.threadId)) {
+                if (ownsLiveQuery) {
                   yield* finalizeActiveTurnAfterQueryExit(
                     context,
                     exit._tag === "Failure" ? exit.cause : undefined,
