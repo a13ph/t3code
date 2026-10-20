@@ -352,6 +352,26 @@ export async function listKeeperThreads(
   );
 }
 
+/**
+ * Ends a thread's CLI in the keeper (stdin EOF, then signals) and drops its
+ * held lines. Best effort: false without a keeper socket or an answer.
+ */
+export async function closeKeeperThread(
+  handle: string,
+  options: { readonly env?: NodeJS.ProcessEnv } = {},
+): Promise<boolean> {
+  const socketPath = keeperSocketPath(options.env ?? process.env);
+  if (socketPath === undefined) return false;
+  try {
+    // The keeper answers once the CLI exited: EOF, then SIGTERM and SIGKILL.
+    const reply = await request(socketPath, { op: "close", handle }, { timeoutMs: 15_000 });
+    return reply?.ok === true;
+  } catch (error) {
+    console.warn(`t3-keeper: ${socketPath} did not close ${handle} (${String(error)})`);
+    return false;
+  }
+}
+
 interface KeeperListEntry {
   readonly handle: string;
   readonly name: string | null;
