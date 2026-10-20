@@ -1,5 +1,5 @@
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
-import { keeperSpawnProcess } from "./ClaudeKeeperSpawn.ts";
+import { detachKeeperChildren, keeperSpawnProcess } from "./ClaudeKeeperSpawn.ts";
 import {
   dynamicToolTitle,
   formatReadToolLabel,
@@ -727,6 +727,19 @@ export const layerQueryRunner: Layer.Layer<
     const { native: nativeEventLogger } = yield* ProviderEventLoggers.ProviderEventLoggers;
     const agentScope = yield* AgentScope;
     const platform = yield* HostProcess.Platform;
+    // Runs before the session scopes close, so their query.close() finds the
+    // keeper children detached and leaves them running.
+    yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        process.on("SIGINT", detachKeeperChildren);
+        process.on("SIGTERM", detachKeeperChildren);
+      }),
+      () =>
+        Effect.sync(() => {
+          process.off("SIGINT", detachKeeperChildren);
+          process.off("SIGTERM", detachKeeperChildren);
+        }),
+    );
 
     return ClaudeAgentSdkQueryRunner.of({
       allocateSessionId: crypto
