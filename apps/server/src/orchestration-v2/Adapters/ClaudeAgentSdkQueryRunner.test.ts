@@ -30,7 +30,7 @@ import {
   layerQueryRunner,
   spawnClaudeProcessGroup,
 } from "./ClaudeAdapterV2.ts";
-import { keeperSpawnProcess } from "./ClaudeKeeperSpawn.ts";
+import { detachKeeperChildren, keeperSpawnProcess } from "./ClaudeKeeperSpawn.ts";
 // @ts-ignore - plain ESM without types
 import { startKeeper } from "../../t3Keeper/keeper.mjs";
 // @ts-ignore - plain ESM without types
@@ -571,6 +571,31 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI in 
         "unset",
       );
       yield* session.close;
+      yield* Effect.promise(() => started.closed);
+    }).pipe(Effect.provide(realQueryRunner)),
+  );
+
+  it.effect("leaves the CLI running in the keeper when shutdown detached it", () =>
+    Effect.gen(function* () {
+      const { keeper } = yield* keeperSocket;
+      const cli = fakeClaudeCli('exec 3> "$(dirname "$0")/started"; cat > /dev/null');
+      const started = fifoOpened(cli, "started");
+      const session = yield* openFakeCli(cli);
+      yield* Effect.promise(() => started.opened);
+      assert.equal(detachKeeperChildren(), 1);
+      yield* session.close;
+      const list = yield* Effect.promise(() => keeperRequest(keeper.socketPath, { op: "list" }));
+      assert.deepEqual(
+        list.handles.map((h: { name: string; alive: boolean; attached: boolean }) => [
+          h.name,
+          h.alive,
+          h.attached,
+        ]),
+        [["thread-fake-cli", true, false]],
+      );
+      yield* Effect.promise(() =>
+        keeperRequest(keeper.socketPath, { op: "close", handle: list.handles[0].handle }),
+      );
       yield* Effect.promise(() => started.closed);
     }).pipe(Effect.provide(realQueryRunner)),
   );

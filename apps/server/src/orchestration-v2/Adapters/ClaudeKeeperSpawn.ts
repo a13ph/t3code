@@ -7,8 +7,14 @@
  * server. The CLI leads its own process group there, and what it leaves in
  * the group is killed when it exits, as with `spawnClaudeProcessGroup`.
  *
+ * A server shutdown detaches every keeper child first
+ * (`detachKeeperChildren`, on SIGTERM and SIGINT), so the SDK's own close,
+ * which ends stdin and then signals, no longer reaches them, and a turn in
+ * flight keeps running in the keeper. A stop of one session still ends its
+ * CLI.
+ *
  * When the keeper cannot be reached for 10 s, the shim spawns the CLI
- * itself, as the SDK would have.
+ * itself, as the SDK would have; that CLI still dies with the server.
  */
 import type { SpawnOptions, SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
 // @effect-diagnostics nodeBuiltinImport:off -- the socket path is a host path.
@@ -57,6 +63,35 @@ export function keeperSpawnProcess(
   // test run started by the CLI never spawns into this keeper.
   return (spawnOptions) => {
     const { T3_KEEPER_SOCKET: _, ...env } = spawnOptions.env;
-    return spawner({ ...spawnOptions, env });
+    const child: KeeperChild = spawner({ ...spawnOptions, env });
+    liveChildren.add(child);
+    child.once("exit", () => liveChildren.delete(child));
+    child.once("error", () => liveChildren.delete(child));
+    return child;
   };
+}
+
+interface KeeperChild extends SpawnedProcess {
+  readonly local: boolean;
+  detach(): unknown;
+}
+
+const liveChildren = new Set<KeeperChild>();
+
+/**
+ * Leaves every live keeper child running: drops its connection without an
+ * EOF. A local fallback child is left alone and dies with the server.
+ */
+export function detachKeeperChildren(): number {
+  let detached = 0;
+  for (const child of liveChildren) {
+    if (child.local) continue;
+    child.detach();
+    detached += 1;
+  }
+  liveChildren.clear();
+  if (detached > 0) {
+    console.warn(`t3-keeper: shutdown detached ${detached} claude process(es)`);
+  }
+  return detached;
 }
