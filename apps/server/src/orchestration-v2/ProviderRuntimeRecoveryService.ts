@@ -18,7 +18,11 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
-import { keeperDetachedThreads, listKeeperThreads } from "./Adapters/ClaudeKeeperSpawn.ts";
+import {
+  closeKeeperThread,
+  keeperDetachedThreads,
+  listKeeperThreads,
+} from "./Adapters/ClaudeKeeperSpawn.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -183,6 +187,22 @@ const RECONCILE_CANCELLED_EFFECT_TYPES = [
 export const keeperReattachCommandId = (
   runId: OrchestrationV2ThreadProjection["runs"][number]["id"],
 ) => CommandId.make(`command:keeper-reattach:${runId}`);
+
+/**
+ * Closes, all at once, each CLI shutdown left in t3-keeper for a thread that
+ * got no reattach record. Returns the handles it closed.
+ */
+export async function closeUnrecordedKeeperThreads(
+  detached: ReadonlyMap<string, { readonly handle: string }>,
+  recorded: ReadonlySet<string>,
+  close: (handle: string) => Promise<boolean>,
+): Promise<ReadonlyArray<string>> {
+  const handles = [...detached]
+    .filter(([threadId]) => !recorded.has(threadId))
+    .map(([, thread]) => thread.handle);
+  await Promise.all(handles.map((handle) => close(handle)));
+  return handles;
+}
 
 /**
  * The run a t3-keeper reattach can continue: the thread's only unfinished
@@ -830,6 +850,13 @@ export const make = Effect.gen(function* () {
         ),
       );
     }
+    // Detached, but no next server will take it up: close it now, as a
+    // shutdown without t3-keeper would, so it does not work on unseen.
+    yield* Effect.promise(() =>
+      closeUnrecordedKeeperThreads(keeperDetachedThreads(), recorded, (handle) =>
+        closeKeeperThread(handle),
+      ),
+    );
     return recorded;
   });
 
