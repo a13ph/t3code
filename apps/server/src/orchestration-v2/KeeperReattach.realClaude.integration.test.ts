@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- the real CLI, the keeper and an MCP stub are real processes and sockets.
 import * as NodeFS from "node:fs";
 import * as NodeHttp from "node:http";
+import { setTimeout as sleep } from "node:timers/promises";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -66,6 +67,8 @@ interface Scenario {
   readonly marker: string;
   readonly prompt: string;
   readonly runs: number;
+  /** The Bash call runs in a foreground subagent's own thread. */
+  readonly subagent?: boolean;
 }
 
 // The prompt's own turn is in its Bash call.
@@ -94,6 +97,23 @@ const wakeTurn = (): Scenario => {
       `in the foreground, and nothing else: sleep 20; echo ${marker}\n` +
       "Then reply with only the text that command printed.",
     runs: 2,
+  };
+};
+
+// The prompt's turn is in a foreground subagent, which is in its Bash call.
+// Claude's shell tool refuses a bare `sleep 40`, so the wait is a tail.
+const subagentTurn = (): Scenario => {
+  const marker = `done-${tag()}`;
+  return {
+    marker,
+    prompt:
+      "Use the Agent tool exactly once, in the foreground (not in the background), " +
+      "with subagent_type general-purpose. Tell the subagent to run exactly this Bash command " +
+      `once, in the foreground, and nothing else: timeout 40 tail -f /dev/null; echo ${marker}\n` +
+      "and to reply with only the text the command printed. Run no command yourself.\n" +
+      "Then reply with only the text the subagent reported.",
+    runs: 1,
+    subagent: true,
   };
 };
 
@@ -232,7 +252,7 @@ const keeperStderr = (socketPath: string, handle: string) =>
     () => keeperRequest(socketPath, { op: "stderr", handle }) as Promise<{ data: string }>,
   ).pipe(Effect.map((reply) => reply.data));
 
-const restartDuringTurn = ({ marker, prompt, runs }: Scenario) =>
+const restartDuringTurn = ({ marker, prompt, runs, subagent = false }: Scenario) =>
   Effect.scoped(
     Effect.gen(function* () {
       // Drain: an orphan it takes for idle is
@@ -350,6 +370,9 @@ const restartDuringTurn = ({ marker, prompt, runs }: Scenario) =>
           yield* Fiber.join(toolRunning);
           log("tool running");
           yield* acked;
+          // Past the acknowledgement lag: the next server gets no replay of
+          // the subagent's start, only the frames after its Bash call began.
+          if (subagent) yield* Effect.promise(() => sleep(2_500));
           const handles = yield* keeperList(keeper.socketPath);
           assert.equal(handles.length, 1);
           // SIGTERM: the keeper children are detached before anything closes.
@@ -357,9 +380,18 @@ const restartDuringTurn = ({ marker, prompt, runs }: Scenario) =>
           log(`detached; mcp methods so far ${mcp.methods.join(",")}`);
           // The CLI connected to T3's MCP server: the path under test carries it.
           if (mcpOn) assert.include(mcp.methods, "tools/list");
-          const run = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
-            (candidate) => candidate.id === toolRunId,
+          const before = yield* orchestrator.getThreadProjection(threadId);
+          // A subagent's Bash call is runless, in the subagent's own thread.
+          const run = before.runs.find((candidate) =>
+            subagent ? candidate.status === "running" : candidate.id === toolRunId,
           );
+          if (subagent) {
+            log(`subagents ${JSON.stringify(before.subagents.map((s) => [s.runId, s.status]))}`);
+            assert.deepEqual(
+              before.subagents.map((s) => s.status),
+              ["running"],
+            );
+          }
           assert.isDefined(run);
           log(`tool run ${run!.id}`);
           return { runId: run!.id, pidBefore: handles[0]!.pid };
@@ -409,16 +441,22 @@ const restartDuringTurn = ({ marker, prompt, runs }: Scenario) =>
           log(`mcp methods after restart ${mcp.methods.slice(mcpBefore).join(",") || "none"}`);
           const projection = yield* orchestrator.getThreadProjection(threadId);
           log(`runs ${JSON.stringify(projection.runs.map((run) => [run.id, run.status]))}`);
-          const tool = projection.turnItems.find(
+          const subagentRow = subagent ? projection.subagents[0] : undefined;
+          const toolThreadId = subagentRow?.childThreadId ?? threadId;
+          const toolThread =
+            toolThreadId === threadId
+              ? projection
+              : yield* orchestrator.getThreadProjection(toolThreadId);
+          const tool = toolThread.turnItems.find(
             (item) =>
               item.type === "command_execution" &&
-              item.runId === runId &&
+              item.runId === (subagent ? null : runId) &&
               item.input.includes(marker),
           );
           const toolFull =
             tool === undefined
               ? null
-              : yield* orchestrator.getTurnItem({ threadId, itemId: tool.id });
+              : yield* orchestrator.getTurnItem({ threadId: toolThreadId, itemId: tool.id });
           const output = toolFull?.type === "command_execution" ? toolFull.output : undefined;
           log(`tool ${tool?.status} output ${JSON.stringify(output)}`);
           const replies = projection.turnItems
@@ -447,6 +485,21 @@ const restartDuringTurn = ({ marker, prompt, runs }: Scenario) =>
             [pidBefore],
           );
           assert.isTrue(projection.checkpoints.some((checkpoint) => checkpoint.runId === runId));
+          if (subagent) {
+            log(
+              `subagents ${JSON.stringify(projection.subagents.map((s) => [s.runId, s.status, s.result?.slice(0, 60)]))}`,
+            );
+            assert.deepEqual(
+              projection.subagents.map((s) => [s.runId, s.status]),
+              [[runId, "completed"]],
+            );
+            assert.include(subagentRow?.result ?? "", marker);
+            const card = projection.turnItems.filter((item) => item.type === "subagent");
+            assert.deepEqual(
+              card.map((item) => [item.runId, item.status]),
+              [[runId, "completed"]],
+            );
+          }
         }).pipe(Effect.provide(harness(yield* adapterFor))),
       );
     }).pipe(
@@ -471,6 +524,12 @@ describe.skipIf(!enabled)("T3 restart during a real Claude CLI turn", () => {
   it.effect(
     "keeps a turn the CLI started itself running across the restart",
     () => restartDuringTurn(wakeTurn()),
+    240_000,
+  );
+
+  it.effect(
+    "keeps a foreground subagent running across the restart",
+    () => restartDuringTurn(subagentTurn()),
     240_000,
   );
 });
