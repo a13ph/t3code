@@ -1613,6 +1613,18 @@ export const layer: Layer.Layer<
               type: "provider-turn.updated" as const,
               payload: { ...turn, status: "cancelled" as const, completedAt: now },
             })),
+          // The run's subagents ran in the closed CLI too.
+          ...projection.subagents
+            .filter((subagent) => subagent.runId === runId && open(subagent.status))
+            .map((subagent) => ({
+              type: "subagent.updated" as const,
+              payload: {
+                ...subagent,
+                status: "cancelled" as const,
+                completedAt: now,
+                updatedAt: now,
+              },
+            })),
           ...projection.nodes
             .filter((node) => node.runId === runId && open(node.status))
             .map((node) => ({
