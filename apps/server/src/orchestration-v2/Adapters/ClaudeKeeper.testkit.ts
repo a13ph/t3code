@@ -39,7 +39,7 @@ export const SUBAGENT_PROMPT = "Run the slow command and report what it printed.
 // A stand-in for the Claude CLI on the stream-json protocol: it answers every
 // control request, and on the first prompt runs `turn`, which holds until
 // `release` exists next to it.
-const fakeCliSource = (turn: string) => String.raw`
+const fakeCliSource = (turn: string, everyPrompt: boolean) => String.raw`
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as readline from "node:readline";
@@ -59,7 +59,7 @@ const toolResult = (uuid, toolUseId, content, parent = null) => ({
 const released = async () => {
   while (!fs.existsSync(path.join(dir, "release"))) await new Promise((r) => setTimeout(r, 20));
 };
-const result = (text) => out({ type: "result", subtype: "success", uuid: "r-1", session_id: "s",
+const result = (text, uuid = "r-1") => out({ type: "result", subtype: "success", uuid, session_id: "s",
   is_error: false, num_turns: 1, result: text, stop_reason: "end_turn",
   duration_ms: 1, duration_api_ms: 1, total_cost_usd: 0, usage, modelUsage: {},
   permission_denials: [], terminal_reason: "completed" });
@@ -76,7 +76,7 @@ lines.on("line", (line) => {
       ? { commands: [], models: [], account: {}, output_style: "default", available_output_styles: [] }
       : m.request.subtype === "mcp_set_servers" ? { added: [], removed: [], errors: {} } : {};
     out({ type: "control_response", response: { subtype: "success", request_id: m.request_id, response } });
-  } else if (m.type === "user" && !prompted) {
+  } else if (m.type === "user" && (${String(everyPrompt)} || !prompted)) {
     prompted = true;
     void turn();
   }
@@ -128,11 +128,11 @@ const SUBAGENT_TURN = String.raw`
 `;
 
 /** Writes a fake CLI into a fresh directory, removed when the scope closes. */
-const fakeClaudeCliWith = (turn: string) =>
+const fakeClaudeCliWith = (turn: string, everyPrompt = false) =>
   Effect.acquireRelease(
     Effect.sync(() => {
       const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-claude-reattach-"));
-      NodeFS.writeFileSync(NodePath.join(dir, "cli.mjs"), fakeCliSource(turn));
+      NodeFS.writeFileSync(NodePath.join(dir, "cli.mjs"), fakeCliSource(turn, everyPrompt));
       const cli = NodePath.join(dir, "claude");
       NodeFS.writeFileSync(
         cli,
@@ -157,6 +157,38 @@ export const fakeClaudeCli = fakeClaudeCliWith(BASH_TURN);
  * call `toolu_agent`) running a Bash call (`toolu_sub_bash`) until released.
  */
 export const fakeSubagentClaudeCli = fakeClaudeCliWith(SUBAGENT_TURN);
+
+/** The background subagent the first turn of `fakeBackgroundSubagentClaudeCli` leaves running. */
+export const BACKGROUND_SUBAGENT_TASK_ID = "a0fake0background1";
+
+// The first prompt launches a background subagent (Agent call
+// `toolu_bg_agent`, run_in_background) that never ends, and ends its turn.
+// Every later prompt runs BASH_TURN.
+const BACKGROUND_SUBAGENT_TURNS = String.raw`
+  if (!fs.existsSync(path.join(dir, "launched"))) {
+    fs.writeFileSync(path.join(dir, "launched"), "");
+    const task = ${JSON.stringify(BACKGROUND_SUBAGENT_TASK_ID)};
+    const prompt = "Keep working in the background.";
+    out(assistant("msg_bg_agent", [{ type: "tool_use", id: "toolu_bg_agent", name: "Agent",
+      input: { description: "Background work", prompt, subagent_type: "general-purpose",
+        run_in_background: true } }]));
+    out({ type: "system", subtype: "task_started", task_id: task, tool_use_id: "toolu_bg_agent",
+      description: "Background work", task_type: "local_agent", prompt,
+      uuid: "ts-bg", session_id: "s" });
+    out(toolResult("u-bg-launched", "toolu_bg_agent",
+      [{ type: "text", text: "Async agent launched successfully. agentId: " + task }]));
+    out(assistant("msg_bg_started", [{ type: "text", text: "Started." }]));
+    result("Started.", "r-bg");
+    return;
+  }
+${BASH_TURN}`;
+
+/**
+ * A fake CLI whose first turn leaves a background subagent
+ * (`BACKGROUND_SUBAGENT_TASK_ID`) running and ends; its next turn is in a
+ * Bash call (`toolu_1`) until released.
+ */
+export const fakeBackgroundSubagentClaudeCli = fakeClaudeCliWith(BACKGROUND_SUBAGENT_TURNS, true);
 
 /**
  * A keeper serving a fresh socket, named in T3_KEEPER_SOCKET while the scope
