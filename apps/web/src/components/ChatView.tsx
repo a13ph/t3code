@@ -245,7 +245,9 @@ import {
 import { useTheme } from "../hooks/useTheme";
 import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import { isCommandPaletteOpen } from "../commandPaletteBus";
-import { settleAndAdvance } from "../settleAndAdvance";
+import { settleAndAdvance, snoozeAndAdvance } from "../settleAndAdvance";
+import { pickSnoozePreset } from "./snoozeShortcut";
+import { jumpToLastThread } from "../jumpToLastThread";
 import { subscribeSnapShotComposerFocus } from "../lib/desktopSnapShot";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
@@ -7106,6 +7108,9 @@ export default function ChatView(props: ChatViewProps) {
   const unsnoozeThreadMutation = useOrchestrationCommand(threadEnvironment.unsnooze, {
     reportFailure: false,
   });
+  const snoozeThreadMutation = useOrchestrationCommand(threadEnvironment.snooze, {
+    reportFailure: false,
+  });
   const [unsnoozingThreadKey, setUnsnoozingThreadKey] = useState<string | null>(null);
   const isUnsnoozing = unsnoozingThreadKey !== null && unsnoozingThreadKey === activeThreadKey;
   const handleUnsnoozeActiveThread = async () => {
@@ -7963,6 +7968,47 @@ export default function ChatView(props: ChatViewProps) {
         return;
       }
 
+      if (command === "thread.snooze") {
+        if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.repeat || !isServerThread || !activeThreadRef || !supportsSnooze) return;
+        // Snoozed: the same key wakes it, as the thread menu's Wake item does.
+        if (activeThreadSnoozed) {
+          void handleUnsnoozeActiveThreadStable();
+          return;
+        }
+        const threadRef = activeThreadRef;
+        const headerRect = document
+          .querySelector("[data-thread-title-chevron]")
+          ?.getBoundingClientRect();
+        void pickSnoozePreset(
+          headerRect
+            ? { x: headerRect.left, y: headerRect.bottom + 4 }
+            : { x: Math.round(window.innerWidth / 2), y: 64 },
+          timestampFormat,
+        ).then((preset) => {
+          if (!preset) return;
+          // Same as the sidebar's Snooze: snooze, then open the next thread.
+          if (snoozeAndAdvance(threadRef, preset.snoozedUntil)) return;
+          void snoozeThreadMutation({
+            environmentId: threadRef.environmentId,
+            input: { threadId: threadRef.threadId, snoozedUntil: preset.snoozedUntil },
+          }).then((result) => {
+            if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) return;
+            const error = squashAtomCommandFailure(result);
+            toastManager.add(
+              stackedThreadToast({
+                type: "error",
+                title: "Failed to snooze thread",
+                description: error instanceof Error ? error.message : "An error occurred.",
+              }),
+            );
+          });
+        });
+        return;
+      }
+
       if (command === "terminal.toggle") {
         if (!terminalUiState.terminalOpen && !canReadTerminal && !canOperateTerminal) return;
         event.preventDefault();
@@ -8223,6 +8269,11 @@ export default function ChatView(props: ChatViewProps) {
     settleThread,
     supportsPinning,
     supportsSettlement,
+    supportsSnooze,
+    activeThreadSnoozed,
+    handleUnsnoozeActiveThreadStable,
+    snoozeThreadMutation,
+    timestampFormat,
     confirmAndUnpinThread,
     copyActiveThreadReferenceStable,
     getShortcutContextStable,
@@ -8619,6 +8670,9 @@ export default function ChatView(props: ChatViewProps) {
     },
   ) => {
     e?.preventDefault();
+    // Send-and-jump sends like a plain send, then opens the last chat.
+    const jumpLastAfterSend = submissionIntent === "jumpLast";
+    if (jumpLastAfterSend) submissionIntent = "foreground";
     // Typed out in full rather than picked from the menu. Attachments or contexts
     // mean the user is sending a prompt, so those go through as usual.
     if (
@@ -9880,6 +9934,10 @@ export default function ChatView(props: ChatViewProps) {
           releaseDraftAttachments(composerAttachmentsSnapshot);
         }
         acknowledgeActiveThreadWoke();
+        // Only if the user is still on the thread they replied in.
+        if (jumpLastAfterSend && currentRouteThreadKeyRef.current === routeThreadKey) {
+          jumpToLastThread(routeThreadKey);
+        }
         if (backgroundThreadRef) {
           if (backgroundDraftOpened || currentRouteThreadKeyRef.current !== routeThreadKey) {
             finalizePromotedDraftThreadByRef(backgroundThreadRef);

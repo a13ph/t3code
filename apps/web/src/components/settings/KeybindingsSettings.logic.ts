@@ -362,6 +362,13 @@ export function commandLabel(command: KeybindingCommand): string {
   if (command === "composer.sendAlternate") return "Composer: Opposite Queue or Steer Action";
   if (command === "composer.sendBackground") return "Composer: Start in Background";
   if (command === "composer.sendAndNewThread") return "Composer: Send and Start New Thread";
+  if (command === "composer.sendAndJumpLast") return "Composer: Send and Go to Last Thread";
+  if (command === "thread.jumpLast") return "Thread: Go to Last Thread";
+  if (command === "thread.snooze") return "Thread: Snooze or Wake";
+  if (command === "chat.turn.previous") return "Chat: Previous Turn";
+  if (command === "chat.turn.next") return "Chat: Next Turn";
+  if (command === "chat.turn.first") return "Chat: First Turn";
+  if (command === "chat.turn.last") return "Chat: Last Turn";
   if (command === "thread.steerQueuedMessage") return "Queue: Send First Queued Message as Steer";
   if (command === "thread.editQueuedMessage") return "Queue: Edit Last Queued Message";
   if (command === "thread.copyReference") return "Pull Request: Copy Link or Thread ID";

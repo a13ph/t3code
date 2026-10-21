@@ -871,6 +871,39 @@ export function getSidebarThreadIdsToPrewarm<TThreadId>(
   return visibleThreadIds.slice(0, Math.max(0, limit));
 }
 
+/**
+ * The digit each of the first nine rows shows when jump numbers are always
+ * on. A row gets one only while its jump command has a shortcut, so the
+ * digit never promises a key that does nothing.
+ */
+export function buildThreadJumpNumbers(
+  orderedThreadKeys: readonly string[],
+  jumpLabelByKey: ReadonlyMap<string, string>,
+): ReadonlyMap<string, string> {
+  const numbers = new Map<string, string>();
+  for (const [index, threadKey] of orderedThreadKeys.slice(0, 9).entries()) {
+    if (jumpLabelByKey.has(threadKey)) numbers.set(threadKey, String(index + 1));
+  }
+  return numbers;
+}
+
+/**
+ * The thread the "last chat" shortcuts open: the bottom card of the queue
+ * (pinned, then active threads; never working, snoozed or settled ones),
+ * which in time order is the oldest thread waiting on the user. The thread
+ * being left is skipped, so the shortcut always moves somewhere else.
+ */
+export function resolveLastQueueThreadKey(input: {
+  queueThreadKeys: readonly string[];
+  leavingThreadKey: string | null;
+}): string | null {
+  for (let index = input.queueThreadKeys.length - 1; index >= 0; index -= 1) {
+    const threadKey = input.queueThreadKeys[index];
+    if (threadKey !== undefined && threadKey !== input.leavingThreadKey) return threadKey;
+  }
+  return null;
+}
+
 export function resolveAdjacentThreadId<T>(input: {
   threadIds: readonly T[];
   currentThreadId: T | null;

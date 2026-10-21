@@ -4,7 +4,8 @@ import * as Schema from "effect/Schema";
 
 /**
  * Agents mention another thread in Markdown as `[title](t3-thread://v1/<threadId>)`. The id is
- * the reference and resolves in the environment of the message that holds it. Titles change, so
+ * the reference and resolves in the environment of the message that holds it, or, on web, in any
+ * other environment the client is connected to. Titles change, so
  * clients show the thread's current title; the label only stands in for a thread they cannot see.
  */
 export const THREAD_LINK_PROTOCOL = "t3-thread";

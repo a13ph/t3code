@@ -63,8 +63,10 @@ export function setActiveEnvironmentId(environmentId: EnvironmentId | null): voi
   appAtomRegistry.set(activeEnvironmentIdAtom, environmentId);
 }
 
-export function useThreadRefs(): ReadonlyArray<ScopedThreadRef> {
-  return useAtomValue(environmentThreadShells.threadRefsAtom);
+/** Every thread ref in every connected environment. Pass `enabled: false` to read a
+    stable empty list while the caller does not need them. */
+export function useThreadRefs(enabled = true): ReadonlyArray<ScopedThreadRef> {
+  return useAtomValue(enabled ? environmentThreadShells.threadRefsAtom : EMPTY_THREAD_REFS_ATOM);
 }
 
 export function useEnvironmentThreadRefs(
