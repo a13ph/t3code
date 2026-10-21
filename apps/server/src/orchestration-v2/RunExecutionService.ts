@@ -576,6 +576,12 @@ export interface RunExecutionServiceV2StartRootRunInput {
   readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
   /** The run is already running in a provider process that outlived a restart. */
   readonly reattach?: ProviderAdapter.ProviderAdapterV2Reattach;
+  /**
+   * A reattached run's subagent rows from before the restart. The open ones
+   * are tracked as if this server had ingested their events, so the run
+   * waits on them and ends them with it.
+   */
+  readonly reattachedSubagents?: ReadonlyArray<OrchestrationV2Subagent>;
 }
 
 export interface RunExecutionServiceV2Shape {
@@ -1037,11 +1043,33 @@ export const layer: Layer.Layer<
         const rootRunFinalized = yield* Ref.make(false);
         const providerThreadOwnerLost = yield* Ref.make(false);
         const activeChildProviderTurns = yield* Ref.make<ReadonlySet<ProviderTurnId>>(new Set());
-        const activeChildSubagents = yield* Ref.make<ReadonlyMap<NodeId, ThreadId>>(new Map());
+        const reattachedOpenSubagents = (input.reattachedSubagents ?? []).filter(
+          (subagent) => !isSettledSubagentStatus(subagent.status),
+        );
+        const activeChildSubagents = yield* Ref.make<ReadonlyMap<NodeId, ThreadId>>(
+          new Map(reattachedOpenSubagents.map((subagent) => [subagent.id, subagent.threadId])),
+        );
         const activeBackgroundTurnItems = yield* Ref.make<
           ReadonlySet<OrchestrationV2TurnItem["id"]>
         >(new Set(inheritedBackgroundTurnItemsById.keys()));
-        const openRunOwnedSubagents = yield* Ref.make(emptyOpenRunOwnedSubagentProjection());
+        const openRunOwnedSubagents = yield* Ref.make<OpenRunOwnedSubagentProjection>({
+          ...emptyOpenRunOwnedSubagentProjection(),
+          subagents: new Map(reattachedOpenSubagents.map((subagent) => [subagent.id, subagent])),
+          turnItems: new Map(
+            (input.reattach?.turnItems ?? []).flatMap((item) =>
+              item.type === "subagent" &&
+              item.runId === input.run.id &&
+              !isSettledTurnItemStatus(item.status)
+                ? [[item.subagentId, item] as const]
+                : [],
+            ),
+          ),
+          linkedChildThreadIds: new Set(
+            (input.reattachedSubagents ?? []).flatMap((subagent) =>
+              subagent.childThreadId === null ? [] : [subagent.childThreadId],
+            ),
+          ),
+        });
         const finalizeRootRun = Effect.fn("RunExecutionService.finalizeRootRun")(function* (
           terminal: ProviderTerminalEvent,
         ) {

@@ -1660,8 +1660,26 @@ export const layer: Layer.Layer<
         runOrdinal: run.ordinal,
         inheritedBackgroundTurnItems: [],
       });
+      // The run's own subagents go on in the kept CLI, so their child
+      // threads stay this run's, as do those a new run would take over.
+      const runSubagents = projection.subagents.filter((subagent) => subagent.runId === run.id);
+      const relatedSubagents = [
+        ...runSubagents,
+        ...projection.subagents.filter(
+          (subagent) =>
+            subagent.runId !== run.id &&
+            RunExecutionService.canRouteRelatedSubagent(subagent.status),
+        ),
+      ];
       yield* runExecution.startRootRun({
         commandId: CommandId.make(`command:effect:provider-turn.reattach:${run.id}`),
+        relatedThreadIds: relatedSubagents.flatMap((subagent) =>
+          subagent.childThreadId === null ? [] : [subagent.childThreadId],
+        ),
+        relatedProviderThreadIds: relatedSubagents.flatMap((subagent) =>
+          subagent.providerThreadId === null ? [] : [subagent.providerThreadId],
+        ),
+        reattachedSubagents: runSubagents,
         appThread: projection.thread,
         providerSessionId,
         session,
