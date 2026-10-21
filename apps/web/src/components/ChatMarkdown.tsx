@@ -149,7 +149,18 @@ import { isMarkdownFileLinkLabel } from "@t3tools/shared/markdownLinks";
 import { isElectron } from "../env";
 import { readLocalApi } from "../localApi";
 import { cn } from "../lib/utils";
-import { resolveRemoteOpenState, useRemoteOpenResolution } from "../remoteOpen";
+import {
+  openRemoteEditorUrl,
+  resolveRemoteOpenState,
+  useRemoteOpenResolution,
+} from "../remoteOpen";
+import {
+  buildChipOpenUrl,
+  canOfferOpenInApps,
+  resolveChipOpenTargets,
+  type ChipOpenTarget,
+} from "../openInApps";
+import { isAbsolutePath } from "@t3tools/shared/path";
 import { useRightPanelStore } from "../rightPanelStore";
 import { readThreadShell, useProjects } from "../state/entities";
 import { serverEnvironment } from "../state/server";
@@ -584,6 +595,52 @@ function useChatMarkdownState({
   const openInEditor = useAtomCommand(shellEnvironment.openInEditor, {
     reportFailure: false,
   });
+  const chipOpenTargets = resolveChipOpenTargets({
+    isDesktop: canOfferOpenInApps(),
+    isRemoteOpenResolved: remoteOpen.isResolved,
+    remoteOpenMode: remoteOpen.state.mode,
+    canUseShellActions,
+    availableEditors,
+  });
+  const openChipTarget = (
+    target: ChipOpenTarget,
+    filePath: string,
+    targetPath: string,
+    line: number | undefined,
+  ) => {
+    const showFailure = (description: string) =>
+      toastManager.add(
+        stackedThreadToast({ type: "error", title: "Unable to open file", description }),
+      );
+    // Local VSCodium keeps the stock route: the server launches `codium`.
+    if (target === "vscodium" && remoteOpen.state.mode === "local-exec") {
+      if (environmentId === null) return;
+      void openInEditor({
+        environmentId,
+        input: { cwd: targetPath, editor: "vscodium" },
+      }).then((result) => {
+        if (result._tag === "Success" || isAtomCommandInterrupted(result)) return;
+        const error = squashAtomCommandFailure(result);
+        showFailure(error instanceof Error ? error.message : "An error occurred.");
+      });
+      return;
+    }
+    if (!isAbsolutePath(filePath)) {
+      showFailure(`${filePath} is not an absolute path.`);
+      return;
+    }
+    const url = buildChipOpenUrl({
+      target,
+      state: remoteOpen.state,
+      absolutePath: filePath,
+      line,
+      threadId: threadRef?.threadId ?? null,
+    });
+    if (url === undefined) return;
+    void openRemoteEditorUrl(url).then((opened) => {
+      if (!opened) showFailure("The desktop app refused the link.");
+    });
+  };
   const revealFileInFileManager = (filePath: string) => {
     if (environmentId === null) {
       return Promise.resolve(
@@ -863,6 +920,8 @@ function useChatMarkdownState({
             : undefined
         }
         revealLabel={revealInFileManagerLabel}
+        openTargets={chipOpenTargets}
+        onOpenTarget={chipOpenTargets.length > 0 ? openChipTarget : undefined}
         onOpenInBrowser={
           threadRef &&
           canOperatePreview &&

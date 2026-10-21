@@ -18,6 +18,13 @@ import {
   useRemoteOpenHint,
   useRemoteOpenState,
 } from "../../remoteOpen";
+import {
+  buildOpenInAppUrl,
+  canOfferOpenInApps,
+  isOpenInAppId,
+  OPEN_IN_APP_IDS,
+  type OpenInTargetId,
+} from "../../openInApps";
 import { useEnvironment } from "../../state/environments";
 import { ChevronDownIcon, FolderClosedIcon, SquareArrowOutUpRightIcon } from "lucide-react";
 
@@ -77,11 +84,36 @@ import { useComposerMenuState } from "./useComposerMenuState";
 type OpenInOption = {
   label: string;
   Icon: Icon;
-  value: EditorId;
+  value: OpenInTargetId;
   kind: "brand" | "generic";
 };
 
-const resolveOpenInOptions = (platform: string, availableEditors: ReadonlyArray<EditorId>) => {
+const letterIcon =
+  (letter: string, fill: string): Icon =>
+  (props) => (
+    <svg viewBox="0 0 24 24" fill="none" {...props}>
+      <rect x="2" y="2" width="20" height="20" rx="5" fill={fill} />
+      <text
+        x="12"
+        y="16.5"
+        textAnchor="middle"
+        fontSize="13"
+        fontWeight="700"
+        fontFamily="system-ui, sans-serif"
+        fill="var(--color-zinc-25)"
+      >
+        {letter}
+      </text>
+    </svg>
+  );
+
+const NeovimIcon = letterIcon("N", "#3E9B4F");
+const ObsidianIcon = letterIcon("O", "#7C3AED");
+
+const resolveOpenInOptions = (
+  platform: string,
+  availableEditors: ReadonlyArray<OpenInTargetId>,
+) => {
   const baseOptions: ReadonlyArray<Omit<OpenInOption, "label">> = [
     {
       Icon: CursorIcon,
@@ -183,6 +215,8 @@ const resolveOpenInOptions = (platform: string, availableEditors: ReadonlyArray<
       value: "webstorm",
       kind: "brand",
     },
+    { Icon: NeovimIcon, value: "nvim", kind: "brand" },
+    { Icon: ObsidianIcon, value: "obsidian", kind: "brand" },
     {
       Icon: isMacPlatform(platform)
         ? FinderIcon
@@ -214,12 +248,15 @@ export const OpenInPicker = memo(function OpenInPicker({
   enableShortcut = true,
   displayMode = "toolbar",
   revealFileManager = false,
+  threadId = null,
 }: {
   environmentId: EnvironmentId;
   keybindings: ResolvedKeybindingsConfig;
   availableEditors: ReadonlyArray<EditorId>;
   openInCwd: string | null;
   openInCwdIsFile?: boolean;
+  /** Sent as `thread=` on Neovim and Obsidian links. */
+  threadId?: string | null;
   presentation?: "toolbar" | "menu";
   compact?: boolean;
   enableShortcut?: boolean;
@@ -239,14 +276,30 @@ export const OpenInPicker = memo(function OpenInPicker({
   const [remoteHintSeen, markRemoteHintSeen] = useRemoteOpenHint();
   const environmentLabel = useEnvironment(environmentId)?.label ?? "this machine";
   // Remote editors run on the viewing machine; only desktop can probe that PATH.
-  const effectiveEditors = remote.mode === "local-exec" ? availableEditors : remoteCapableEditors;
+  const probedEditors = remote.mode === "local-exec" ? availableEditors : remoteCapableEditors;
+  // The link-only apps open through the desktop shell on this machine, so the
+  // desktop offers them whatever either probe found; a browser cannot.
+  const effectiveEditors: ReadonlyArray<OpenInTargetId> = canOfferOpenInApps()
+    ? [...probedEditors, ...OPEN_IN_APP_IDS]
+    : probedEditors;
   const [preferredEditor, setPreferredEditor] = usePreferredEditor(effectiveEditors);
 
-  const openInEditor = async (editorId: EditorId | null): Promise<boolean> => {
+  const openInEditor = async (editorId: OpenInTargetId | null): Promise<boolean> => {
     if (!openInCwd) return false;
     const editor = editorId ?? preferredEditor;
     if (!editor) return false;
     if (remote.mode === "remote-unavailable") return false;
+    if (isOpenInAppId(editor)) {
+      const url = buildOpenInAppUrl({
+        app: editor,
+        host: remote.mode === "remote-links" ? remote.host.host : null,
+        absolutePath: openInCwd,
+        threadId,
+      });
+      if (!(await openRemoteEditorUrl(url))) return false;
+      setPreferredEditor(editor);
+      return true;
+    }
     if (remote.mode === "remote-links") {
       const url = buildRemoteOpenUrl({
         editor,
