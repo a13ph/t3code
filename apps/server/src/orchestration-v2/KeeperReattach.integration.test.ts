@@ -6,6 +6,7 @@ import {
   ProjectId,
   ThreadId,
   type OrchestrationV2DomainEvent,
+  isOrchestrationV2WorkActive,
   type OrchestrationV2Subagent,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -22,6 +23,8 @@ import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import {
+  BACKGROUND_SUBAGENT_TASK_ID,
+  fakeBackgroundSubagentClaudeCli,
   fakeClaudeCli,
   fakeSubagentClaudeCli,
   firstKeeperAck,
@@ -463,6 +466,142 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
               ["succeeded"],
             );
           }).pipe(Effect.provide(layerShutdownRecovery(databaseLayer)), Effect.scoped);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              realQueryRunner,
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    // A background subagent an earlier run left running belongs to no run a
+    // reattach can carry: its events would be dropped and its row would run
+    // forever. The shutdown records no reattach, closes the CLI, and the
+    // restart ends the subagent and the turn as without t3-keeper.
+    it.effect("records no reattach while an earlier run's background subagent runs", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* keeperSocket;
+          const fake = yield* fakeBackgroundSubagentClaudeCli;
+          const cwd = yield* checkpointWorkspace("keeper-reattach-background");
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-keeper-reattach-" });
+          const databaseLayer = sqliteAt(path.join(stateDir, "state.sqlite"));
+          const harness = (adapter: Parameters<typeof ProviderAdapterRegistry.layerSingle>[0]) =>
+            ProviderReplayHarness.layerWithRegistry(
+              { name: "keeper-reattach-background", runtimePolicyOverride: { cwd } },
+              ProviderAdapterRegistry.layerSingle(adapter),
+              { databaseLayer, recoverOnStartup: true },
+            );
+          const background = (projection: {
+            readonly subagents: ReadonlyArray<OrchestrationV2Subagent>;
+          }) =>
+            projection.subagents.filter(
+              (subagent) => subagent.nativeTaskRef?.nativeId === BACKGROUND_SUBAGENT_TASK_ID,
+            );
+          const message = (id: string, text: string) => ({
+            type: "message.dispatch" as const,
+            commandId: CommandId.make(id),
+            threadId,
+            messageId: MessageId.make(id),
+            text,
+            attachments: [],
+            dispatchMode: { type: "start_immediately" as const },
+            createdBy: "user" as const,
+            creationSource: "web" as const,
+          });
+
+          // The server before the restart: the first run settled with its
+          // background subagent running, the second is in its Bash call.
+          const { firstRunId, secondRunId } = yield* Effect.scoped(
+            Effect.gen(function* () {
+              const orchestrator = yield* Orchestrator.OrchestratorV2;
+              yield* orchestrator.dispatch({
+                type: "thread.create",
+                commandId: CommandId.make("create"),
+                threadId,
+                projectId: ProjectId.make("project:keeper-reattach"),
+                title: "Keeper reattach",
+                modelSelection,
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                branch: null,
+                worktreePath: cwd,
+                createdBy: "user",
+                creationSource: "web",
+              });
+              const firstSettled = yield* watch(
+                (event) =>
+                  event.type === "run.updated" &&
+                  (event.payload.status === "waiting" || event.payload.status === "completed"),
+              );
+              yield* orchestrator.dispatch(message("first", "Start the background work."));
+              yield* Fiber.join(firstSettled);
+              const toolRunning = yield* watch(
+                (event) =>
+                  event.type === "turn-item.updated" &&
+                  event.payload.nativeItemRef?.nativeId === "toolu_1" &&
+                  event.payload.status === "running",
+              );
+              yield* orchestrator.dispatch(message("second", "Run the slow command."));
+              yield* Fiber.join(toolRunning);
+              yield* keeperAckedThrough(threadId);
+              const before = yield* orchestrator.getThreadProjection(threadId);
+              assert.deepEqual(
+                background(before).map((subagent) => subagent.status),
+                ["running"],
+              );
+              const [first, second] = before.runs;
+              assert.notEqual(first?.status, "running");
+              assert.equal(second?.status, "running");
+              assert.notEqual(background(before)[0]?.runId, second?.id);
+              assert.equal(detachKeeperChildren(), 1);
+              return { firstRunId: first!.id, secondRunId: second!.id };
+            }).pipe(Effect.provide(harness(yield* makeKeeperTestAdapter(fake.cli, fake.dir)))),
+          );
+
+          // The rest of the shutdown: no reattach, and the CLI closed.
+          yield* Effect.gen(function* () {
+            const recovery = yield* ProviderRuntimeRecoveryService.ProviderRuntimeRecoveryService;
+            yield* recovery.prepareForShutdown;
+            yield* recovery.reconcile("shutdown");
+            const outbox = yield* EffectOutbox.EffectOutboxV2;
+            assert.deepEqual(
+              yield* outbox.listByCommandId(
+                ProviderRuntimeRecoveryService.keeperReattachCommandId(secondRunId),
+              ),
+              [],
+            );
+            assert.isUndefined((yield* Effect.promise(() => listKeeperThreads()))?.get(threadId));
+          }).pipe(Effect.provide(layerShutdownRecovery(databaseLayer)), Effect.scoped);
+
+          // The server after it: neither the second run nor the background
+          // subagent is left running.
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const orchestrator = yield* Orchestrator.OrchestratorV2;
+              const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+              yield* worker.drain();
+              const projection = yield* orchestrator.getThreadProjection(threadId);
+              const status = (runId: string) =>
+                projection.runs.find((run) => run.id === runId)?.status;
+              assert.notEqual(status(firstRunId), "running");
+              assert.notEqual(status(secondRunId), "running");
+              assert.deepEqual(
+                background(projection).filter((subagent) =>
+                  isOrchestrationV2WorkActive(subagent.status),
+                ),
+                [],
+              );
+              fake.release();
+            }).pipe(Effect.provide(harness(yield* makeKeeperTestAdapter(fake.cli, fake.dir)))),
+          );
         }).pipe(
           Effect.provide(
             Layer.mergeAll(
