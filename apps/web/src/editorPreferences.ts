@@ -15,6 +15,7 @@ import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 import { getLocalStorageItem, setLocalStorageItem, useLocalStorage } from "./hooks/useLocalStorage";
 import { useCallback, useMemo } from "react";
+import { isOpenInAppId, OpenInTargetId } from "./openInApps";
 import { shellEnvironment } from "./state/shell";
 import { useAtomCommand } from "./state/use-atom-command";
 import { readEnvironmentScope } from "./state/session";
@@ -45,23 +46,44 @@ export class PreferredEditorUnavailableError extends Schema.TaggedError<Preferre
   }
 }
 
-export function usePreferredEditor(availableEditors: ReadonlyArray<EditorId>) {
-  const [lastEditor, setLastEditor] = useLocalStorage(LAST_EDITOR_KEY, null, EditorId);
+// The stored pick may be a link-only app (Neovim, Obsidian) chosen in
+// the Open-in picker; callers that can only launch editors fall back without
+// overwriting it.
+export function usePreferredEditor<T extends OpenInTargetId>(availableEditors: ReadonlyArray<T>) {
+  const [lastEditor, setLastEditor] = useLocalStorage(LAST_EDITOR_KEY, null, OpenInTargetId);
 
-  const effectiveEditor = useMemo(() => {
-    if (lastEditor && availableEditors.includes(lastEditor)) return lastEditor;
-    return EDITORS.find((editor) => availableEditors.includes(editor.id))?.id ?? null;
+  const effectiveEditor = useMemo((): T | null => {
+    const available = availableEditors as ReadonlyArray<OpenInTargetId>;
+    if (lastEditor && available.includes(lastEditor)) return lastEditor as T;
+    return (EDITORS.find((editor) => available.includes(editor.id))?.id as T | undefined) ?? null;
   }, [lastEditor, availableEditors]);
 
   return [effectiveEditor, setLastEditor] as const;
 }
 
+/** True when the stored Open-in pick is a link-only app, which only the picker can open. */
+export function isPreferredOpenInApp(): boolean {
+  try {
+    return isOpenInAppId(getLocalStorageItem(LAST_EDITOR_KEY, OpenInTargetId));
+  } catch {
+    return false;
+  }
+}
+
 function resolveAndPersistPreferredEditor(availableEditors: readonly EditorId[]): EditorId | null {
-  const availableEditorIds = new Set(availableEditors);
-  const stored = getLocalStorageItem(LAST_EDITOR_KEY, EditorId);
-  if (stored && availableEditorIds.has(stored)) return stored;
+  const availableEditorIds = new Set<OpenInTargetId>(availableEditors);
+  // A pick of an app this build no longer lists fails to decode; it falls
+  // back to the first available editor, which then replaces it.
+  let stored: OpenInTargetId | null = null;
+  try {
+    stored = getLocalStorageItem(LAST_EDITOR_KEY, OpenInTargetId);
+  } catch {
+    stored = null;
+  }
+  if (stored && !isOpenInAppId(stored) && availableEditorIds.has(stored)) return stored;
   const editor = EDITORS.find((editor) => availableEditorIds.has(editor.id))?.id ?? null;
-  if (editor) setLocalStorageItem(LAST_EDITOR_KEY, editor, EditorId);
+  if (editor && !isOpenInAppId(stored))
+    setLocalStorageItem(LAST_EDITOR_KEY, editor, OpenInTargetId);
   return editor ?? null;
 }
 

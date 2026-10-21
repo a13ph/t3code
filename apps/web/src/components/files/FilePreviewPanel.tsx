@@ -1278,6 +1278,7 @@ export default function FilePreviewPanel({
               keybindings={keybindings}
               availableEditors={availableEditors}
               openInCwd={absolutePath}
+              threadId={threadRef.threadId}
               compact
             />
           ) : null}
