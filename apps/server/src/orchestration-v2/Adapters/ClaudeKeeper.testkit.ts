@@ -2,6 +2,7 @@
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ClaudeSettings, ProviderInstanceId } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
@@ -20,7 +21,7 @@ import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
 // @ts-ignore - plain ESM without types
 import { startKeeper } from "../../t3Keeper/keeper.mjs";
 // @ts-ignore - plain ESM without types
-import { KeeperProcess } from "../../t3Keeper/shim.mjs";
+import { KeeperProcess, request as keeperRequest } from "../../t3Keeper/shim.mjs";
 
 export const keeperTestModelSelection = {
   instanceId: ProviderInstanceId.make(ClaudeAdapterV2.CLAUDE_PROVIDER),
@@ -30,35 +31,41 @@ export const keeperTestModelSelection = {
 export const SLOW_COMMAND = "sleep 60; echo done-4857";
 export const SLOW_COMMAND_REPLY = "The command printed done-4857.";
 
+/** The subagent the fake CLI's subagent turn launches, and what it returns. */
+export const SUBAGENT_TASK_ID = "a0fake0subagent1";
+export const SUBAGENT_RESULT = "The subagent's command printed done-4857.";
+export const SUBAGENT_PROMPT = "Run the slow command and report what it printed.";
+
 // A stand-in for the Claude CLI on the stream-json protocol: it answers every
-// control request, and on the first prompt starts a Bash call (`toolu_1`),
-// then holds until `release` exists next to it, then reports the call's
-// result, a reply and the turn's result.
-const FAKE_CLI = String.raw`
+// control request, and on the first prompt runs `turn`, which holds until
+// `release` exists next to it.
+const fakeCliSource = (turn: string) => String.raw`
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as readline from "node:readline";
 const dir = path.dirname(process.argv[1]);
 const out = (frame) => process.stdout.write(JSON.stringify(frame) + "\n");
 const usage = { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
-const assistant = (id, content) => ({
-  type: "assistant", uuid: "a-" + id, session_id: "s", parent_tool_use_id: null,
+const assistant = (id, content, parent = null) => ({
+  type: "assistant", uuid: "a-" + id, session_id: "s", parent_tool_use_id: parent,
   message: { id, type: "message", role: "assistant", model: "claude-sonnet-4-6", content,
     stop_reason: null, stop_sequence: null, usage },
 });
+const toolResult = (uuid, toolUseId, content, parent = null) => ({
+  type: "user", uuid, session_id: "s", parent_tool_use_id: parent,
+  message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolUseId,
+    is_error: false, content }] },
+});
+const released = async () => {
+  while (!fs.existsSync(path.join(dir, "release"))) await new Promise((r) => setTimeout(r, 20));
+};
+const result = (text) => out({ type: "result", subtype: "success", uuid: "r-1", session_id: "s",
+  is_error: false, num_turns: 1, result: text, stop_reason: "end_turn",
+  duration_ms: 1, duration_api_ms: 1, total_cost_usd: 0, usage, modelUsage: {},
+  permission_denials: [], terminal_reason: "completed" });
 let prompted = false;
 const turn = async () => {
-  out(assistant("msg_tool", [{ type: "tool_use", id: "toolu_1", name: "Bash",
-    input: { command: ${JSON.stringify(SLOW_COMMAND)} } }]));
-  while (!fs.existsSync(path.join(dir, "release"))) await new Promise((r) => setTimeout(r, 20));
-  out({ type: "user", uuid: "u-result", session_id: "s", parent_tool_use_id: null,
-    message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1",
-      is_error: false, content: "done-4857" }] } });
-  out(assistant("msg_reply", [{ type: "text", text: ${JSON.stringify(SLOW_COMMAND_REPLY)} }]));
-  out({ type: "result", subtype: "success", uuid: "r-1", session_id: "s", is_error: false,
-    num_turns: 1, result: ${JSON.stringify(SLOW_COMMAND_REPLY)}, stop_reason: "end_turn",
-    duration_ms: 1, duration_api_ms: 1, total_cost_usd: 0, usage, modelUsage: {},
-    permission_denials: [], terminal_reason: "completed" });
+${turn}
 };
 const lines = readline.createInterface({ input: process.stdin });
 lines.on("line", (line) => {
@@ -77,26 +84,79 @@ lines.on("line", (line) => {
 lines.on("close", () => process.exit(0));
 `;
 
-/** Writes the fake CLI into a fresh directory, removed when the scope closes. */
-export const fakeClaudeCli = Effect.acquireRelease(
-  Effect.sync(() => {
-    const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-claude-reattach-"));
-    NodeFS.writeFileSync(NodePath.join(dir, "cli.mjs"), FAKE_CLI);
-    const cli = NodePath.join(dir, "claude");
-    NodeFS.writeFileSync(
-      cli,
-      `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "$(dirname "$0")/cli.mjs"\n`,
-      { mode: 0o755 },
-    );
-    return {
-      cli,
-      dir,
-      /** Lets the fake CLI's Bash call finish. */
-      release: () => NodeFS.writeFileSync(NodePath.join(dir, "release"), ""),
-    };
-  }),
-  ({ dir }) => Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true })),
-);
+// Starts a Bash call (`toolu_1`), then on release reports its result, a
+// reply and the turn's result.
+const BASH_TURN = String.raw`
+  out(assistant("msg_tool", [{ type: "tool_use", id: "toolu_1", name: "Bash",
+    input: { command: ${JSON.stringify(SLOW_COMMAND)} } }]));
+  await released();
+  out(toolResult("u-result", "toolu_1", "done-4857"));
+  out(assistant("msg_reply", [{ type: "text", text: ${JSON.stringify(SLOW_COMMAND_REPLY)} }]));
+  result(${JSON.stringify(SLOW_COMMAND_REPLY)});
+`;
+
+// Launches a foreground subagent (Agent call `toolu_agent`) that starts a
+// Bash call (`toolu_sub_bash`); on release the Bash call, the subagent and
+// the turn finish, in the order the real CLI reports them.
+const SUBAGENT_TURN = String.raw`
+  const task = ${JSON.stringify(SUBAGENT_TASK_ID)};
+  const prompt = ${JSON.stringify(SUBAGENT_PROMPT)};
+  out(assistant("msg_agent", [{ type: "tool_use", id: "toolu_agent", name: "Agent",
+    input: { description: "Run the slow command", prompt, subagent_type: "general-purpose" } }]));
+  out({ type: "system", subtype: "task_started", task_id: task, tool_use_id: "toolu_agent",
+    description: "Run the slow command", task_type: "local_agent", prompt,
+    uuid: "ts-1", session_id: "s" });
+  out({ type: "user", uuid: "u-sub-prompt", session_id: "s", parent_tool_use_id: "toolu_agent",
+    message: { role: "user", content: [{ type: "text", text: prompt }] } });
+  out(assistant("msg_sub_tool", [{ type: "tool_use", id: "toolu_sub_bash", name: "Bash",
+    input: { command: ${JSON.stringify(SLOW_COMMAND)} } }], "toolu_agent"));
+  out({ type: "system", subtype: "task_progress", task_id: task, tool_use_id: "toolu_agent",
+    description: "Running the slow command", usage: { total_tokens: 10, tool_uses: 1, duration_ms: 5 },
+    last_tool_name: "Bash", uuid: "tp-1", session_id: "s" });
+  await released();
+  out(toolResult("u-sub-result", "toolu_sub_bash", "done-4857", "toolu_agent"));
+  out({ type: "system", subtype: "task_progress", task_id: task, tool_use_id: "toolu_agent",
+    description: "Summarizing", usage: { total_tokens: 20, tool_uses: 1, duration_ms: 9 },
+    last_tool_name: "Bash", uuid: "tp-2", session_id: "s" });
+  out(assistant("msg_sub_reply", [{ type: "text", text: ${JSON.stringify(SUBAGENT_RESULT)} }], "toolu_agent"));
+  out({ type: "system", subtype: "task_notification", task_id: task, tool_use_id: "toolu_agent",
+    status: "completed", output_file: "", summary: "Run the slow command",
+    usage: { total_tokens: 20, tool_uses: 1, duration_ms: 10 }, uuid: "tn-1", session_id: "s" });
+  out(toolResult("u-agent-result", "toolu_agent", [{ type: "text", text: ${JSON.stringify(SUBAGENT_RESULT)} }]));
+  out(assistant("msg_reply", [{ type: "text", text: ${JSON.stringify(SLOW_COMMAND_REPLY)} }]));
+  result(${JSON.stringify(SLOW_COMMAND_REPLY)});
+`;
+
+/** Writes a fake CLI into a fresh directory, removed when the scope closes. */
+const fakeClaudeCliWith = (turn: string) =>
+  Effect.acquireRelease(
+    Effect.sync(() => {
+      const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-claude-reattach-"));
+      NodeFS.writeFileSync(NodePath.join(dir, "cli.mjs"), fakeCliSource(turn));
+      const cli = NodePath.join(dir, "claude");
+      NodeFS.writeFileSync(
+        cli,
+        `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "$(dirname "$0")/cli.mjs"\n`,
+        { mode: 0o755 },
+      );
+      return {
+        cli,
+        dir,
+        /** Lets the fake CLI's Bash call finish. */
+        release: () => NodeFS.writeFileSync(NodePath.join(dir, "release"), ""),
+      };
+    }),
+    ({ dir }) => Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true })),
+  );
+
+/** A fake CLI whose turn is in a Bash call (`toolu_1`) until released. */
+export const fakeClaudeCli = fakeClaudeCliWith(BASH_TURN);
+
+/**
+ * A fake CLI whose turn is in a foreground subagent (`SUBAGENT_TASK_ID`, Agent
+ * call `toolu_agent`) running a Bash call (`toolu_sub_bash`) until released.
+ */
+export const fakeSubagentClaudeCli = fakeClaudeCliWith(SUBAGENT_TURN);
 
 /**
  * A keeper serving a fresh socket, named in T3_KEEPER_SOCKET while the scope
@@ -155,6 +215,24 @@ export const firstKeeperAck = Effect.gen(function* () {
   yield* Effect.addFinalizer(() => Effect.sync(() => ack.mockRestore()));
   return Deferred.await(acked);
 });
+
+/**
+ * Waits until the keeper holds no unacknowledged line of the thread's CLI,
+ * so a restart replays nothing the previous server already handled.
+ */
+export const keeperAckedThrough = (threadId: string) =>
+  Effect.promise(async () => {
+    const socketPath = process.env.T3_KEEPER_SOCKET!;
+    for (let tries = 0; tries < 200; tries += 1) {
+      const reply = (await keeperRequest(socketPath, { op: "list" }, { timeoutMs: 5_000 })) as {
+        readonly handles?: ReadonlyArray<{ name: string; last: number; acked: number }>;
+      };
+      const entry = reply.handles?.find((candidate) => candidate.name === threadId);
+      if (entry !== undefined && entry.last > 0 && entry.acked >= entry.last) return entry.acked;
+      await sleep(50);
+    }
+    throw new Error(`t3-keeper never acknowledged every line of ${threadId}`);
+  });
 
 export const realQueryRunner = ClaudeAdapterV2.layerQueryRunner.pipe(
   Layer.provide(Layer.succeed(ProviderEventLoggers, { native: undefined, canonical: undefined })),
