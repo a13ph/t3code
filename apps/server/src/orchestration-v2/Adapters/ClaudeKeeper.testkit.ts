@@ -98,37 +98,45 @@ export const fakeClaudeCli = Effect.acquireRelease(
   ({ dir }) => Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true })),
 );
 
-/** A keeper serving a fresh socket, named in T3_KEEPER_SOCKET while the scope is open. */
-export const keeperSocket = Effect.gen(function* () {
-  const { keeper } = yield* Effect.acquireRelease(
-    Effect.promise(async () => {
-      const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-keeper-"));
-      const keeper = await startKeeper({
-        socketPath: NodePath.join(dir, "keeper.sock"),
-        log: () => {},
-      });
-      return { keeper, dir };
-    }),
-    ({ keeper, dir }) =>
+/**
+ * A keeper serving a fresh socket, named in T3_KEEPER_SOCKET while the scope
+ * is open. `orphans: "drain"` suits a keeper that outlives many servers.
+ */
+export const keeperSocketWith = (options: { readonly orphans?: "hold" | "drain" } = {}) =>
+  Effect.gen(function* () {
+    const { keeper } = yield* Effect.acquireRelease(
       Effect.promise(async () => {
-        await keeper.close();
-        NodeFS.rmSync(dir, { recursive: true, force: true });
+        const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-keeper-"));
+        const keeper = await startKeeper({
+          socketPath: NodePath.join(dir, "keeper.sock"),
+          log: () => {},
+          ...options,
+        });
+        return { keeper, dir };
       }),
-  );
-  yield* Effect.acquireRelease(
-    Effect.sync(() => {
-      const previous = process.env.T3_KEEPER_SOCKET;
-      process.env.T3_KEEPER_SOCKET = keeper.socketPath;
-      return previous;
-    }),
-    (previous) =>
+      ({ keeper, dir }) =>
+        Effect.promise(async () => {
+          await keeper.close();
+          NodeFS.rmSync(dir, { recursive: true, force: true });
+        }),
+    );
+    yield* Effect.acquireRelease(
       Effect.sync(() => {
-        if (previous === undefined) delete process.env.T3_KEEPER_SOCKET;
-        else process.env.T3_KEEPER_SOCKET = previous;
+        const previous = process.env.T3_KEEPER_SOCKET;
+        process.env.T3_KEEPER_SOCKET = keeper.socketPath;
+        return previous;
       }),
-  );
-  return keeper as { readonly socketPath: string };
-});
+      (previous) =>
+        Effect.sync(() => {
+          if (previous === undefined) delete process.env.T3_KEEPER_SOCKET;
+          else process.env.T3_KEEPER_SOCKET = previous;
+        }),
+    );
+    return keeper as { readonly socketPath: string };
+  });
+
+/** A keeper serving a fresh socket, holding orphans. */
+export const keeperSocket = keeperSocketWith();
 
 /** Resolves with the first line number the keeper confirmed as acknowledged. */
 export const firstKeeperAck = Effect.gen(function* () {
@@ -155,8 +163,17 @@ export const realQueryRunner = ClaudeAdapterV2.layerQueryRunner.pipe(
 
 const settings = Schema.decodeSync(ClaudeSettings)({});
 
-/** A Claude adapter on the real query runner, spawning `binaryPath`. */
-export const makeKeeperTestAdapter = (binaryPath: string, attachmentsDir: string) =>
+/**
+ * A Claude adapter on the real query runner, spawning `binaryPath`. It offers
+ * its wake turns to `continuationRequests`, when given.
+ */
+export const makeKeeperTestAdapter = (
+  binaryPath: string,
+  attachmentsDir: string,
+  continuationRequests?: Parameters<
+    typeof ClaudeAdapterV2.makeClaudeAdapterV2
+  >[0]["continuationRequests"],
+) =>
   Effect.gen(function* () {
     return yield* ClaudeAdapterV2.makeClaudeAdapterV2({
       instanceId: keeperTestModelSelection.instanceId,
@@ -168,5 +185,6 @@ export const makeKeeperTestAdapter = (binaryPath: string, attachmentsDir: string
       crypto: yield* Crypto.Crypto,
       idAllocator: yield* IdAllocator.IdAllocatorV2,
       queryRunner: yield* ClaudeAdapterV2.ClaudeAgentSdkQueryRunner,
+      ...(continuationRequests === undefined ? {} : { continuationRequests }),
     });
   });

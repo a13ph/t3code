@@ -11,6 +11,7 @@ import {
   ThreadId,
   type OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
@@ -20,13 +21,14 @@ import * as Stream from "effect/Stream";
 
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
+import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import type { McpProviderSessionConfig } from "@t3tools/provider-core/server/mcpSession";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import {
   firstKeeperAck,
-  keeperSocket,
+  keeperSocketWith,
   keeperTestModelSelection,
   makeKeeperTestAdapter,
   realQueryRunner,
@@ -47,7 +49,7 @@ import * as ProviderRuntimeRecoveryService from "./ProviderRuntimeRecoveryServic
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 
-// Opt-in: the real `claude` on the user's login, one small haiku turn.
+// Opt-in: the real `claude` on the user's login, small haiku turns.
 // T3K_REAL_CLAUDE=1 runs it; T3K_CLAUDE names another binary.
 const enabled = process.env.T3K_REAL_CLAUDE === "1";
 const realClaudeBinary = () => {
@@ -57,11 +59,43 @@ const realClaudeBinary = () => {
 
 const threadId = ThreadId.make("thread:keeper-reattach-real");
 const modelSelection = { ...keeperTestModelSelection, model: process.env.T3K_MODEL ?? "haiku" };
-const marker = `done-${Math.random().toString(36).slice(2, 8)}`;
-const command = `sleep 20; echo ${marker}`;
-const prompt =
-  `Run exactly this Bash command once, in the foreground, and nothing else: ${command}\n` +
-  "Then reply with only the text the command printed.";
+const tag = () => Math.random().toString(36).slice(2, 8);
+
+// The turn the restart lands in, and the runs the thread ends with.
+interface Scenario {
+  readonly marker: string;
+  readonly prompt: string;
+  readonly runs: number;
+}
+
+// The prompt's own turn is in its Bash call.
+const promptTurn = (): Scenario => {
+  const marker = `done-${tag()}`;
+  return {
+    marker,
+    prompt:
+      `Run exactly this Bash command once, in the foreground, and nothing else: sleep 20; echo ${marker}\n` +
+      "Then reply with only the text the command printed.",
+    runs: 1,
+  };
+};
+
+// A turn the CLI starts itself, with no user line on its stdin, is in its
+// Bash call: the wake of a background command. A message another session
+// sends the CLI starts its turn the same way.
+const wakeTurn = (): Scenario => {
+  const marker = `done-${tag()}`;
+  return {
+    marker,
+    prompt:
+      `Start this Bash command in the background (run_in_background true): sleep 15; echo bg-${tag()}\n` +
+      "Then end your turn at once, replying only: started.\n" +
+      "When you are told that background command finished, run exactly this Bash command once, " +
+      `in the foreground, and nothing else: sleep 20; echo ${marker}\n` +
+      "Then reply with only the text that command printed.",
+    runs: 2,
+  };
+};
 
 const layerShutdownRecovery = (databaseLayer: ReturnType<typeof sqliteAt>) => {
   const layerStores = Layer.mergeAll(
@@ -198,201 +232,245 @@ const keeperStderr = (socketPath: string, handle: string) =>
     () => keeperRequest(socketPath, { op: "stderr", handle }) as Promise<{ data: string }>,
   ).pipe(Effect.map((reply) => reply.data));
 
+const restartDuringTurn = ({ marker, prompt, runs }: Scenario) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      // Drain: an orphan it takes for idle is
+      // closed at once.
+      const keeper = yield* keeperSocketWith({ orphans: "drain" });
+      const binary = realClaudeBinary();
+      const acked = yield* firstKeeperAck;
+      const mcp = yield* mcpStub;
+      const cwd = yield* checkpointWorkspace("keeper-reattach-real");
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const stateDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "t3-keeper-reattach-real-",
+      });
+      const attachmentsDir = path.join(stateDir, "attachments");
+      yield* fs.makeDirectory(attachmentsDir);
+      const databaseLayer = sqliteAt(path.join(stateDir, "state.sqlite"));
+      const mcpOn = process.env.T3K_MCP !== "0";
+      if (mcpOn) {
+        mcpCredential = {
+          environmentId: EnvironmentId.make("00000000-0000-4000-8000-000000000001"),
+          threadId,
+          providerSessionId: "provider-session-stub",
+          providerInstanceId: modelSelection.instanceId,
+          endpoint: mcp.url,
+          authorizationHeader: "Bearer stub",
+          browserToolsAvailable: false,
+        };
+      }
+      log(`binary ${binary} model ${modelSelection.model} marker ${marker} mcp ${mcpOn}`);
+      // The adapter is built outside the harness, so the queue its wake
+      // turns go to is made here and handed to both.
+      const continuationRequests = Context.get(
+        yield* Layer.build(ProviderContinuationRequests.layer),
+        ProviderContinuationRequests.ProviderContinuationRequests,
+      );
+      const adapterFor = makeKeeperTestAdapter(binary, attachmentsDir, continuationRequests);
+      const harness = (adapter: Parameters<typeof ProviderAdapterRegistry.layerSingle>[0]) =>
+        ProviderReplayHarness.layerWithRegistry(
+          { name: "keeper-reattach-real", runtimePolicyOverride: { cwd } },
+          ProviderAdapterRegistry.layerSingle(adapter),
+          // The continuation worker runs a wake turn, as the server does.
+          {
+            databaseLayer,
+            recoverOnStartup: true,
+            runContinuationWorker: true,
+            continuationRequests,
+          },
+        );
+      const dumpStderr = Effect.gen(function* () {
+        for (const handle of yield* keeperList(keeper.socketPath)) {
+          const data = yield* keeperStderr(keeper.socketPath, handle.handle);
+          log(`stderr of ${handle.handle} pid ${handle.pid}:\n${data.slice(-4000)}`);
+        }
+      });
+      yield* Effect.addFinalizer((exit) =>
+        exit._tag === "Failure" ? dumpStderr.pipe(Effect.ignore) : Effect.void,
+      );
+
+      // The server before the restart: the turn is in its Bash call.
+      const { runId, pidBefore } = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          yield* orchestrator.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make("create"),
+            threadId,
+            projectId: ProjectId.make("project:keeper-reattach-real"),
+            title: "Keeper reattach real CLI",
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: cwd,
+            createdBy: "user",
+            creationSource: "web",
+          });
+          // What the turn does, for reading a failed run.
+          yield* orchestrator.streamDomainEvents.pipe(
+            Stream.runForEach((event) =>
+              Effect.sync(() => {
+                if (event.type === "run.updated") {
+                  log(`run ${event.payload.id} ${event.payload.status}`);
+                } else if (
+                  event.type === "turn-item.updated" &&
+                  event.payload.type === "command_execution"
+                ) {
+                  log(`command ${event.payload.status} ${event.payload.input.slice(0, 40)}`);
+                }
+              }),
+            ),
+            Effect.forkScoped,
+          );
+          let toolRunId: string | null | undefined;
+          const toolRunning = yield* watch((event) => {
+            const hit =
+              event.type === "turn-item.updated" &&
+              event.payload.type === "command_execution" &&
+              event.payload.status === "running" &&
+              event.payload.input.includes(marker);
+            if (hit) toolRunId = event.payload.runId;
+            return hit;
+          });
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make("first"),
+            threadId,
+            messageId: MessageId.make("first"),
+            text: prompt,
+            attachments: [],
+            dispatchMode: { type: "start_immediately" },
+            createdBy: "user",
+            creationSource: "web",
+          });
+          yield* Fiber.join(toolRunning);
+          log("tool running");
+          yield* acked;
+          const handles = yield* keeperList(keeper.socketPath);
+          assert.equal(handles.length, 1);
+          // SIGTERM: the keeper children are detached before anything closes.
+          assert.equal(detachKeeperChildren(), 1);
+          log(`detached; mcp methods so far ${mcp.methods.join(",")}`);
+          // The CLI connected to T3's MCP server: the path under test carries it.
+          if (mcpOn) assert.include(mcp.methods, "tools/list");
+          const run = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+            (candidate) => candidate.id === toolRunId,
+          );
+          assert.isDefined(run);
+          log(`tool run ${run!.id}`);
+          return { runId: run!.id, pidBefore: handles[0]!.pid };
+        }).pipe(Effect.provide(harness(yield* adapterFor))),
+      );
+      const mcpBefore = mcp.methods.length;
+
+      yield* Effect.gen(function* () {
+        const recovery = yield* ProviderRuntimeRecoveryService.ProviderRuntimeRecoveryService;
+        yield* recovery.prepareForShutdown;
+        yield* recovery.reconcile("shutdown");
+        const projection = yield* (yield* ProjectionStore.ProjectionStoreV2).getThreadProjection(
+          threadId,
+        );
+        assert.equal(projection.runs.find((run) => run.id === runId)?.status, "running");
+        const reattaches = yield* (yield* EffectOutbox.EffectOutboxV2).listByCommandId(
+          ProviderRuntimeRecoveryService.keeperReattachCommandId(runId),
+        );
+        assert.deepEqual(
+          reattaches.map((effect) => [effect.request.type, effect.status]),
+          [["provider-turn.reattach", "pending"]],
+        );
+      }).pipe(Effect.provide(layerShutdownRecovery(databaseLayer)), Effect.scoped);
+      log("shutdown done");
+
+      // The server after it: the worker attaches while the Bash call runs.
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const settled = yield* watch(
+            (event) =>
+              event.type === "run.updated" &&
+              event.payload.id === runId &&
+              event.payload.status !== "running",
+          );
+          yield* worker.drain();
+          const afterAttach = yield* orchestrator.getThreadProjection(threadId);
+          const toolAtAttach = afterAttach.turnItems.find(
+            (item) => item.type === "command_execution" && item.runId === runId,
+          );
+          log(
+            `reattached; runs ${JSON.stringify(afterAttach.runs.map((run) => run.status))} tool ${toolAtAttach?.status}`,
+          );
+          yield* Fiber.join(settled);
+          yield* worker.drain();
+          log(`mcp methods after restart ${mcp.methods.slice(mcpBefore).join(",") || "none"}`);
+          const projection = yield* orchestrator.getThreadProjection(threadId);
+          log(`runs ${JSON.stringify(projection.runs.map((run) => [run.id, run.status]))}`);
+          const tool = projection.turnItems.find(
+            (item) =>
+              item.type === "command_execution" &&
+              item.runId === runId &&
+              item.input.includes(marker),
+          );
+          const toolFull =
+            tool === undefined
+              ? null
+              : yield* orchestrator.getTurnItem({ threadId, itemId: tool.id });
+          const output = toolFull?.type === "command_execution" ? toolFull.output : undefined;
+          log(`tool ${tool?.status} output ${JSON.stringify(output)}`);
+          const replies = projection.turnItems
+            .filter((item) => item.type === "assistant_message" && item.runId === runId)
+            .map((item) => (item.type === "assistant_message" ? item.text : ""));
+          log(`replies ${JSON.stringify(replies)}`);
+          const handles = yield* keeperList(keeper.socketPath);
+          log(`keeper handles ${JSON.stringify(handles.map((h) => [h.pid, h.alive, h.attached]))}`);
+
+          assert.equal(projection.runs.length, runs);
+          assert.deepEqual(
+            projection.runs.filter((run) => run.status !== "completed").map((run) => run.id),
+            [],
+          );
+          assert.equal(tool?.status, "completed");
+          assert.include(output ?? "", marker);
+          assert.include(replies.join("\n"), marker);
+          assert.isFalse(
+            projection.turnItems.some(
+              (item) =>
+                item.type === "user_message" && item.text.includes("Continue where you left off"),
+            ),
+          );
+          assert.deepEqual(
+            handles.map((h) => h.pid),
+            [pidBefore],
+          );
+          assert.isTrue(projection.checkpoints.some((checkpoint) => checkpoint.runId === runId));
+        }).pipe(Effect.provide(harness(yield* adapterFor))),
+      );
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          realQueryRunner,
+          IdAllocator.layer,
+          layerFixedMcpSession,
+          NodeServices.layer,
+        ),
+      ),
+    ),
+  );
+
 describe.skipIf(!enabled)("T3 restart during a real Claude CLI turn", () => {
   it.effect(
     "lands the real CLI's later output in the same run after the restart",
-    () =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const keeper = yield* keeperSocket;
-          const binary = realClaudeBinary();
-          const acked = yield* firstKeeperAck;
-          const mcp = yield* mcpStub;
-          const cwd = yield* checkpointWorkspace("keeper-reattach-real");
-          const fs = yield* FileSystem.FileSystem;
-          const path = yield* Path.Path;
-          const stateDir = yield* fs.makeTempDirectoryScoped({
-            prefix: "t3-keeper-reattach-real-",
-          });
-          const attachmentsDir = path.join(stateDir, "attachments");
-          yield* fs.makeDirectory(attachmentsDir);
-          const databaseLayer = sqliteAt(path.join(stateDir, "state.sqlite"));
-          const mcpOn = process.env.T3K_MCP !== "0";
-          if (mcpOn) {
-            mcpCredential = {
-              environmentId: EnvironmentId.make("00000000-0000-4000-8000-000000000001"),
-              threadId,
-              providerSessionId: "provider-session-stub",
-              providerInstanceId: modelSelection.instanceId,
-              endpoint: mcp.url,
-              authorizationHeader: "Bearer stub",
-              browserToolsAvailable: false,
-            };
-          }
-          log(`binary ${binary} model ${modelSelection.model} marker ${marker} mcp ${mcpOn}`);
-          const harness = (adapter: Parameters<typeof ProviderAdapterRegistry.layerSingle>[0]) =>
-            ProviderReplayHarness.layerWithRegistry(
-              { name: "keeper-reattach-real", runtimePolicyOverride: { cwd } },
-              ProviderAdapterRegistry.layerSingle(adapter),
-              { databaseLayer, recoverOnStartup: true },
-            );
-          const dumpStderr = Effect.gen(function* () {
-            for (const handle of yield* keeperList(keeper.socketPath)) {
-              const data = yield* keeperStderr(keeper.socketPath, handle.handle);
-              log(`stderr of ${handle.handle} pid ${handle.pid}:\n${data.slice(-4000)}`);
-            }
-          });
-          yield* Effect.addFinalizer((exit) =>
-            exit._tag === "Failure" ? dumpStderr.pipe(Effect.ignore) : Effect.void,
-          );
+    () => restartDuringTurn(promptTurn()),
+    240_000,
+  );
 
-          // The server before the restart: the turn is in its Bash call.
-          const { runId, pidBefore } = yield* Effect.scoped(
-            Effect.gen(function* () {
-              const orchestrator = yield* Orchestrator.OrchestratorV2;
-              yield* orchestrator.dispatch({
-                type: "thread.create",
-                commandId: CommandId.make("create"),
-                threadId,
-                projectId: ProjectId.make("project:keeper-reattach-real"),
-                title: "Keeper reattach real CLI",
-                modelSelection,
-                runtimeMode: "full-access",
-                interactionMode: "default",
-                branch: null,
-                worktreePath: cwd,
-                createdBy: "user",
-                creationSource: "web",
-              });
-              const toolRunning = yield* watch(
-                (event) =>
-                  event.type === "turn-item.updated" &&
-                  event.payload.type === "command_execution" &&
-                  event.payload.status === "running" &&
-                  event.payload.input.includes(marker),
-              );
-              yield* orchestrator.dispatch({
-                type: "message.dispatch",
-                commandId: CommandId.make("first"),
-                threadId,
-                messageId: MessageId.make("first"),
-                text: prompt,
-                attachments: [],
-                dispatchMode: { type: "start_immediately" },
-                createdBy: "user",
-                creationSource: "web",
-              });
-              yield* Fiber.join(toolRunning);
-              log("tool running");
-              yield* acked;
-              const handles = yield* keeperList(keeper.socketPath);
-              assert.equal(handles.length, 1);
-              // SIGTERM: the keeper children are detached before anything closes.
-              assert.equal(detachKeeperChildren(), 1);
-              log(`detached; mcp methods so far ${mcp.methods.join(",")}`);
-              // The CLI connected to T3's MCP server: the path under test carries it.
-              if (mcpOn) assert.include(mcp.methods, "tools/list");
-              return {
-                runId: (yield* orchestrator.getThreadProjection(threadId)).runs[0]!.id,
-                pidBefore: handles[0]!.pid,
-              };
-            }).pipe(Effect.provide(harness(yield* makeKeeperTestAdapter(binary, attachmentsDir)))),
-          );
-          const mcpBefore = mcp.methods.length;
-
-          yield* Effect.gen(function* () {
-            const recovery = yield* ProviderRuntimeRecoveryService.ProviderRuntimeRecoveryService;
-            yield* recovery.prepareForShutdown;
-            yield* recovery.reconcile("shutdown");
-            const projection =
-              yield* (yield* ProjectionStore.ProjectionStoreV2).getThreadProjection(threadId);
-            assert.equal(projection.runs[0]?.status, "running");
-            const reattaches = yield* (yield* EffectOutbox.EffectOutboxV2).listByCommandId(
-              ProviderRuntimeRecoveryService.keeperReattachCommandId(runId),
-            );
-            assert.deepEqual(
-              reattaches.map((effect) => [effect.request.type, effect.status]),
-              [["provider-turn.reattach", "pending"]],
-            );
-          }).pipe(Effect.provide(layerShutdownRecovery(databaseLayer)), Effect.scoped);
-          log("shutdown done");
-
-          // The server after it: the worker attaches while the Bash call runs.
-          yield* Effect.scoped(
-            Effect.gen(function* () {
-              const orchestrator = yield* Orchestrator.OrchestratorV2;
-              const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-              const settled = yield* watch(
-                (event) =>
-                  event.type === "run.updated" &&
-                  event.payload.id === runId &&
-                  event.payload.status !== "running",
-              );
-              yield* worker.drain();
-              const afterAttach = yield* orchestrator.getThreadProjection(threadId);
-              const toolAtAttach = afterAttach.turnItems.find(
-                (item) => item.type === "command_execution" && item.runId === runId,
-              );
-              log(
-                `reattached; runs ${JSON.stringify(afterAttach.runs.map((run) => run.status))} tool ${toolAtAttach?.status}`,
-              );
-              yield* Fiber.join(settled);
-              yield* worker.drain();
-              log(`mcp methods after restart ${mcp.methods.slice(mcpBefore).join(",") || "none"}`);
-              const projection = yield* orchestrator.getThreadProjection(threadId);
-              log(`runs ${JSON.stringify(projection.runs.map((run) => [run.id, run.status]))}`);
-              const tool = projection.turnItems.find(
-                (item) => item.type === "command_execution" && item.runId === runId,
-              );
-              const toolFull =
-                tool === undefined
-                  ? null
-                  : yield* orchestrator.getTurnItem({ threadId, itemId: tool.id });
-              const output = toolFull?.type === "command_execution" ? toolFull.output : undefined;
-              log(`tool ${tool?.status} output ${JSON.stringify(output)}`);
-              const replies = projection.turnItems
-                .filter((item) => item.type === "assistant_message" && item.runId === runId)
-                .map((item) => (item.type === "assistant_message" ? item.text : ""));
-              log(`replies ${JSON.stringify(replies)}`);
-              const handles = yield* keeperList(keeper.socketPath);
-              log(
-                `keeper handles ${JSON.stringify(handles.map((h) => [h.pid, h.alive, h.attached]))}`,
-              );
-
-              assert.deepEqual(
-                projection.runs.map((run) => [run.id, run.status]),
-                [[runId, "completed"]],
-              );
-              assert.equal(tool?.status, "completed");
-              assert.include(output ?? "", marker);
-              assert.include(replies.join("\n"), marker);
-              assert.isFalse(
-                projection.turnItems.some(
-                  (item) =>
-                    item.type === "user_message" &&
-                    item.text.includes("Continue where you left off"),
-                ),
-              );
-              assert.deepEqual(
-                handles.map((h) => h.pid),
-                [pidBefore],
-              );
-              assert.isTrue(
-                projection.checkpoints.some((checkpoint) => checkpoint.runId === runId),
-              );
-            }).pipe(Effect.provide(harness(yield* makeKeeperTestAdapter(binary, attachmentsDir)))),
-          );
-        }).pipe(
-          Effect.provide(
-            Layer.mergeAll(
-              realQueryRunner,
-              IdAllocator.layer,
-              layerFixedMcpSession,
-              NodeServices.layer,
-            ),
-          ),
-        ),
-      ),
+  it.effect(
+    "keeps a turn the CLI started itself running across the restart",
+    () => restartDuringTurn(wakeTurn()),
     240_000,
   );
 });
