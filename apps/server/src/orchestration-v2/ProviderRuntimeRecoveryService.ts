@@ -202,14 +202,22 @@ export async function closeUnrecordedKeeperThreads(
 /**
  * The run a t3-keeper reattach can continue: the thread's only unfinished
  * run, running a root turn with nothing waiting on an answer. A subagent the
- * turn runs goes on in the same CLI, and the adapter's turn state carries
- * what T3 knew of it. Approvals are not carried across a restart.
+ * run launched goes on in the same CLI, and the adapter's turn state carries
+ * what T3 knew of it. One from another run, such as a background subagent an
+ * earlier run left running, or a runless nested one, is not routed to the
+ * reattached run, so it is not carried; nor are approvals.
  */
 export function keeperReattachableRun(projection: ProjectionStore.ProjectionRuntimeRecoveryState) {
   const unfinished = nonterminalRuns(projection);
   const run = unfinished[0];
   if (unfinished.length !== 1 || run === undefined || run.status !== "running") return undefined;
   if (projection.runtimeRequests.some((request) => request.status === "pending")) return undefined;
+  if (
+    (projection.subagents ?? []).some(
+      (subagent) => subagent.runId !== run.id && isOrchestrationV2WorkActive(subagent.status),
+    )
+  )
+    return undefined;
   const attempt = projection.attempts.find((candidate) => candidate.id === run.activeAttemptId);
   const providerTurn = projection.providerTurns.find(
     (candidate) => candidate.runAttemptId === attempt?.id && candidate.status === "running",
