@@ -6971,7 +6971,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
 
           const stopHookFeedback = claudeStopHookFeedbackText(message);
           if (stopHookFeedback !== null && message.type === "user") {
-            const now = yield* DateTime.now;
+            // The frame's own uuid and time keep the row the same item when a
+            // restarted server replays the frame into the run.
+            const sentMs = message.timestamp === undefined ? NaN : Date.parse(message.timestamp);
+            const now = Number.isFinite(sentMs) ? DateTime.makeUnsafe(sentMs) : yield* DateTime.now;
             const nativeItemId = `stop-hook:${message.uuid ?? `${context.providerTurnId}:${DateTime.toEpochMillis(now)}`}`;
             yield* emitProviderEvent({
               type: "turn_item.updated",
@@ -6997,7 +7000,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 status: "completed",
                 title: CLAUDE_STOP_HOOK_TOOL_NAME,
                 toolName: CLAUDE_STOP_HOOK_TOOL_NAME,
-                input: { feedback: stopHookFeedback.slice(CLAUDE_STOP_HOOK_FEEDBACK_PREFIX.length) },
+                input: {
+                  feedback: stopHookFeedback.slice(CLAUDE_STOP_HOOK_FEEDBACK_PREFIX.length),
+                },
                 startedAt: now,
                 completedAt: now,
                 updatedAt: now,
