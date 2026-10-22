@@ -1103,6 +1103,43 @@ function questionContextEntryIds(entries: ReadonlyArray<TimelineEntry>): Readonl
   return kept;
 }
 
+/** The row the server adds where a Stop hook sent Claude back to work. */
+function workEntryIsStopHook(entry: WorkLogEntry): boolean {
+  const item = entry.projectedItem?.item;
+  return item?.type === "dynamic_tool" && item.toolName === "Stop hook";
+}
+
+/**
+ * Reply text other than the turn's terminal message. Text right before the
+ * terminal message, with only reasoning between, is the same reply split into
+ * blocks. Text right before a Stop hook row is a reply the agent had finished
+ * when the hook sent it back to work. Both answer the prompt, so they stay
+ * readable after the turn folds; any other work between breaks the run.
+ */
+function replyTextEntryIds(
+  entries: ReadonlyArray<TimelineEntry>,
+  terminalEntryId: string | undefined,
+): ReadonlySet<string> {
+  const kept = new Set<string>();
+  let leadIn: string[] = [];
+  for (const entry of entries) {
+    if (entry.kind === "message" && entry.message.role === "assistant") {
+      if (entry.id !== terminalEntryId) {
+        leadIn.push(entry.id);
+        continue;
+      }
+    } else if (entry.kind === "work" && entry.entry.itemType === "reasoning") {
+      continue;
+    } else if (!(entry.kind === "work" && workEntryIsStopHook(entry.entry))) {
+      leadIn = [];
+      continue;
+    }
+    for (const id of leadIn) kept.add(id);
+    leadIn = [];
+  }
+  return kept;
+}
+
 /**
  * Settled turns fold activity before their terminal assistant message behind
  * a "Worked for ..." row. Ordinary trailing work joins the fold, while failures
@@ -1226,6 +1263,7 @@ function deriveTurnFolds(input: {
     }
     const hiddenEntryIds = new Set<string>();
     const questionContextIds = questionContextEntryIds(group.entries);
+    const replyTextIds = replyTextEntryIds(group.entries, group.terminalEntry?.id);
     const terminalEntryIndex = group.terminalEntry
       ? group.entries.findIndex((entry) => entry.id === group.terminalEntry?.id)
       : group.entries.length;
@@ -1248,7 +1286,8 @@ function deriveTurnFolds(input: {
         timelineEntryIsPersistentResourceCard(entry) ||
         input.liveSubagentEntryIds.has(entry.id) ||
         input.completeSupersededReplyEntryIds.has(entry.id) ||
-        questionContextIds.has(entry.id)
+        questionContextIds.has(entry.id) ||
+        replyTextIds.has(entry.id)
       ) {
         continue;
       }
