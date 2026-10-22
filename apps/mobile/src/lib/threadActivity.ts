@@ -1056,6 +1056,34 @@ export function failedFeedRunIds(
  * V1) folds its response like a run. `runlessWorkActive` keeps the latest
  * runless response open; V2 work must not reopen imported turns.
  */
+/**
+ * Text right before the server's "Stop hook" row, with only reasoning between:
+ * a reply the agent had finished when a Stop hook sent it back to work. It
+ * answers the prompt, so it stays readable after the run folds, whatever the
+ * hook made the agent write last.
+ */
+function stopHookReplyEntryIds(entries: ReadonlyArray<ThreadFeedEntry>): ReadonlySet<string> {
+  const kept = new Set<string>();
+  let leadIn: string[] = [];
+  for (const entry of entries) {
+    if (entry.type === "message" && entry.message.role === "assistant") {
+      leadIn.push(entry.id);
+      continue;
+    }
+    if (entry.type === "activity-group") {
+      const firstWork = entry.activities.find(
+        (activity) => activity.projectedItem.item.type !== "reasoning",
+      )?.projectedItem.item;
+      if (firstWork === undefined) continue;
+      if (firstWork.type === "dynamic_tool" && firstWork.toolName === "Stop hook") {
+        for (const id of leadIn) kept.add(id);
+      }
+    }
+    leadIn = [];
+  }
+  return kept;
+}
+
 function deriveThreadFeedRunFolds(
   feed: ReadonlyArray<ThreadFeedEntry>,
   latestRun: ThreadFeedLatestRun | null,
@@ -1155,12 +1183,14 @@ function deriveThreadFeedRunFolds(
     }
     const firstAssistantId = firstAssistantMessageIdByRun.get(runId);
     const terminalAssistantId = terminalAssistantMessageIdByRun.get(runId);
+    const stopHookReplyIds = stopHookReplyEntryIds(group.entries);
     const hiddenEntryIds = new Set(
       group.entries
         .filter(
           (entry) =>
             entry.id !== firstAssistantId &&
             entry.id !== terminalAssistantId &&
+            !stopHookReplyIds.has(entry.id) &&
             entry.type !== "html-render" &&
             entry.type !== "mcp-app" &&
             !(

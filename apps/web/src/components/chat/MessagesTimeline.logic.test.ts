@@ -1573,7 +1573,7 @@ describe("deriveMessagesTimelineRows", () => {
     });
   });
 
-  describe("reply text that is not the last message", () => {
+  describe("text a Stop hook sent back to work", () => {
     const message = (id: string, text: string, at: string) => ({
       id: `${id}-entry`,
       kind: "message" as const,
@@ -1676,29 +1676,14 @@ describe("deriveMessagesTimelineRows", () => {
       ]);
     });
 
-    it("keeps a reply split into blocks by reasoning", () => {
+    it("still folds text without a Stop hook after it", () => {
       const ids = visibleEntryIds([
         user,
         message("assistant-first", "Reading the config.", "2026-01-01T00:00:01Z"),
         work("work-1", "2026-01-01T00:00:02Z"),
-        message("assistant-head", "1. Before", "2026-01-01T00:00:03Z"),
+        message("assistant-middle", "Checking one more detail.", "2026-01-01T00:00:03Z"),
         thinking("thinking-1", "2026-01-01T00:00:04Z"),
-        message("assistant-tail", "2. After", "2026-01-01T00:00:05Z"),
-      ]);
-      expect(ids).toEqual([
-        "user-entry",
-        "turn-fold:turn-1",
-        "assistant-head-entry",
-        "assistant-tail-entry",
-      ]);
-    });
-
-    it("still folds text that a tool call follows", () => {
-      const ids = visibleEntryIds([
-        user,
-        message("assistant-first", "Reading the config.", "2026-01-01T00:00:01Z"),
-        work("work-1", "2026-01-01T00:00:02Z"),
-        message("assistant-final", "Fixed.", "2026-01-01T00:00:03Z"),
+        message("assistant-final", "Fixed.", "2026-01-01T00:00:05Z"),
       ]);
       expect(ids).toEqual(["user-entry", "turn-fold:turn-1", "assistant-final-entry"]);
     });
