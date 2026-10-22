@@ -1122,19 +1122,20 @@ describe("buildThreadFeed", () => {
       expect(
         shownTexts([
           userMessage(),
-          command(),
-          text("reply", "2026-06-20T00:00:03.000Z", 2, "1. Before\n2. After"),
-          thinking("thinking", "2026-06-20T00:00:04.000Z", 3),
-          stopHook("hook", "2026-06-20T00:00:05.000Z", 4),
-          text("lookup", "2026-06-20T00:00:06.000Z", 5, "Looking up the link."),
+          text("first", "2026-06-20T00:00:01.500Z", 1, "Reading the config."),
+          { ...command(), ordinal: 2 },
+          text("reply", "2026-06-20T00:00:03.000Z", 3, "1. Before\n2. After"),
+          thinking("thinking", "2026-06-20T00:00:04.000Z", 4),
+          stopHook("hook", "2026-06-20T00:00:05.000Z", 5),
+          text("lookup", "2026-06-20T00:00:06.000Z", 6, "Looking up the link."),
           {
             ...command("2026-06-20T00:00:07.000Z"),
             id: TurnItemId.make("item-command-2"),
-            ordinal: 6,
+            ordinal: 7,
           },
-          text("fix", "2026-06-20T00:00:08.000Z", 7, "The link is fixed."),
+          text("fix", "2026-06-20T00:00:08.000Z", 8, "The link is fixed."),
         ]),
-      ).toEqual(["Run checks", "1. Before\n2. After", "The link is fixed."]);
+      ).toEqual(["Run checks", "Reading the config.", "1. Before\n2. After", "The link is fixed."]);
     });
 
     it("still folds text without a Stop hook after it", () => {
