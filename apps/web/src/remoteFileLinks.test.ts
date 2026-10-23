@@ -26,13 +26,13 @@ describe("parseRemoteFileHref", () => {
     });
   });
 
-  it("reads the t3-file form with either path style", () => {
-    expect(parseRemoteFileHref("t3-file://v1/env-1/home/user/x.md")).toEqual({
+  it("reads the remote-file form with either path style", () => {
+    expect(parseRemoteFileHref("remote-file://v1/env-1/home/user/x.md")).toEqual({
       server: "env-1",
       byEnvironmentId: true,
       path: "/home/user/x.md",
     });
-    expect(parseRemoteFileHref("t3-file://v1/env-1/C:/user/x.md")?.path).toBe("C:/user/x.md");
+    expect(parseRemoteFileHref("remote-file://v1/env-1/C:/user/x.md")?.path).toBe("C:/user/x.md");
   });
 
   it("leaves drive paths, URLs and relative refs alone", () => {
@@ -46,7 +46,8 @@ describe("parseRemoteFileHref", () => {
       "alpha:relative/path",
       "host://authority/x",
       "/home/user/x.md",
-      "t3-file://v1/",
+      "remote-file://v1/",
+      "t3-file://v1/env-1/home/user/x.md",
     ]) {
       expect(parseRemoteFileHref(href), href).toBeNull();
     }
