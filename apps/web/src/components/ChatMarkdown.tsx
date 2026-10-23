@@ -454,13 +454,12 @@ const markdownServerConfigFieldsAtom = Atom.family((environmentId: EnvironmentId
 );
 
 /**
- * A chat link to a file on a named server (`alpha:/home/user/x.md`, `t3-file://v1/<env>/<path>`).
+ * A chat link to a file on a named server (`alpha:/home/user/x.md`, `remote-file://v1/<env>/<path>`).
  * The chip reads the file from that server and opens it read-only in the files panel. A
  * server this client is not connected to, or two of one name, leave `fallback` in place.
  */
 function MarkdownRemoteFileLink(props: {
   readonly link: RemoteFileLink;
-  readonly href: string;
   readonly copyMarkdown: string;
   readonly threadRef: ScopedThreadRef | undefined;
   readonly theme: "light" | "dark";
@@ -482,7 +481,9 @@ function MarkdownRemoteFileLink(props: {
         title={
           resolution._tag === "ambiguous"
             ? `More than one connected server is named ${props.link.server}: ${resolution.labels.join(", ")}`
-            : `No connected server is named ${props.link.server}`
+            : props.link.byEnvironmentId
+              ? `This client is not connected to the server with id ${props.link.server}`
+              : `No connected server is named ${props.link.server}`
         }
       >
         {props.fallback}
@@ -490,12 +491,12 @@ function MarkdownRemoteFileLink(props: {
     );
   }
   const { environmentId } = resolution;
-  const targetPath = formatFilePathPosition(props.link);
-  const displayPath = `${resolution.label}:${targetPath}`;
+  // The tooltip, the copied paths and the link target read `<server>:<path>`, never an id.
+  const targetPath = `${resolution.label}:${formatFilePathPosition(props.link)}`;
   return (
     <MarkdownFileLink
       environmentId={environmentId as EnvironmentId}
-      href={props.href}
+      href={targetPath}
       targetPath={targetPath}
       iconPath={props.link.path}
       workspaceRelativePath={null}
@@ -509,7 +510,7 @@ function MarkdownRemoteFileLink(props: {
         if (!threadRef) return;
         useRightPanelStore.getState().openFile(threadRef, panelPath, line, environmentId);
       }}
-      resolveCopyPaths={() => Promise.resolve({ fullPath: targetPath, relativePath: displayPath })}
+      resolveCopyPaths={() => Promise.resolve({ fullPath: targetPath, relativePath: targetPath })}
       openInEditorMenuLabel=""
     />
   );
@@ -1218,11 +1219,11 @@ const CHAT_MARKDOWN_COMPONENTS = {
       const chip = (
         <MarkdownRemoteFileLink
           link={remoteFile}
-          href={href}
           copyMarkdown={copyMarkdown}
           threadRef={threadRef}
           theme={resolvedTheme}
-          fallback={<code>{href}</code>}
+          // An id the client cannot resolve says nothing to a reader; the path does.
+          fallback={<code>{remoteFile.byEnvironmentId ? remoteFile.path : href}</code>}
         />
       );
       return label ? (
@@ -1490,7 +1491,6 @@ const CHAT_MARKDOWN_COMPONENTS = {
         return (
           <MarkdownRemoteFileLink
             link={remoteFile}
-            href={codeText.trim()}
             copyMarkdown={`\`${codeText}\``}
             threadRef={threadRef}
             theme={resolvedTheme}

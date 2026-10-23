@@ -5,13 +5,13 @@ import { splitFilePathPosition } from "@t3tools/shared/fileLinks";
  *
  * - `<server>:<absolute path>`, as in `alpha:/home/user/docs.md` or `beta:C:/user/docs.md`.
  *   The server is named by the client's label for the connection or by the server's own label.
- * - `t3-file://v1/<environmentId>/<absolute path>`, naming the server by its environment id.
+ * - `remote-file://v1/<environmentId>/<absolute path>`, naming the server by its environment id.
  *
  * Either may end in `:line` or `:line:column`. The path is absolute on the named server, so it is
  * read there as a host file, never as a path inside the message's workspace.
  */
 export interface RemoteFileLink {
-  /** The server as written: a label, or an environment id for the `t3-file` form. */
+  /** The server as written: a label, or an environment id for the `remote-file` form. */
   readonly server: string;
   readonly byEnvironmentId: boolean;
   /** Absolute on that server, without the position suffix. */
@@ -20,7 +20,9 @@ export interface RemoteFileLink {
   readonly column?: number;
 }
 
-export const REMOTE_FILE_LINK_PROTOCOL = "t3-file";
+// Not `t3-file`: upstream may take that name, and a link of theirs must never
+// be read as this fork's.
+export const REMOTE_FILE_LINK_PROTOCOL = "remote-file";
 const REMOTE_FILE_LINK_PREFIX = `${REMOTE_FILE_LINK_PROTOCOL}://v1/`;
 
 // Two characters at least, so a Windows drive (`C:/user`) never reads as a server name.
