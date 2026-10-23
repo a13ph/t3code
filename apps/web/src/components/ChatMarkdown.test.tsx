@@ -1014,7 +1014,7 @@ describe("ChatMarkdown Windows file links", () => {
         <ChatMarkdown
           cwd="C:/Users/shawn/project"
           environmentId={environmentId}
-          text={String.raw`[Source](C:\Users\shawn\project\src\index.ts) and [Test](C:\Users\shawn\project\test\index.ts)`}
+          text={String.raw`[](C:\Users\shawn\project\src\index.ts) and [](C:\Users\shawn\project\test\index.ts)`}
           lineBreaks={!parseRawHtml}
           parseRawHtml={parseRawHtml}
         />,
@@ -1022,6 +1022,25 @@ describe("ChatMarkdown Windows file links", () => {
 
       expect(html).toContain("index.ts · project/src");
       expect(html).toContain("index.ts · project/test");
+    },
+  );
+
+  it.each([true, false])(
+    "shows a labelled file link's text as the chip label, once, with parseRawHtml=%s",
+    (parseRawHtml) => {
+      const html = renderToStaticMarkup(
+        <ChatMarkdown
+          cwd="C:/Users/shawn/project"
+          environmentId={environmentId}
+          text={String.raw`See [the entry point](C:\Users\shawn\project\src\index.ts) here`}
+          lineBreaks={!parseRawHtml}
+          parseRawHtml={parseRawHtml}
+        />,
+      );
+
+      expect(html).toContain('data-slot="context-chip-label">the entry point</span>');
+      expect(html.split("the entry point").length - 1).toBe(2); // the label, and the copy text
+      expect(html).not.toContain(">index.ts<");
     },
   );
 

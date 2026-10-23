@@ -2371,6 +2371,8 @@ function areMarkdownFileLinkPropsEqual(
  */
 function MarkdownRemoteFileLink(props: {
   readonly link: RemoteFileLink;
+  /** The markdown link's own text, shown in place of `<server>: <file name>`. */
+  readonly label?: string;
   readonly copyMarkdown: string;
   readonly threadRef: ScopedThreadRef | undefined;
   readonly theme: "light" | "dark";
@@ -2424,7 +2426,7 @@ function MarkdownRemoteFileLink(props: {
       displayPath={targetPath}
       panelPath={props.link.path}
       line={props.link.line}
-      label={`${resolution.label}: ${fileBasename(props.link.path)}`}
+      label={props.label ?? `${resolution.label}: ${fileBasename(props.link.path)}`}
       copyMarkdown={props.copyMarkdown}
       theme={props.theme}
       threadRef={threadRef}
@@ -2825,7 +2827,12 @@ function useChatMarkdownState({
     [cwd, findWorkspaceBasenameMatch, revealFileInFileManager],
   );
   const fileLinkChip = useCallback(
-    (fileLinkMeta: MarkdownFileLinkMeta, copyMarkdown: string, mediaSource?: string) => {
+    (
+      fileLinkMeta: MarkdownFileLinkMeta,
+      copyMarkdown: string,
+      mediaSource?: string,
+      linkLabel?: string,
+    ) => {
       const mediaPath = mediaSource ?? fileLinkMeta.filePath;
       const canPreviewMedia =
         mediaMimeTypeFromExtension(
@@ -2846,14 +2853,18 @@ function useChatMarkdownState({
           displayPath={fileLinkMeta.displayPath}
           panelPath={panelPath}
           line={fileLinkMeta.line}
-          label={fileLinkLabel(
-            {
-              path: fileLinkMeta.filePath,
-              ...(fileLinkMeta.line !== undefined ? { line: fileLinkMeta.line } : {}),
-              ...(fileLinkMeta.column !== undefined ? { column: fileLinkMeta.column } : {}),
-            },
-            fileLinkParentSuffixByPath,
-          )}
+          label={
+            // A markdown link's own text is its label, as everywhere else in Markdown.
+            linkLabel ??
+            fileLinkLabel(
+              {
+                path: fileLinkMeta.filePath,
+                ...(fileLinkMeta.line !== undefined ? { line: fileLinkMeta.line } : {}),
+                ...(fileLinkMeta.column !== undefined ? { column: fileLinkMeta.column } : {}),
+              },
+              fileLinkParentSuffixByPath,
+            )
+          }
           copyMarkdown={copyMarkdown}
           theme={resolvedTheme}
           threadRef={threadRef}
@@ -3142,24 +3153,20 @@ const CHAT_MARKDOWN_COMPONENTS = {
     }
     const remoteFile = parseRemoteFileHref(href);
     if (remoteFile && href) {
-      const label = hastPlainTextDeep(node);
+      const label = hastPlainTextDeep(node).trim();
       const copyMarkdown = `[${label.replace(/[\\[\]]/g, "\\$&")}](<${href}>)`;
-      const chip = (
+      return (
         <MarkdownRemoteFileLink
           link={remoteFile}
+          {...(label ? { label } : {})}
           copyMarkdown={copyMarkdown}
           threadRef={threadRef}
           theme={resolvedTheme}
           // An id the client cannot resolve says nothing to a reader; the path does.
-          fallback={<code>{remoteFile.byEnvironmentId ? remoteFile.path : href}</code>}
+          fallback={
+            <code>{label || (remoteFile.byEnvironmentId ? remoteFile.path : href)}</code>
+          }
         />
-      );
-      return label ? (
-        <span data-markdown-copy={copyMarkdown}>
-          {children} {chip}
-        </span>
-      ) : (
-        chip
       );
     }
     const normalizedHref = href ? normalizeMarkdownLinkHrefKey(href) : "";
@@ -3388,13 +3395,11 @@ const CHAT_MARKDOWN_COMPONENTS = {
       source.startsWith("[") && source.includes("](")
         ? source
         : `[${(label || fileLinkMeta.basename).replace(/[\\[\]]/g, "\\$&")}](${normalizedHref})`;
-    const chip = fileLinkChip(fileLinkMeta, copyMarkdown, normalizedHref);
-    return isMarkdownFileLinkLabel(label, normalizedHref) ? (
-      chip
-    ) : (
-      <span data-markdown-copy={copyMarkdown}>
-        {children} {chip}
-      </span>
+    return fileLinkChip(
+      fileLinkMeta,
+      copyMarkdown,
+      normalizedHref,
+      isMarkdownFileLinkLabel(label, normalizedHref) ? undefined : label.trim(),
     );
   },
   code: function MarkdownCode({ node, children, className, ...props }) {
