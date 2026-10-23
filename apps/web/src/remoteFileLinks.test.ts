@@ -26,6 +26,14 @@ describe("parseRemoteFileHref", () => {
     });
   });
 
+  it("reads a GitHub-style #L line after the path", () => {
+    expect(parseRemoteFileHref("alpha:/home/user/x.md#L12")).toMatchObject({
+      path: "/home/user/x.md",
+      line: 12,
+    });
+    expect(parseRemoteFileHref("alpha:/home/user/a#b.md")?.path).toBe("/home/user/a#b.md");
+  });
+
   it("reads the remote-file form with either path style", () => {
     expect(parseRemoteFileHref("remote-file://v1/env-1/home/user/x.md")).toEqual({
       server: "env-1",
@@ -48,6 +56,8 @@ describe("parseRemoteFileHref", () => {
       "/home/user/x.md",
       "remote-file://v1/",
       "t3-file://v1/env-1/home/user/x.md",
+      "javascript:/a/;alert(1)",
+      "VBScript:/x",
     ]) {
       expect(parseRemoteFileHref(href), href).toBeNull();
     }

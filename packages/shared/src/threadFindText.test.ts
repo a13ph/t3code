@@ -63,9 +63,11 @@ const assistantSegments = (text: string, cwd?: string) =>
 it("searches displayed prose and file-chip labels without hidden paths", () => {
   expect(
     assistantSegments("[important description](/tmp/actual.ts). `/tmp/inline-example.ts:42`"),
-  ).toEqual(["important description actual.ts. inline-example.ts · L42"]);
-  expect(assistantSegments("[label](src/main.ts#L3C2)", "/workspace/repo")).toEqual([
-    "label main.ts · L3:C2",
+  ).toEqual(["important description. inline-example.ts · L42"]);
+  // A labelled link's chip shows only its label.
+  expect(assistantSegments("[label](src/main.ts#L3C2)", "/workspace/repo")).toEqual(["label"]);
+  expect(assistantSegments("[](src/main.ts#L3C2)", "/workspace/repo")).toEqual([
+    "main.ts · L3:C2",
   ]);
   expect(assistantSegments("[label](src/main.ts#L3C2)")).toEqual(["label"]);
 });

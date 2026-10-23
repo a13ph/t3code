@@ -1232,7 +1232,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
           theme={resolvedTheme}
           // An id the client cannot resolve says nothing to a reader; the path does.
           fallback={
-            <code>{label || (remoteFile.byEnvironmentId ? remoteFile.path : href)}</code>
+            label || <code>{remoteFile.byEnvironmentId ? remoteFile.path : href}</code>
           }
         />
       );
