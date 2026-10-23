@@ -2,8 +2,15 @@ import { MarkdownFindContext, useFindRevealRef } from "./chat/markdownFindContex
 import {
   buildFileLinkParentSuffixByPath,
   fileLinkLabel,
+  formatFilePathPosition,
   resolvePathLinkTarget,
 } from "@t3tools/shared/fileLinks";
+import {
+  parseRemoteFileHref,
+  resolveRemoteFileServer,
+  type RemoteFileLink,
+} from "../remoteFileLinks";
+import { useEnvironments } from "../state/environments";
 import {
   isWindowsDrivePathHref,
   normalizeMarkdownLinkDestination,
@@ -11,7 +18,7 @@ import {
   extractMarkdownLinkHrefs,
   inlineCodeFilePathCandidate,
 } from "@t3tools/shared/markdownLinks";
-import { isAbsolutePath } from "@t3tools/shared/path";
+import { fileBasename, isAbsolutePath } from "@t3tools/shared/path";
 import { usePullRequestLinking } from "~/hooks/usePullRequestLinking";
 import { AuthFilesystemReadScope, AuthOrchestrationOperateScope } from "@t3tools/contracts";
 import {
@@ -2357,6 +2364,74 @@ function areMarkdownFileLinkPropsEqual(
   );
 }
 
+/**
+ * A chat link to a file on a named server (`alpha:/home/user/x.md`, `t3-file://v1/<env>/<path>`).
+ * The chip reads the file from that server and opens it read-only in the files panel. A
+ * server this client is not connected to, or two of one name, leave `fallback` in place.
+ */
+function MarkdownRemoteFileLink(props: {
+  readonly link: RemoteFileLink;
+  readonly href: string;
+  readonly copyMarkdown: string;
+  readonly threadRef: ScopedThreadRef | undefined;
+  readonly theme: "light" | "dark";
+  readonly fallback: ReactNode;
+}) {
+  const { environments } = useEnvironments();
+  const resolution = useMemo(
+    () =>
+      resolveRemoteFileServer(
+        props.link,
+        environments.map((environment) => ({
+          environmentId: environment.environmentId,
+          label: environment.label,
+          serverLabel: environment.serverConfig?.environment.label ?? null,
+        })),
+      ),
+    [environments, props.link],
+  );
+  const { threadRef } = props;
+  const environmentId = resolution._tag === "found" ? resolution.environmentId : null;
+  const onOpenInPanel = useCallback(
+    (panelPath: string, line: number | undefined) => {
+      if (!threadRef || environmentId === null) return;
+      useRightPanelStore.getState().openFile(threadRef, panelPath, line, environmentId);
+    },
+    [environmentId, threadRef],
+  );
+  if (resolution._tag !== "found" || environmentId === null) {
+    return (
+      <span
+        title={
+          resolution._tag === "ambiguous"
+            ? `More than one connected server is named ${props.link.server}: ${resolution.labels.join(", ")}`
+            : `No connected server is named ${props.link.server}`
+        }
+      >
+        {props.fallback}
+      </span>
+    );
+  }
+  const targetPath = formatFilePathPosition(props.link);
+  return (
+    <MarkdownFileLink
+      environmentId={environmentId as EnvironmentId}
+      href={props.href}
+      targetPath={targetPath}
+      iconPath={props.link.path}
+      displayPath={`${resolution.label}:${targetPath}`}
+      panelPath={props.link.path}
+      line={props.link.line}
+      label={`${resolution.label}: ${fileBasename(props.link.path)}`}
+      copyMarkdown={props.copyMarkdown}
+      theme={props.theme}
+      threadRef={threadRef}
+      onOpenInPanel={onOpenInPanel}
+      openInEditorMenuLabel=""
+    />
+  );
+}
+
 function useChatMarkdownState({
   text,
   cwd,
@@ -2544,6 +2619,7 @@ function useChatMarkdownState({
     >();
     for (const href of extractMarkdownLinkHrefs(renderCodexInlineDirectivesAsMarkdown(text))) {
       if (parseComposerContextHref(href)) continue;
+      if (parseRemoteFileHref(href)) continue;
       const normalizedHref = normalizeMarkdownLinkHrefKey(href);
       if (metaByHref.has(normalizedHref)) continue;
       const meta = resolveMarkdownFileLinkMeta(normalizedHref, cwd, imageBaseDir ?? cwd);
@@ -2575,6 +2651,7 @@ function useChatMarkdownState({
     if (parseAssistantCitationHref(href)) return href;
     if (parseComposerContextHref(href)) return href;
     if (parseThreadLinkHref(href)) return href;
+    if (parseRemoteFileHref(href)) return href;
     if (isWindowsDrivePathHref(href)) return href;
     return rewriteMarkdownFileUriHref(href) ?? defaultUrlTransform(href);
   }, []);
@@ -3033,6 +3110,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
       projects,
       linkedThreadPullRequestFor,
       resolveThreadPullRequest,
+      resolvedTheme,
       serverConfig,
       updateThreadPullRequestLink,
       fileLinkChip,
@@ -3058,6 +3136,28 @@ const CHAT_MARKDOWN_COMPONENTS = {
         renderContextReference({ ...contextReference, label })
       ) : (
         <span>{label}</span>
+      );
+    }
+    const remoteFile = parseRemoteFileHref(href);
+    if (remoteFile && href) {
+      const label = hastPlainTextDeep(node);
+      const copyMarkdown = `[${label.replace(/[\\[\]]/g, "\\$&")}](<${href}>)`;
+      const chip = (
+        <MarkdownRemoteFileLink
+          link={remoteFile}
+          href={href}
+          copyMarkdown={copyMarkdown}
+          threadRef={threadRef}
+          theme={resolvedTheme}
+          fallback={<code>{href}</code>}
+        />
+      );
+      return label ? (
+        <span data-markdown-copy={copyMarkdown}>
+          {children} {chip}
+        </span>
+      ) : (
+        chip
       );
     }
     const normalizedHref = href ? normalizeMarkdownLinkHrefKey(href) : "";
@@ -3296,11 +3396,28 @@ const CHAT_MARKDOWN_COMPONENTS = {
     );
   },
   code: function MarkdownCode({ node, children, className, ...props }) {
-    const { cwd, imageBaseDir, inlineCodeFileLinkMetaByText, fileLinkChip } = use(
-      ChatMarkdownRendererContext,
-    );
+    const { cwd, imageBaseDir, inlineCodeFileLinkMetaByText, fileLinkChip, resolvedTheme, threadRef } =
+      use(ChatMarkdownRendererContext);
     if (node?.properties?.dataInlineCode != null) {
       const codeText = nodeToPlainText(children);
+      // `alpha:/home/user/x.md` names a file on another server; unknown names stay code.
+      const remoteFile = parseRemoteFileHref(codeText);
+      if (remoteFile) {
+        return (
+          <MarkdownRemoteFileLink
+            link={remoteFile}
+            href={codeText.trim()}
+            copyMarkdown={`\`${codeText}\``}
+            threadRef={threadRef}
+            theme={resolvedTheme}
+            fallback={
+              <code {...props} className={className}>
+                {children}
+              </code>
+            }
+          />
+        );
+      }
       const fileLinkMeta =
         inlineCodeFileLinkMetaByText.get(codeText.trim()) ??
         resolveInlineCodeFileLinkMeta(codeText, cwd, imageBaseDir ?? cwd);

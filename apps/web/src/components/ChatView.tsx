@@ -721,6 +721,14 @@ const DevicePanel = lazy(() =>
   import("./device/DevicePanel").then((module) => ({ default: module.DevicePanel })),
 );
 const FilePreviewPanel = lazy(() => import("./files/FilePreviewPanel"));
+/** A file a chat link named on another connected server is read from that server. */
+const filePanelEnvironmentId = (
+  surface: RightPanelSurface,
+  threadEnvironmentId: EnvironmentId,
+): EnvironmentId =>
+  surface.kind === "file" && surface.environmentId !== undefined
+    ? (surface.environmentId as EnvironmentId)
+    : threadEnvironmentId;
 const EMPTY_PENDING_FILE_SURFACE_IDS: ReadonlySet<string> = new Set();
 const TYPE_TO_FOCUS_EDITABLE_SELECTOR = [
   "input",
@@ -11007,12 +11015,15 @@ export default function ChatView(props: ChatViewProps) {
         (renderedRightPanelSurface.kind === "file" && renderedRightPanelSurface.attachment)) ? (
       <Suspense fallback={null}>
         <FilePreviewPanel
-          key={`${activeThread.environmentId}:${
+          key={`${filePanelEnvironmentId(renderedRightPanelSurface, activeThread.environmentId)}:${
             renderedRightPanelSurface.kind === "file" && renderedRightPanelSurface.attachment
               ? `attachment:${renderedRightPanelSurface.attachment.id}`
               : activeWorkspaceRoot
           }`}
-          environmentId={activeThread.environmentId}
+          environmentId={filePanelEnvironmentId(
+            renderedRightPanelSurface,
+            activeThread.environmentId,
+          )}
           cwd={activeWorkspaceRoot ?? ""}
           projectName={activeProject?.title ?? ""}
           threadRef={activeThreadRef}

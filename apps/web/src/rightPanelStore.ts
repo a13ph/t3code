@@ -64,6 +64,9 @@ export type RightPanelSurface =
       /** Present when the file lives in the thread's attachment store rather
           than at a workspace or host path. */
       attachment?: ChatFileAttachment;
+      /** Present when a chat link named a file on another connected server than the
+          thread's; `relativePath` is then absolute on that server. */
+      environmentId?: string;
     }
   | {
       /**
@@ -151,7 +154,13 @@ interface RightPanelStoreState {
   openDevice: (ref: ScopedThreadRef, target: DeviceTabTarget, automatic?: boolean) => void;
   renameDevice: (ref: ScopedThreadRef, surfaceId: string, title: string) => void;
   openBrowser: (ref: ScopedThreadRef, tabId: string | null) => void;
-  openFile: (ref: ScopedThreadRef, relativePath: string, line?: number) => void;
+  /** `environmentId` names another server than the thread's for an absolute path there. */
+  openFile: (
+    ref: ScopedThreadRef,
+    relativePath: string,
+    line?: number,
+    environmentId?: string,
+  ) => void;
   openAttachment: (ref: ScopedThreadRef, attachment: ChatFileAttachment) => void;
   openPullRequest: (
     ref: ScopedThreadRef,
@@ -233,16 +242,24 @@ const browserSurface = (tabId: string | null): RightPanelSurface =>
     ? { id: `browser:${tabId}`, kind: "preview", resourceId: tabId }
     : { id: "browser:new", kind: "preview", resourceId: null };
 
+// The same path on two servers is two files, so another server's id leads with it.
+const fileSurfaceId = (relativePath: string, environmentId?: string) =>
+  environmentId === undefined
+    ? (`file:${relativePath}` as const)
+    : (`file:${encodeURIComponent(environmentId)}:${relativePath}` as const);
+
 const fileSurface = (
   relativePath: string,
   revealLine: number | null,
   revealRequestId: number,
+  environmentId?: string,
 ): RightPanelSurface => ({
-  id: `file:${relativePath}`,
+  id: fileSurfaceId(relativePath, environmentId),
   kind: "file",
   relativePath,
   revealLine,
   revealRequestId,
+  ...(environmentId === undefined ? {} : { environmentId }),
 });
 
 const attachmentSurface = (attachment: ChatFileAttachment): RightPanelSurface => ({
@@ -483,7 +500,16 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                         surface.revealRequestId >= 0
                           ? surface.revealRequestId
                           : 0;
-                      return [{ ...surface, revealLine, revealRequestId }];
+                      const { environmentId, ...rest } = surface;
+                      // Anything else stored under that name is not an environment.
+                      return [
+                        {
+                          ...rest,
+                          revealLine,
+                          revealRequestId,
+                          ...(typeof environmentId === "string" ? { environmentId } : {}),
+                        },
+                      ];
                     }
                     if (surface.kind === "pull-request") {
                       if (
@@ -706,10 +732,14 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
               : next;
           }),
         ),
-      openFile: (ref, requestedPath, line) =>
+      openFile: (ref, requestedPath, line, requestedEnvironmentId) =>
         set((state) =>
           userAction(state, scopedThreadKey(ref), (current) => {
-            if (requestedPath === ".") {
+            const environmentId =
+              requestedEnvironmentId === undefined || requestedEnvironmentId === ref.environmentId
+                ? undefined
+                : requestedEnvironmentId;
+            if (requestedPath === "." && environmentId === undefined) {
               return upsertSurface(current, singletonSurface("files"));
             }
             // Workspace entry paths use '/', including on Windows.
@@ -719,7 +749,7 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             const withoutStandaloneExplorer = current.surfaces.filter(
               (surface) => surface.kind !== "files",
             );
-            const surfaceId = `file:${relativePath}` as const;
+            const surfaceId = fileSurfaceId(relativePath, environmentId);
             const existing = withoutStandaloneExplorer.find(
               (surface): surface is Extract<RightPanelSurface, { kind: "file" }> =>
                 surface.id === surfaceId && surface.kind === "file",
@@ -728,6 +758,7 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
               relativePath,
               normalizeRevealLine(line),
               (existing?.revealRequestId ?? 0) + 1,
+              environmentId,
             );
             return {
               ...current,
