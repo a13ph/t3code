@@ -31,6 +31,14 @@ const DevicePanel = lazy(() =>
   import("../device/DevicePanel").then((module) => ({ default: module.DevicePanel })),
 );
 const FilePreviewPanel = lazy(() => import("../files/FilePreviewPanel"));
+/** A file a chat link named on another connected server is read from that server. */
+const filePanelEnvironmentId = (
+  surface: RightPanelSurface,
+  threadEnvironmentId: EnvironmentId,
+): EnvironmentId =>
+  surface.kind === "file" && surface.environmentId !== undefined
+    ? (surface.environmentId as EnvironmentId)
+    : threadEnvironmentId;
 
 type RightPanelTerminalProps = Omit<
   PersistentThreadTerminalPanelProps,
@@ -186,13 +194,15 @@ export function RightPanelSurfaceContent(props: {
       const files = props.files;
       const attachment = surface.kind === "file" ? surface.attachment : undefined;
       if (!attachment && (files.projectName === null || !files.workspaceRoot)) return null;
+      const environmentId = filePanelEnvironmentId(surface, props.environmentId);
+      const remoteEnvironmentId = surface.kind === "file" ? surface.environmentId : undefined;
       return (
         <Suspense fallback={null}>
           <FilePreviewPanel
-            key={`${props.environmentId}:${
+            key={`${environmentId}:${
               attachment ? `attachment:${attachment.id}` : files.workspaceRoot
             }`}
-            environmentId={props.environmentId}
+            environmentId={environmentId}
             cwd={files.workspaceRoot ?? ""}
             projectName={files.projectName ?? ""}
             threadRef={threadRef}
@@ -204,7 +214,14 @@ export function RightPanelSurfaceContent(props: {
             {...(attachment ? { attachment } : {})}
             revealLine={surface.kind === "file" ? (surface.revealLine ?? null) : null}
             revealRequestId={surface.kind === "file" ? surface.revealRequestId : 0}
-            onOpenFile={files.onOpenFile}
+            onOpenFile={
+              remoteEnvironmentId === undefined
+                ? files.onOpenFile
+                : (relativePath) =>
+                    useRightPanelStore
+                      .getState()
+                      .openFile(threadRef, relativePath, undefined, remoteEnvironmentId)
+            }
             onNavigateFolder={(relativePath, folderTrail, keepSource) =>
               useRightPanelStore
                 .getState()
