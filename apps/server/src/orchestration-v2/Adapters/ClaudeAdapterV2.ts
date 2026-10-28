@@ -1,7 +1,13 @@
 import * as DocumentText from "../../provider/DocumentText.ts";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import { claudeTaskOutputRoot, tailClaudeTaskOutput } from "./ClaudeTaskOutputTail.ts";
-import { keeperSpawnProcess } from "./ClaudeKeeperSpawn.ts";
+import {
+  detachKeeperChildren,
+  keeperAttachProcess,
+  keeperSpawnProcess,
+  registerKeeperTurnState,
+  unregisterKeeperTurnState,
+} from "./ClaudeKeeperSpawn.ts";
 import {
   dynamicToolTitle,
   formatReadToolLabel,
@@ -86,8 +92,8 @@ import {
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2RuntimeRequest,
   type OrchestrationV2UserInputQuestion,
-  type OrchestrationV2Subagent,
-  type OrchestrationV2AppThread,
+  OrchestrationV2Subagent,
+  OrchestrationV2AppThread,
   type OrchestrationV2SubagentWorkflow,
   type OrchestrationV2WorkflowRunHandles,
   type OrchestrationV2TurnItem,
@@ -498,10 +504,17 @@ export interface ClaudeAgentSdkQueryOpenInput {
   readonly options: ClaudeAgentSdkQueryOptions;
   readonly threadId: ThreadId;
   readonly providerSessionId: OrchestrationV2ProviderSession["id"];
+  /** Attach to the thread's CLI in t3-keeper instead of starting one (ClaudeKeeperSpawn.ts). */
+  readonly reattach?: { readonly handle: string; readonly after: number };
 }
 
 export interface ClaudeAgentSdkQuerySession {
   readonly messages: Stream.Stream<SDKMessage, ClaudeAgentSdkQueryRunnerError>;
+  /**
+   * Called once a message from `messages` is handled; t3-keeper may then drop
+   * its line. Present only for a CLI spawned through t3-keeper.
+   */
+  readonly handled?: (message: SDKMessage) => void;
   readonly offer: (
     message: SDKUserMessage,
     onQueued?: () => void,
@@ -914,6 +927,19 @@ export const layerQueryRunner: Layer.Layer<
     const agentScope = yield* AgentScope;
     const platform = yield* HostProcess.Platform;
     const runFork = Effect.runForkWith(yield* Effect.context<never>());
+    // Runs before the session scopes close, so their query.close() finds the
+    // keeper children detached and leaves them running.
+    yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        process.on("SIGINT", detachKeeperChildren);
+        process.on("SIGTERM", detachKeeperChildren);
+      }),
+      () =>
+        Effect.sync(() => {
+          process.off("SIGINT", detachKeeperChildren);
+          process.off("SIGTERM", detachKeeperChildren);
+        }),
+    );
 
     return ClaudeAgentSdkQueryRunner.of({
       allocateSessionId: crypto
@@ -939,9 +965,11 @@ export const layerQueryRunner: Layer.Layer<
           // Send MCP credentials over stdin to keep them out of SDK argv and inherited command environments.
           const { mcpServers, ...queryOptions } = input.options;
           // The SDK can prepend a scope wrapper to native binaries; script entries run through node.
+          // A reattach launches nothing: the CLI already runs in t3-keeper.
           const binaryPath = queryOptions.pathToClaudeCodeExecutable;
           const launch =
             binaryPath === undefined ||
+            input.reattach !== undefined ||
             CLAUDE_SCRIPT_EXTENSIONS.some((ext) => binaryPath.endsWith(ext))
               ? undefined
               : yield* agentScope.wrap({
@@ -962,16 +990,25 @@ export const layerQueryRunner: Layer.Layer<
           const unit = launch?.unit;
           const stopScope =
             unit === undefined ? undefined : () => void runFork(agentScope.stop(unit));
-          // With T3_KEEPER_SOCKET set, t3-keeper spawns the CLI (ClaudeKeeperSpawn.ts).
-          const keeperSpawn =
+          // With T3_KEEPER_SOCKET set, t3-keeper spawns the CLI, or holds it from
+          // before a restart (ClaudeKeeperSpawn.ts).
+          const keeper =
             options.spawnClaudeCodeProcess !== undefined || platform === "win32"
               ? undefined
-              : keeperSpawnProcess(input.threadId);
+              : input.reattach === undefined
+                ? keeperSpawnProcess(input.threadId)
+                : keeperAttachProcess(input.threadId, input.reattach);
+          if (input.reattach !== undefined && keeper === undefined) {
+            return yield* queryRunnerError(
+              "Reattaching needs T3_KEEPER_SOCKET and a caller spawner left unset.",
+              "reattach",
+            );
+          }
           const spawnProcess =
             options.spawnClaudeCodeProcess ??
             ((spawnOptions: ClaudeSpawnOptions) => {
-              if (keeperSpawn !== undefined) {
-                const child = keeperSpawn(spawnOptions);
+              if (keeper !== undefined) {
+                const child = keeper.spawn(spawnOptions);
                 if (stopScope !== undefined) child.once("exit", stopScope);
                 return child;
               }
@@ -1095,13 +1132,18 @@ export const layerQueryRunner: Layer.Layer<
               queryRunnerError(cause, "fromAsyncIterable"),
             ).pipe(
               Stream.tap((message) =>
-                logProtocolEvent({
-                  direction: "incoming",
-                  stage: "decoded",
-                  payload: message,
-                }),
+                Effect.sync(() => keeper?.yielded(message)).pipe(
+                  Effect.andThen(
+                    logProtocolEvent({
+                      direction: "incoming",
+                      stage: "decoded",
+                      payload: message,
+                    }),
+                  ),
+                ),
               ),
             ),
+            ...(keeper === undefined ? {} : { handled: keeper.handled }),
             offer: (message, onQueued) =>
               Effect.uninterruptibleMask((restore) =>
                 restore(Queue.offer(promptQueue, message)).pipe(
@@ -3851,6 +3893,166 @@ interface ClaudeLiveQueryContext {
   readonly subagentsFromEarlierProcesses: ReadonlySet<ActiveClaudeSubagent>;
 }
 
+// A subagent registry entry (ActiveClaudeSubagent) of a CLI a shutdown left
+// in t3-keeper, by its task id.
+const ClaudeKeeperSubagent = Schema.Struct({
+  taskId: Schema.String,
+  task: OrchestrationV2Subagent,
+  nativeTaskType: Schema.optional(Schema.String),
+  confirmedOutcome: Schema.optional(
+    Schema.Struct({
+      status: Schema.Literals(["completed", "failed", "cancelled"]),
+      completedAt: Schema.DateTimeUtc,
+      result: Schema.NullOr(Schema.String),
+    }),
+  ),
+  rootNodeId: Schema.String,
+  childThreadId: Schema.String,
+  childThread: Schema.NullOr(OrchestrationV2AppThread),
+  childRootNodeId: Schema.String,
+  turnItemId: Schema.String,
+  turnItemOrdinal: Schema.Number,
+  runToolUseId: Schema.NullOr(Schema.String),
+  effort: Schema.optional(Schema.String),
+  nextChildItemOrdinal: Schema.Number,
+  resultItemOrdinal: Schema.NullOr(Schema.Number),
+  lastAssistantText: Schema.NullOr(Schema.String),
+  lastAssistantMessageId: Schema.NullOr(Schema.String),
+});
+
+// An open tool call of a subagent (ActiveClaudeToolCall with no run).
+const ClaudeKeeperToolCall = Schema.Struct({
+  nativeItemId: Schema.String,
+  toolName: Schema.String,
+  input: Schema.Unknown,
+  threadId: Schema.String,
+  rootNodeId: Schema.String,
+  parentNodeId: Schema.String,
+  ordinal: Schema.Number,
+  startedAt: Schema.DateTimeUtc,
+  presentation: Schema.optional(Schema.Unknown),
+});
+
+const StringPairs = Schema.Array(Schema.Tuple([Schema.String, Schema.String]));
+
+// What the adapter knew of the subagents a kept CLI runs: the session
+// registry and its tool-use index, the turn's own index into it, the
+// subagents' open tool calls, the launches not yet started and the turn's
+// item ordinals. The CLI runs the subagents on; with this, the frames they
+// send after the restart land on the same cards, threads and items.
+const ClaudeKeeperSubagentState = Schema.Struct({
+  subagents: Schema.Array(ClaudeKeeperSubagent),
+  taskIdsByToolUseId: StringPairs,
+  turnTaskIds: Schema.Array(Schema.String),
+  turnTaskIdsByToolUseId: StringPairs,
+  turnNodesByTaskId: StringPairs,
+  toolCalls: Schema.Array(ClaudeKeeperToolCall),
+  pendingLaunches: Schema.Array(
+    Schema.Tuple([
+      Schema.String,
+      Schema.Struct({
+        model: Schema.optional(Schema.String),
+        effort: Schema.optional(Schema.String),
+        ownerToolUseId: Schema.optional(Schema.String),
+      }),
+    ]),
+  ),
+  itemOrdinals: Schema.Array(Schema.Tuple([Schema.String, Schema.Number])),
+});
+type ClaudeKeeperSubagentState = typeof ClaudeKeeperSubagentState.Type;
+
+// The prompt-echo state of a turn whose CLI a shutdown left in t3-keeper. A
+// reattached turn needs it to tell its own result from a wake turn's. It is
+// stored as JSON values, dates as strings, since the outbox stores it as JSON.
+const ClaudeKeeperTurnState = Schema.Struct({
+  providerTurnId: Schema.String,
+  promptUuid: Schema.NullOr(Schema.String),
+  promptEcho: Schema.Literals(["pending", "confirmed"]),
+  promptStarted: Schema.Boolean,
+  promptEchoMode: Schema.Literals(["unknown", "acknowledged", "early", "result_only"]),
+  subagents: Schema.optional(ClaudeKeeperSubagentState),
+});
+type ClaudeKeeperTurnState = typeof ClaudeKeeperTurnState.Type;
+const ClaudeKeeperTurnStateJson = Schema.toCodecJson(ClaudeKeeperTurnState);
+const decodeClaudeKeeperTurnState = Schema.decodeUnknownOption(ClaudeKeeperTurnStateJson);
+const encodeClaudeKeeperTurnState = Schema.encodeSync(ClaudeKeeperTurnStateJson);
+
+// The tool name and input a reattached turn's open tool call is rebuilt
+// from. A command item keeps only its command text, a file change only its
+// path, so those are given the usual tool of that kind.
+function reattachedClaudeToolCall(
+  item: OrchestrationV2TurnItem,
+): { readonly toolName: string; readonly input: ClaudeNativeToolInput } | undefined {
+  switch (item.type) {
+    case "command_execution":
+      return { toolName: "Bash", input: claudeNativeToolInputFromRecord({ command: item.input }) };
+    case "dynamic_tool":
+      return item.toolName === null
+        ? undefined
+        : { toolName: item.toolName, input: claudeNativeToolInputFromUnknown(item.input) };
+    case "file_change":
+      return {
+        toolName: "Edit",
+        input: claudeNativeToolInputFromRecord({ file_path: item.fileName }),
+      };
+    case "web_search":
+      return {
+        toolName: "WebSearch",
+        input: claudeNativeToolInputFromRecord({ query: item.patterns?.[0] ?? "" }),
+      };
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * What a reattached turn starts from: the ordinals its items already hold,
+ * so new items take free ones, and its open root tool calls, so a result
+ * that arrives after the restart completes the item it belongs to.
+ */
+function reattachedClaudeTurnSeed(input: {
+  readonly turnInput: ProviderAdapter.ProviderAdapterV2TurnInput;
+  readonly providerTurnId: OrchestrationV2ProviderTurn["id"];
+}) {
+  const { turnInput } = input;
+  const items = (turnInput.reattach?.turnItems ?? []).filter(
+    (item) =>
+      item.runId === turnInput.runId &&
+      item.providerTurnId === input.providerTurnId &&
+      item.nativeItemRef?.nativeId != null,
+  );
+  const itemOrdinals = new Map<string, number>();
+  const toolCalls = new Map<string, ActiveClaudeToolCall>();
+  let startedAt: DateTime.Utc | undefined;
+  for (const item of items) {
+    const nativeItemId = item.nativeItemRef?.nativeId;
+    if (nativeItemId == null) continue;
+    itemOrdinals.set(nativeItemId, item.ordinal);
+    if (
+      item.startedAt !== null &&
+      (startedAt === undefined || DateTime.isLessThan(item.startedAt, startedAt))
+    ) {
+      startedAt = item.startedAt;
+    }
+    if (item.status !== "running" || item.startedAt === null) continue;
+    const call = reattachedClaudeToolCall(item);
+    if (call === undefined) continue;
+    toolCalls.set(nativeItemId, {
+      nativeItemId,
+      toolName: call.toolName,
+      classification: classifyClaudeNativeTool(call.toolName),
+      input: call.input,
+      threadId: turnInput.threadId,
+      runId: turnInput.runId,
+      rootNodeId: turnInput.rootNodeId,
+      parentNodeId: turnInput.rootNodeId,
+      ordinal: item.ordinal,
+      startedAt: item.startedAt,
+    });
+  }
+  return { itemOrdinals, toolCalls, startedAt };
+}
+
 interface ActiveClaudeToolCall {
   readonly nativeItemId: string;
   readonly toolName: string;
@@ -4555,6 +4757,143 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const backgroundMovesByToolUseId = new Map<string, Fiber.Fiber<void>>();
         const subagentToolCalls = new Map<string, ActiveClaudeToolCall>();
         const pendingSubagentLaunchesByToolUseId = new Map<string, PendingClaudeSubagentLaunch>();
+
+        // The subagent state a shutdown hands over with a turn whose CLI it
+        // leaves in t3-keeper (ClaudeKeeperSubagentState). Read synchronously
+        // in the shutdown's signal handler.
+        const readKeeperSubagentState = (
+          turn: ActiveClaudeTurnContext,
+        ): ClaudeKeeperSubagentState => {
+          const registry = Ref.getUnsafe(sessionSubagentsByTaskId);
+          const taskIdOf = (subagent: ActiveClaudeSubagent) => {
+            for (const [taskId, registered] of registry) {
+              if (registered === subagent) return taskId;
+            }
+            return subagent.task.nativeTaskRef?.nativeId;
+          };
+          return {
+            subagents: [...registry].map(([taskId, subagent]) => ({
+              taskId,
+              task: subagent.task,
+              ...(subagent.nativeTaskType === undefined
+                ? {}
+                : { nativeTaskType: subagent.nativeTaskType }),
+              ...(subagent.confirmedOutcome === undefined
+                ? {}
+                : { confirmedOutcome: subagent.confirmedOutcome }),
+              rootNodeId: subagent.rootNodeId,
+              childThreadId: subagent.childThreadId,
+              childThread: subagent.childThread,
+              childRootNodeId: subagent.childRootNodeId,
+              turnItemId: subagent.turnItemId,
+              turnItemOrdinal: subagent.turnItemOrdinal,
+              runToolUseId: subagent.runToolUseId,
+              ...(subagent.effort === undefined ? {} : { effort: subagent.effort }),
+              nextChildItemOrdinal: subagent.nextChildItemOrdinal,
+              resultItemOrdinal: subagent.resultItemOrdinal,
+              lastAssistantText: subagent.lastAssistantText,
+              lastAssistantMessageId: subagent.lastAssistantMessageId,
+            })),
+            taskIdsByToolUseId: [...Ref.getUnsafe(sessionSubagentTaskIdsByToolUseId)],
+            turnTaskIds: [...turn.subagentsByTaskId.keys()],
+            turnTaskIdsByToolUseId: [...turn.subagentsByToolUseId].flatMap(
+              ([toolUseId, subagent]) => {
+                const taskId = taskIdOf(subagent);
+                return taskId == null ? [] : [[toolUseId, taskId] as const];
+              },
+            ),
+            turnNodesByTaskId: [...turn.subagentNodesByTaskId],
+            toolCalls: [...subagentToolCalls.values()].map((call) => ({
+              nativeItemId: call.nativeItemId,
+              toolName: call.toolName,
+              input: claudeNativeToolInputValue(call.input),
+              threadId: call.threadId,
+              rootNodeId: call.rootNodeId,
+              parentNodeId: call.parentNodeId,
+              ordinal: call.ordinal,
+              startedAt: call.startedAt,
+              ...(call.presentation === undefined ? {} : { presentation: call.presentation }),
+            })),
+            pendingLaunches: [...pendingSubagentLaunchesByToolUseId],
+            itemOrdinals: [...turn.itemOrdinals],
+          };
+        };
+
+        // Puts back what readKeeperSubagentState saved, into the session
+        // registry and the reattached turn. Each task gets one entry object,
+        // which the turn's index shares, as when the subagent registered.
+        const restoreKeeperSubagentState = Effect.fnUntraced(function* (
+          turn: ActiveClaudeTurnContext,
+          state: ClaudeKeeperSubagentState,
+        ) {
+          const byTaskId = new Map<string, ActiveClaudeSubagent>(
+            state.subagents.map((entry) => [
+              entry.taskId,
+              {
+                task: entry.task,
+                nativeTaskType: entry.nativeTaskType,
+                confirmedOutcome: entry.confirmedOutcome,
+                rootNodeId: entry.rootNodeId as OrchestrationV2ExecutionNode["id"],
+                childThreadId: entry.childThreadId as ThreadId,
+                childThread: entry.childThread,
+                childRootNodeId: entry.childRootNodeId as OrchestrationV2ExecutionNode["id"],
+                turnItemId: entry.turnItemId as OrchestrationV2TurnItem["id"],
+                turnItemOrdinal: entry.turnItemOrdinal,
+                runToolUseId: entry.runToolUseId,
+                effort: entry.effort,
+                nextChildItemOrdinal: entry.nextChildItemOrdinal,
+                resultItemOrdinal: entry.resultItemOrdinal,
+                lastAssistantText: entry.lastAssistantText,
+                lastAssistantMessageId: entry.lastAssistantMessageId,
+              },
+            ]),
+          );
+          yield* Ref.update(
+            sessionSubagentsByTaskId,
+            (current) => new Map([...current, ...byTaskId]),
+          );
+          yield* Ref.update(
+            sessionSubagentTaskIdsByToolUseId,
+            (current) => new Map([...current, ...state.taskIdsByToolUseId]),
+          );
+          for (const call of state.toolCalls) {
+            subagentToolCalls.set(call.nativeItemId, {
+              nativeItemId: call.nativeItemId,
+              toolName: call.toolName,
+              classification: classifyClaudeNativeTool(call.toolName),
+              input: claudeNativeToolInputFromUnknown(call.input),
+              threadId: call.threadId as ThreadId,
+              runId: null,
+              rootNodeId: call.rootNodeId as OrchestrationV2ExecutionNode["id"],
+              parentNodeId: call.parentNodeId as OrchestrationV2ExecutionNode["id"],
+              ordinal: call.ordinal,
+              startedAt: call.startedAt,
+              ...(call.presentation === undefined
+                ? {}
+                : { presentation: call.presentation as ClaudeToolPresentation }),
+            });
+          }
+          for (const [toolUseId, launch] of state.pendingLaunches) {
+            pendingSubagentLaunchesByToolUseId.set(toolUseId, {
+              ...(launch.model === undefined ? {} : { model: launch.model }),
+              ...(launch.effort === undefined ? {} : { effort: launch.effort }),
+              ...(launch.ownerToolUseId === undefined
+                ? {}
+                : { ownerToolUseId: launch.ownerToolUseId }),
+            });
+          }
+          for (const taskId of state.turnTaskIds) {
+            const subagent = byTaskId.get(taskId);
+            if (subagent !== undefined) turn.subagentsByTaskId.set(taskId, subagent);
+          }
+          for (const [toolUseId, taskId] of state.turnTaskIdsByToolUseId) {
+            const subagent = byTaskId.get(taskId);
+            if (subagent !== undefined) turn.subagentsByToolUseId.set(toolUseId, subagent);
+          }
+          for (const [taskId, nodeId] of state.turnNodesByTaskId) {
+            turn.subagentNodesByTaskId.set(taskId, nodeId as OrchestrationV2ExecutionNode["id"]);
+          }
+        });
         const settledTurnByNativeThread = new Map<string, ActiveClaudeTurnContext>();
         const subagentStopOutcomes = new Map<
           string,
@@ -9776,6 +10115,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               threadId: turnInput.threadId,
               providerSessionId: input.providerSessionId,
               options: queryOptions,
+              ...(turnInput.reattach === undefined
+                ? {}
+                : {
+                    reattach: {
+                      handle: turnInput.reattach.handle,
+                      after: turnInput.reattach.after,
+                    },
+                  }),
             })
             .pipe(
               Effect.onError(() =>
@@ -9822,6 +10169,37 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ),
           };
           yield* Ref.set(queryContext, context);
+          // Read when a shutdown leaves this CLI in t3-keeper: what the next
+          // server needs to tell this turn's result from another turn's.
+          // Dropped when this query ends.
+          const runFork = Effect.runForkWith(yield* Effect.context<never>());
+          const readKeeperTurnState = () => {
+            const turn = Ref.getUnsafe(activeTurn);
+            if (turn === null || Ref.getUnsafe(queryContext) !== context) return null;
+            try {
+              return encodeClaudeKeeperTurnState({
+                providerTurnId: turn.providerTurnId,
+                promptUuid: turn.promptUuid,
+                promptEcho: turn.promptEcho,
+                promptStarted: turn.promptStarted,
+                promptEchoMode: context.promptEchoMode,
+                subagents: readKeeperSubagentState(turn),
+              });
+            } catch (cause) {
+              // No state, no reattach: the shutdown closes the CLI and the
+              // run is continued after the restart, as without t3-keeper.
+              runFork(
+                Effect.logWarning("t3-keeper turn state not recorded", {
+                  threadId: turnInput.threadId,
+                  cause,
+                }),
+              );
+              return null;
+            }
+          };
+          if (querySession.handled !== undefined) {
+            registerKeeperTurnState(turnInput.threadId, readKeeperTurnState);
+          }
           yield* querySession.messages.pipe(
             Stream.runForEach((message) =>
               sdkMessageLock.withPermits(1)(
@@ -9842,7 +10220,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   ) {
                     context.permissionMode = message.permissionMode;
                   }
-                  return handleSdkMessage({ query: querySession, message });
+                  return handleSdkMessage({ query: querySession, message }).pipe(
+                    Effect.tap(() => Effect.sync(() => querySession.handled?.(message))),
+                  );
                 }),
               ),
             ),
@@ -9872,7 +10252,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 }
               }),
             ),
-            Effect.ensuring(Deferred.succeed(closed, undefined)),
+            Effect.ensuring(
+              Effect.sync(() =>
+                unregisterKeeperTurnState(turnInput.threadId, readKeeperTurnState),
+              ).pipe(Effect.andThen(Deferred.succeed(closed, undefined))),
+            ),
             Effect.forkIn(sessionScope),
           );
           return context;
@@ -9880,27 +10264,51 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
 
         const startTurn = Effect.fn("ClaudeAdapterV2.startTurn")(
           function* (turnInput: ProviderAdapter.ProviderAdapterV2TurnInput) {
-            const startedAt = yield* DateTime.now;
             const nativeThreadId = yield* getNativeThreadId(turnInput.providerThread);
             const nativeTurnId = `turn:${turnInput.attemptId}`;
-            // Use fresh uuids: native sessions can outlive this database, and Claude skips previously recorded prompts.
-            const promptUuid = isClaudeProviderContinuationTurn(turnInput)
-              ? null
-              : yield* crypto.randomUUIDv4().pipe(
-                  Effect.filterOrFail(isClaudePromptUuid),
-                  Effect.mapError(
-                    (cause) =>
-                      new ProviderAdapter.ProviderAdapterProtocolError({
-                        driver: CLAUDE_PROVIDER,
-                        detail: "Failed to allocate a Claude prompt uuid.",
-                        payload: cause,
-                      }),
-                  ),
-                );
             const providerTurnId = idAllocator.derive.providerTurn({
               driver: CLAUDE_PROVIDER,
               nativeTurnId,
             });
+            // A turn whose CLI outlived a restart in t3-keeper: its prompt was
+            // offered by the previous server, and its output so far is in
+            // the run's turn items.
+            const reattach = turnInput.reattach;
+            const reattachState =
+              reattach === undefined
+                ? undefined
+                : Option.getOrUndefined(decodeClaudeKeeperTurnState(reattach.adapterState));
+            const reattached =
+              reattach === undefined
+                ? undefined
+                : reattachState !== undefined && reattachState.providerTurnId === providerTurnId
+                  ? {
+                      state: reattachState,
+                      seed: reattachedClaudeTurnSeed({ turnInput, providerTurnId }),
+                    }
+                  : yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                      driver: CLAUDE_PROVIDER,
+                      detail: `Claude provider turn ${providerTurnId} has no recorded state to reattach to.`,
+                    });
+            const startedAt = reattached?.seed.startedAt ?? (yield* DateTime.now);
+            // Use fresh uuids: native sessions can outlive this database, and Claude skips previously recorded prompts.
+            // A reattached turn's prompt is already in its CLI.
+            const newPromptUuid =
+              reattached !== undefined || isClaudeProviderContinuationTurn(turnInput)
+                ? null
+                : yield* crypto.randomUUIDv4().pipe(
+                    Effect.filterOrFail(isClaudePromptUuid),
+                    Effect.mapError(
+                      (cause) =>
+                        new ProviderAdapter.ProviderAdapterProtocolError({
+                          driver: CLAUDE_PROVIDER,
+                          detail: "Failed to allocate a Claude prompt uuid.",
+                          payload: cause,
+                        }),
+                    ),
+                  );
+            const promptUuid =
+              reattached !== undefined ? reattached.state.promptUuid : newPromptUuid;
             const providerTurnOrdinal = turnInput.providerTurnOrdinal;
             const currentTurn = yield* Ref.get(activeTurn);
             if (currentTurn !== null) {
@@ -9933,7 +10341,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               persistAttachmentBudget(nativeThreadId),
             );
             const userMessage =
-              promptUuid === null
+              newPromptUuid === null
                 ? null
                 : yield* makeClaudeUserMessageWithAttachments({
                     text: applyClaudePromptEffortPrefix(
@@ -9945,13 +10353,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     fileSystem,
                     pdfReservation,
                     skills: yield* userInvocableSkills(turnInput.runtimePolicy.cwd),
-                    uuid: promptUuid,
+                    uuid: newPromptUuid,
                   }).pipe(
                     Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
                     Effect.provideService(Path.Path, path),
                   );
-            const querySession = yield* openQuery(turnInput, nativeThreadId);
-            const context: ActiveClaudeTurnContext = {
+            const turnContextFor = (
+              querySession: ClaudeLiveQueryContext,
+            ): ActiveClaudeTurnContext => ({
               input: turnInput,
               queryPolicy: querySession.queryPolicy,
               nativeThreadId,
@@ -9960,7 +10369,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               providerTurnId,
               providerTurnOrdinal,
               startedAt,
-              itemOrdinals: new Map(),
+              itemOrdinals: new Map([
+                ...(reattached?.state.subagents?.itemOrdinals ?? []),
+                ...(reattached?.seed.itemOrdinals ?? []),
+              ]),
               assistant: {
                 fallbackText: "",
                 fallbackNativeItemId: `assistant:${turnInput.runId}`,
@@ -9977,7 +10389,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 blocks: new Map(),
               },
               streamUsage: null,
-              toolCalls: new Map(),
+              toolCalls: new Map(reattached?.seed.toolCalls),
               compaction: null,
               ignoredTaskIds: new Set(),
               announcedUsageLimits: new Set(),
@@ -9991,12 +10403,44 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               subagentsByToolUseId: new Map(),
               subagentNodesByTaskId: new Map(),
               promptUuid,
-              promptEcho: isClaudeProviderContinuationTurn(turnInput) ? "confirmed" : "pending",
-              promptStarted: false,
+              promptEcho:
+                reattached?.state.promptEcho ??
+                (isClaudeProviderContinuationTurn(turnInput) ? "confirmed" : "pending"),
+              promptStarted: reattached?.state.promptStarted ?? false,
               nativeWakeStarted: false,
               gatedFramesBeforeEcho: 0,
               heldRootFrames: [],
-            };
+            });
+            if (reattached !== undefined) {
+              // Frames replayed from the keeper wait on the lock until the
+              // turn is in place, so none reaches the session without it.
+              yield* sdkMessageLock.withPermits(1)(
+                Effect.gen(function* () {
+                  const live = yield* openQuery(turnInput, nativeThreadId);
+                  live.promptEchoMode = reattached.state.promptEchoMode;
+                  const context = turnContextFor(live);
+                  // After the open: the restored subagents run in this
+                  // process, not in an earlier one.
+                  if (reattached.state.subagents !== undefined) {
+                    yield* restoreKeeperSubagentState(context, reattached.state.subagents);
+                  }
+                  live.lastTurn = context;
+                  yield* Ref.set(activeTurn, context);
+                  yield* emitProviderEvent({
+                    type: "provider_turn.updated",
+                    driver: CLAUDE_PROVIDER,
+                    providerTurn: providerTurnPayload({
+                      context,
+                      status: "running",
+                      completedAt: null,
+                    }),
+                  });
+                }),
+              );
+              return;
+            }
+            const querySession = yield* openQuery(turnInput, nativeThreadId);
+            const context = turnContextFor(querySession);
             const attachTurn = Effect.gen(function* () {
               querySession.lastTurn = context;
               yield* Ref.set(activeTurn, context);

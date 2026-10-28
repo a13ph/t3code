@@ -2782,6 +2782,44 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
       }),
   );
 
+  // A second shutdown during a t3-keeper reattach leaves its row running and
+  // records a new pending one; the running row must not hold the lane.
+  it.effect("cancels a reattach the process loss cut, and runs the one recorded after", () =>
+    Effect.gen(function* () {
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const threadId = ThreadId.make("thread:foundation-stale-reattach");
+      const runId = RunId.make("run:foundation-stale-reattach");
+      const commandId = CommandId.make("command:foundation-stale-reattach");
+      const reattach = (id: string) => ({
+        id,
+        commandId,
+        threadId,
+        request: {
+          type: "provider-turn.reattach" as const,
+          runId,
+          handle: "keeper-handle",
+          adapterState: null,
+        },
+      });
+      yield* outbox.enqueue([reattach("effect:foundation-stale-reattach:1")]);
+      const cut = yield* outbox.claimNext({ workerId: "cut-worker", leaseDurationMs: 30_000 });
+      assert.equal(Option.getOrUndefined(cut)?.id, "effect:foundation-stale-reattach:1");
+      yield* outbox.enqueue([reattach("effect:foundation-stale-reattach:2")]);
+
+      yield* outbox.reconcileAfterProcessLoss;
+      assert.equal(
+        Option.getOrUndefined(yield* outbox.get("effect:foundation-stale-reattach:1"))?.status,
+        "cancelled",
+      );
+      const next = yield* outbox.claimNext({ workerId: "next-worker", leaseDurationMs: 30_000 });
+      assert.equal(Option.getOrUndefined(next)?.id, "effect:foundation-stale-reattach:2");
+      yield* outbox.succeed({
+        effectId: "effect:foundation-stale-reattach:2",
+        workerId: "next-worker",
+      });
+    }),
+  );
+
   it.effect("atomically cancels stale runs and their process-bound effects", () =>
     Effect.gen(function* () {
       const eventSink = yield* EventSink.EventSinkV2;

@@ -428,6 +428,23 @@ export interface ProviderAdapterV2TurnInput {
   readonly modelSelection: ModelSelection;
   readonly runtimePolicy: ProviderAdapterV2RuntimePolicy;
   readonly appContext?: ReadonlyArray<{ readonly key: string; readonly text: string }>;
+  /**
+   * Continue this run's provider turn in the process that outlived a server
+   * restart, instead of prompting a new one. Nothing is offered to the
+   * provider; its output after line `after` is replayed into the turn.
+   */
+  readonly reattach?: ProviderAdapterV2Reattach;
+}
+
+export interface ProviderAdapterV2Reattach {
+  /** The t3-keeper handle of the provider process. */
+  readonly handle: string;
+  /** The last output line the previous server acknowledged. */
+  readonly after: number;
+  /** The run's turn items so far, so new items take free ordinals and open tools keep theirs. */
+  readonly turnItems: ReadonlyArray<OrchestrationV2TurnItem>;
+  /** What the adapter recorded about the turn when the server shut down. */
+  readonly adapterState: unknown;
 }
 
 export interface ProviderAdapterV2SteerInput {
