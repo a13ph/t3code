@@ -1,3 +1,7 @@
+// @effect-diagnostics nodeBuiltinImport:off -- the reattach tests run a real t3-keeper.
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it, vi } from "vite-plus/test";
 import { it as effectIt } from "@effect/vitest";
@@ -42,6 +46,10 @@ import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+// @ts-ignore - plain ESM without types
+import { startKeeper } from "../t3Keeper/keeper.mjs";
+// @ts-ignore - plain ESM without types
+import { request as keeperRequest, spawnNew as spawnKeeperChild } from "../t3Keeper/shim.mjs";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 
@@ -1052,3 +1060,184 @@ for (const previousMessages of [[], ["/compact", " /COMPACT "]]) {
       }),
   );
 }
+
+/**
+ * A running Claude turn whose CLI waits in a real t3-keeper, and the turn
+ * start service reattaching to it with `projection` and `resolve` mocked.
+ */
+async function reattachToKeptTurn(input: {
+  readonly withCheckpointScope: boolean;
+  readonly resolve: RuntimePolicy.RuntimePolicyV2Shape["resolve"];
+}) {
+  const threadId = ThreadId.make("thread-keeper-reattach-write-off");
+  const runId = RunId.make("run-keeper-reattach-write-off");
+  const attemptId = RunAttemptId.make("attempt-keeper-reattach-write-off");
+  const rootNodeId = NodeId.make("node-keeper-reattach-write-off");
+  const providerThreadId = ProviderThreadId.make("provider-thread-keeper-reattach-write-off");
+  const providerInstanceId = ProviderInstanceId.make("claudeAgent");
+  const checkpointScopeId = CheckpointScopeId.make("scope-keeper-reattach-write-off");
+  const messageId = MessageId.make("message-keeper-reattach-write-off");
+  const projection = {
+    thread: { id: threadId, projectId: ProjectId.make("project-keeper"), worktreePath: null },
+    runs: [
+      {
+        id: runId,
+        status: "running",
+        rootNodeId,
+        activeAttemptId: attemptId,
+        providerThreadId,
+        providerInstanceId,
+        userMessageId: messageId,
+        ordinal: 1,
+      },
+    ],
+    nodes: [{ id: rootNodeId, runId, status: "running", checkpointScopeId }],
+    attempts: [{ id: attemptId, runId, status: "running" }],
+    providerThreads: [
+      {
+        id: providerThreadId,
+        providerSessionId: ProviderSessionId.make("session-keeper-reattach-write-off"),
+        status: "active",
+        driver: ProviderDriverKind.make("claudeAgent"),
+        providerInstanceId,
+      },
+    ],
+    providerTurns: [{ id: "provider-turn-kept", runAttemptId: attemptId, status: "running" }],
+    providerSessions: [],
+    messages: [{ id: messageId, text: "Run the slow command.", attachments: [] }],
+    checkpointScopes: input.withCheckpointScope ? [{ id: checkpointScopeId }] : [],
+    turnItems: [
+      { id: "item-kept-tool", runId, status: "running", ordinal: 3, type: "command_execution" },
+    ],
+    // A subagent the kept turn runs, and one of another run.
+    subagents: [
+      { id: "subagent-kept", runId, status: "running", childThreadId: null },
+      { id: "subagent-other", runId: "run-other", status: "running", childThreadId: null },
+    ],
+  } as unknown as OrchestrationV2ThreadProjection;
+
+  const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-keeper-write-off-"));
+  const socketPath = NodePath.join(dir, "keeper.sock");
+  const keeper = await startKeeper({ socketPath, log: () => {} });
+  const previousSocket = process.env.T3_KEEPER_SOCKET;
+  process.env.T3_KEEPER_SOCKET = socketPath;
+  try {
+    const ready = Promise.withResolvers<string>();
+    const kept = spawnKeeperChild({
+      socketPath,
+      name: threadId,
+      onReady: (info: { handle: string }) => ready.resolve(info.handle),
+    })({
+      command: "sleep",
+      args: ["60"],
+      cwd: dir,
+      env: { ...process.env },
+      signal: new AbortController().signal,
+    });
+    const handle = await ready.promise;
+    kept.detach();
+
+    const writeIfRunCurrent = vi.fn(
+      (_: Parameters<EventSink.EventSinkV2Shape["writeIfRunCurrent"]>[0]) =>
+        Effect.succeed({ committed: true, storedEvents: [] } as never),
+    );
+    const layer = ProviderTurnStart.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),
+          Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent }),
+          IdAllocator.layer,
+          Path.layer,
+          FileSystem.layerNoop({}),
+          Layer.mock(GitWorkflow.GitWorkflowService)({}),
+          Layer.mock(ProjectService.ProjectService)({}),
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getThreadRecords: () => Effect.succeed(projection),
+            getTurnStartContext: () => Effect.succeed({ ...projection, hasConversation: true }),
+          }),
+          Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
+          Layer.mock(ProviderAuthService.ProviderAuthService)({}),
+          Layer.mock(RunExecutionService.RunExecutionServiceV2)({}),
+          Layer.mock(RuntimePolicy.RuntimePolicyV2)({ resolve: input.resolve }),
+        ),
+      ),
+    );
+    const exit = await Effect.gen(function* () {
+      const service = yield* ProviderTurnStart.ProviderTurnStartServiceV2;
+      return yield* Effect.exit(service.reattach!({ threadId, runId, handle, adapterState: null }));
+    }).pipe(Effect.provide(layer), Effect.runPromise);
+    const listed = await keeperRequest(socketPath, { op: "list" });
+    return { exit, writeIfRunCurrent, runId, handle, listed };
+  } finally {
+    if (previousSocket === undefined) delete process.env.T3_KEEPER_SOCKET;
+    else process.env.T3_KEEPER_SOCKET = previousSocket;
+    await keeper.close();
+    NodeFS.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * What a failed reattach wrote: the run's status, its open tool item's, the
+ * subagents it ended, and the effects.
+ */
+function writtenOff(writeIfRunCurrent: ReturnType<typeof vi.fn>) {
+  const write = writeIfRunCurrent.mock.calls[0]?.[0] as
+    | Parameters<EventSink.EventSinkV2Shape["writeIfRunCurrent"]>[0]
+    | undefined;
+  const events = write?.events ?? [];
+  const status = (type: string, id: string) =>
+    events
+      .filter((event) => event.type === type && (event.payload as { id: string }).id === id)
+      .map((event) => (event.payload as { status: string }).status);
+  return {
+    writes: writeIfRunCurrent.mock.calls.length,
+    run: status("run.updated", "run-keeper-reattach-write-off"),
+    tool: status("turn-item.updated", "item-kept-tool"),
+    subagents: events
+      .filter((event) => event.type === "subagent.updated")
+      .map((event) => [
+        (event.payload as { id: string }).id,
+        (event.payload as { status: string }).status,
+      ]),
+    effects: (write?.effects ?? []).map((effect) => effect.request),
+  };
+}
+
+const keeperWriteOffIt = process.platform === "win32" ? it.skip : it;
+
+// Any failure after the keeper check, here the runtime policy, used to
+// escape the reattach and leave the run running with nothing to end it.
+keeperWriteOffIt("writes a reattach off when a later step fails", async () => {
+  const result = await reattachToKeptTurn({
+    withCheckpointScope: true,
+    resolve: () => Effect.die(new Error("simulated runtime policy failure")),
+  });
+  expect(result.exit._tag).toBe("Success");
+  expect(writtenOff(result.writeIfRunCurrent)).toEqual({
+    writes: 1,
+    run: ["cancelled"],
+    tool: ["cancelled"],
+    subagents: [["subagent-kept", "cancelled"]],
+    effects: [{ type: "provider-runtime.continue", sourceRunId: result.runId }],
+  });
+});
+
+// A write-off is what a restart without the keeper does: the run is
+// cancelled with its continuation, and the kept CLI is ended.
+keeperWriteOffIt("continues a reattach it had to give up", async () => {
+  const result = await reattachToKeptTurn({
+    withCheckpointScope: false,
+    resolve: () => Effect.die(new Error("not reached")),
+  });
+  expect(result.exit._tag).toBe("Success");
+  expect(writtenOff(result.writeIfRunCurrent)).toEqual({
+    writes: 1,
+    run: ["cancelled"],
+    tool: ["cancelled"],
+    subagents: [["subagent-kept", "cancelled"]],
+    effects: [{ type: "provider-runtime.continue", sourceRunId: result.runId }],
+  });
+  expect(result.listed.handles.map((entry: { handle: string }) => entry.handle)).not.toContain(
+    result.handle,
+  );
+});

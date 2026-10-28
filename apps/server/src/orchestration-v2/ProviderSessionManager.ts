@@ -50,6 +50,7 @@ import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import { keeperDetachedThreads } from "./Adapters/ClaudeKeeperSpawn.ts";
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_MAX_IDLE_PIN_MS = 4 * 60 * 60 * 1000;
@@ -258,6 +259,16 @@ export interface ProviderSessionManagerV2LayerOptions {
   readonly maxIdlePinMs?: number;
   /** Test replay harnesses can omit T3's MCP server from provider protocol fixtures. */
   readonly configureMcp?: boolean;
+}
+
+/** A session a server shutdown left running in t3-keeper (ClaudeKeeperSpawn.ts). */
+function detachedIntoKeeper(
+  entry: { readonly attachedThreadIds: ReadonlySet<ThreadId> },
+  reason: ProviderSessionReleaseReason,
+): boolean {
+  if (reason !== "server_shutdown") return false;
+  const detached = keeperDetachedThreads();
+  return [...entry.attachedThreadIds].some((threadId) => detached.has(threadId));
 }
 
 function releaseStatusFor(
@@ -1092,6 +1103,9 @@ export const layerWithOptions = (
                     providerSessionId: input.providerSessionId,
                     reason: input.reason,
                   });
+                  // Its CLI runs on in t3-keeper and the next server attaches
+                  // to it, so the session, its requests and its work go on.
+                  if (detachedIntoKeeper(entry, input.reason)) return;
                   const records = {
                     entry,
                     reason: input.reason,
@@ -1141,8 +1155,10 @@ export const layerWithOptions = (
                         // A reservation means an in-flight open is configuring
                         // a provider process with this credential right now;
                         // revoking it here would strand that process (eager
-                        // adapters cannot pick up a rotated token).
+                        // adapters cannot pick up a rotated token). A process
+                        // left running in t3-keeper holds its credential too.
                         const heldElsewhere =
+                          detachedIntoKeeper(entry, input.reason) ||
                           isMcpCredentialReserved(threadId, mcpCredentialId) ||
                           Array.from(current.values()).some(
                             (other) =>

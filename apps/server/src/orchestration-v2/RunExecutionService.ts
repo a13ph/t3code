@@ -544,6 +544,14 @@ export interface RunExecutionServiceV2StartRootRunInput {
   readonly message: ProviderAdapter.ProviderAdapterV2TurnMessage;
   readonly modelSelection: ModelSelection;
   readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
+  /** The run is already running in a provider process that outlived a restart. */
+  readonly reattach?: ProviderAdapter.ProviderAdapterV2Reattach;
+  /**
+   * A reattached run's subagent rows from before the restart. The open ones
+   * are tracked as if this server had ingested their events, so the run
+   * waits on them and ends them with it.
+   */
+  readonly reattachedSubagents?: ReadonlyArray<OrchestrationV2Subagent>;
 }
 
 export interface RunExecutionServiceV2Shape {
@@ -977,11 +985,33 @@ export const layer: Layer.Layer<
           const rootRunFinalized = yield* Ref.make(false);
           const providerThreadOwnerLost = yield* Ref.make(false);
           const activeChildProviderTurns = yield* Ref.make<ReadonlySet<ProviderTurnId>>(new Set());
-          const activeChildSubagents = yield* Ref.make<ReadonlySet<NodeId>>(new Set());
+          const reattachedOpenSubagents = (input.reattachedSubagents ?? []).filter(
+            (subagent) => !isSettledSubagentStatus(subagent.status),
+          );
+          const activeChildSubagents = yield* Ref.make<ReadonlySet<NodeId>>(
+            new Set(reattachedOpenSubagents.map((subagent) => subagent.id)),
+          );
           const activeBackgroundTurnItems = yield* Ref.make<
             ReadonlySet<OrchestrationV2TurnItem["id"]>
           >(new Set(inheritedBackgroundTurnItemsById.keys()));
-          const openRunOwnedSubagents = yield* Ref.make(emptyOpenRunOwnedSubagentProjection());
+          const openRunOwnedSubagents = yield* Ref.make<OpenRunOwnedSubagentProjection>({
+            ...emptyOpenRunOwnedSubagentProjection(),
+            subagents: new Map(reattachedOpenSubagents.map((subagent) => [subagent.id, subagent])),
+            turnItems: new Map(
+              (input.reattach?.turnItems ?? []).flatMap((item) =>
+                item.type === "subagent" &&
+                item.runId === input.run.id &&
+                !isSettledTurnItemStatus(item.status)
+                  ? [[item.subagentId, item] as const]
+                  : [],
+              ),
+            ),
+            linkedChildThreadIds: new Set(
+              (input.reattachedSubagents ?? []).flatMap((subagent) =>
+                subagent.childThreadId === null ? [] : [subagent.childThreadId],
+              ),
+            ),
+          });
           const finalizeRootRun = (terminal: ProviderTerminalEvent) =>
             Effect.gen(function* () {
               if (yield* Ref.get(rootRunFinalized)) {
@@ -1437,6 +1467,7 @@ export const layer: Layer.Layer<
             modelSelection: input.modelSelection,
             runtimePolicy: input.runtimePolicy,
             ...(appContext.length === 0 ? {} : { appContext }),
+            ...(input.reattach === undefined ? {} : { reattach: input.reattach }),
           };
           // Check after the context read: ingestion can settle the run while
           // it awaits. A failed ownership read fails the start below.
@@ -1466,55 +1497,71 @@ export const layer: Layer.Layer<
             : input.session.startTurn(turnInput);
           yield* Effect.andThen(shouldStart, startTurn).pipe(
             Effect.catchCause((cause) =>
-              Effect.logError("orchestration V2 provider turn start failed", {
-                runId: input.run.id,
-                cause,
-              }).pipe(
-                Effect.andThen(Fiber.interrupt(providerEventFiber)),
-                Effect.andThen(Ref.get(latestProviderThread)),
-                Effect.flatMap((providerThread) =>
-                  Ref.get(latestTurnItemOrdinal).pipe(
-                    Effect.flatMap((latestItemOrdinal) =>
-                      Ref.get(openRunOwnedSubagents).pipe(
-                        Effect.flatMap((openSubagents) =>
-                          writeFinalRunEvents({
-                            run: input.run,
-                            rootNode: input.rootNode,
-                            checkpointScope: input.checkpointScope,
-                            providerThread,
-                            attempt: input.attempt,
-                            // Checked in the write transaction, not by another
-                            // read that can fail like the one before the start.
-                            writeIfRunCurrent: {
-                              activeAttemptId: input.attempt.id,
-                              expectedStatus: "running",
-                            },
-                            openRunOwnedSubagents: openSubagents,
-                            terminal: makeFailedTerminalEvent(
-                              makeProviderFailure({
-                                cause: Cause.squash(cause),
-                                // A failed ownership read is not the provider's fault.
-                                class: Exit.isFailure(shouldStart) ? "unknown" : "provider_error",
+              // A failed reattach is written off by its caller, as a restart
+              // would, so "Continue where you left off." can resume it.
+              input.reattach !== undefined
+                ? Fiber.interrupt(providerEventFiber).pipe(
+                    Effect.andThen(
+                      Effect.fail(
+                        new RunExecutionStartError({
+                          commandId: input.commandId,
+                          runId: input.run.id,
+                          cause: { start: cause },
+                        }),
+                      ),
+                    ),
+                  )
+                : Effect.logError("orchestration V2 provider turn start failed", {
+                    runId: input.run.id,
+                    cause,
+                  }).pipe(
+                    Effect.andThen(Fiber.interrupt(providerEventFiber)),
+                    Effect.andThen(Ref.get(latestProviderThread)),
+                    Effect.flatMap((providerThread) =>
+                      Ref.get(latestTurnItemOrdinal).pipe(
+                        Effect.flatMap((latestItemOrdinal) =>
+                          Ref.get(openRunOwnedSubagents).pipe(
+                            Effect.flatMap((openSubagents) =>
+                              writeFinalRunEvents({
+                                run: input.run,
+                                rootNode: input.rootNode,
+                                checkpointScope: input.checkpointScope,
+                                providerThread,
+                                attempt: input.attempt,
+                                // Checked in the write transaction, not by another
+                                // read that can fail like the one before the start.
+                                writeIfRunCurrent: {
+                                  activeAttemptId: input.attempt.id,
+                                  expectedStatus: "running",
+                                },
+                                openRunOwnedSubagents: openSubagents,
+                                terminal: makeFailedTerminalEvent(
+                                  makeProviderFailure({
+                                    cause: Cause.squash(cause),
+                                    // A failed ownership read is not the provider's fault.
+                                    class: Exit.isFailure(shouldStart)
+                                      ? "unknown"
+                                      : "provider_error",
+                                  }),
+                                  latestItemOrdinal + 1,
+                                ),
+                                failureItemPersisted: false,
+                                refreshAfterTurn,
                               }),
-                              latestItemOrdinal + 1,
                             ),
-                            failureItemPersisted: false,
-                            refreshAfterTurn,
-                          }),
+                          ),
                         ),
                       ),
                     ),
+                    Effect.mapError(
+                      (writeCause) =>
+                        new RunExecutionStartError({
+                          commandId: input.commandId,
+                          runId: input.run.id,
+                          cause: { start: cause, write: writeCause },
+                        }),
+                    ),
                   ),
-                ),
-                Effect.mapError(
-                  (writeCause) =>
-                    new RunExecutionStartError({
-                      commandId: input.commandId,
-                      runId: input.run.id,
-                      cause: { start: cause, write: writeCause },
-                    }),
-                ),
-              ),
             ),
           );
         }),
