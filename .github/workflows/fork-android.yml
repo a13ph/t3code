@@ -1,0 +1,101 @@
+name: Fork Android APK
+
+# Builds the mobile app of this fork's release branch as a sideloadable
+# arm64 APK, the production variant with over-the-air updates off, signs it
+# with the self-build key from the ANDROID_KEYSTORE_* secrets and attaches it
+# to the GitHub Release of the branch's commit. The same key as earlier
+# self-builds lets the APK install as an update over them.
+
+on:
+  push:
+    branches: [fork-release]
+  workflow_dispatch:
+
+concurrency:
+  group: fork-android-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    name: Build APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    env:
+      APP_VARIANT: production
+      T3CODE_MOBILE_UPDATES_ENABLED: "0"
+      EXPO_NO_GIT_STATUS: "1"
+      CI: "1"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+      - id: meta
+        run: |
+          version="$(fork/check-base.sh)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=t3-$version-${GITHUB_SHA::10}" >> "$GITHUB_OUTPUT"
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: false
+      - run: cp .env.example .env
+      - run: vp install --filter=@t3tools/mobile...
+      - name: Expo prebuild
+        working-directory: apps/mobile
+        run: ./node_modules/.bin/expo prebuild --platform android --clean --no-install
+      # Earlier self-builds carry versionCode 1; a higher one installs over
+      # them and over each other in run order.
+      - name: Set versionCode
+        working-directory: apps/mobile/android
+        run: |
+          set -euo pipefail
+          code=$(( ${{ github.run_number }} + 1 ))
+          sed -i -E "s/^( *)versionCode [0-9]+$/\1versionCode $code/" app/build.gradle
+          grep -E '^ *version(Code|Name) ' app/build.gradle
+      - name: Gradle assembleRelease
+        working-directory: apps/mobile/android
+        env:
+          NODE_ENV: production
+        run: ./gradlew --no-daemon -PreactNativeArchitectures=arm64-v8a assembleRelease
+      - name: Sign
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keystore="$RUNNER_TEMP/t3code-release.jks"
+          pass="$RUNNER_TEMP/t3code-release.pass"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          printf '%s\n' "$ANDROID_KEYSTORE_PASSWORD" > "$pass"
+          build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 | sort -V | tail -1)"
+          out="t3code-${{ steps.meta.outputs.version }}-arm64-v8a.apk"
+          "$build_tools/apksigner" sign --ks "$keystore" --ks-key-alias t3code \
+            --ks-pass "file:$pass" --out "$out" \
+            apps/mobile/android/app/build/outputs/apk/release/app-release.apk
+          rm -f "$keystore" "$pass" "$out.idsig"
+          "$build_tools/apksigner" verify --verbose --print-certs "$out"
+          "$build_tools/aapt2" dump badging "$out" | head -1
+          sha256sum "$out" | tee "$out.sha256"
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: fork/attach-release.sh "${{ steps.meta.outputs.tag }}" "${{ steps.meta.outputs.version }}" t3code-*.apk t3code-*.apk.sha256
