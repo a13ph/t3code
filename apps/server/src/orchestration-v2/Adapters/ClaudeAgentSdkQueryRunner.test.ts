@@ -570,6 +570,22 @@ function fifoOpened(cli: string, name: string) {
   };
 }
 
+/** One process in the keeper's reply to `list`. */
+interface KeeperListEntry {
+  readonly handle: string;
+  readonly name: string;
+  readonly alive: boolean;
+  readonly attached: boolean;
+  readonly acked: number;
+}
+
+/** The processes the keeper at `socketPath` holds. */
+const listKeeper = (socketPath: string) =>
+  Effect.promise(
+    (): Promise<{ readonly handles: ReadonlyArray<KeeperListEntry> }> =>
+      keeperRequest(socketPath, { op: "list" }),
+  );
+
 describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI in t3-keeper", () => {
   // The CLI does not get T3_KEEPER_SOCKET: a nested T3 server or test run
   // would otherwise spawn its own CLIs into the outer keeper.
@@ -586,9 +602,9 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI in 
       const started = fifoOpened(cli, "started");
       const session = yield* openFakeCli(cli);
       yield* Effect.promise(() => started.opened);
-      const list = yield* Effect.promise(() => keeperRequest(keeper.socketPath, { op: "list" }));
+      const list = yield* listKeeper(keeper.socketPath);
       assert.deepEqual(
-        list.handles.map((h: { name: string; alive: boolean }) => [h.name, h.alive]),
+        list.handles.map((h) => [h.name, h.alive]),
         [["thread-fake-cli", true]],
       );
       assert.equal(
@@ -609,17 +625,13 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI in 
       yield* Effect.promise(() => started.opened);
       assert.equal(detachKeeperChildren(), 1);
       yield* session.close;
-      const list = yield* Effect.promise(() => keeperRequest(keeper.socketPath, { op: "list" }));
+      const list = yield* listKeeper(keeper.socketPath);
       assert.deepEqual(
-        list.handles.map((h: { name: string; alive: boolean; attached: boolean }) => [
-          h.name,
-          h.alive,
-          h.attached,
-        ]),
+        list.handles.map((h) => [h.name, h.alive, h.attached]),
         [["thread-fake-cli", true, false]],
       );
       yield* Effect.promise(() =>
-        keeperRequest(keeper.socketPath, { op: "close", handle: list.handles[0].handle }),
+        keeperRequest(keeper.socketPath, { op: "close", handle: list.handles[0]!.handle }),
       );
       yield* Effect.promise(() => started.closed);
     }).pipe(Effect.provide(realQueryRunner)),
@@ -661,15 +673,15 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI in 
         yield* Queue.take(received),
       ];
       assert.deepEqual(
-        messages.map((message) => message.uuid),
+        messages.map((message): string | undefined => message.uuid),
         ["u1", "u2", "u3"],
       );
       session.handled?.(messages[1]!);
       assert.deepEqual(acks, []);
       yield* Effect.promise(() => firstAck.promise);
       assert.deepEqual(acks, [3]);
-      const list = yield* Effect.promise(() => keeperRequest(keeper.socketPath, { op: "list" }));
-      assert.equal(list.handles[0].acked, 3);
+      const list = yield* listKeeper(keeper.socketPath);
+      assert.equal(list.handles[0]?.acked, 3);
       yield* session.close;
     }).pipe(Effect.provide(realQueryRunner)),
   );
@@ -772,6 +784,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI in 
         args: [],
         cwd: dir,
         env: { ...process.env },
+        // @effect-diagnostics-next-line abortControllerInEffect:off - The CLI exits when its stdin ends; aborting on test teardown would race that exit.
         signal: new AbortController().signal,
       });
       yield* Effect.promise(() => started.opened);
