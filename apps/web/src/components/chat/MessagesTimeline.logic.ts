@@ -411,6 +411,50 @@ export function resolveTimelineMinimapCurrentIndex(input: {
   return precedingIndex;
 }
 
+export type TimelineTurnNavigation = "first" | "previous" | "next" | "last";
+
+export function timelineTurnNavigationFromCommand(
+  command: string | null,
+): TimelineTurnNavigation | null {
+  switch (command) {
+    case "chat.turn.first":
+      return "first";
+    case "chat.turn.previous":
+      return "previous";
+    case "chat.turn.next":
+      return "next";
+    case "chat.turn.last":
+      return "last";
+    default:
+      return null;
+  }
+}
+
+/**
+ * The minimap item the turn navigation keys scroll to, from the turn at the
+ * reader's position (`resolveTimelineMinimapCurrentIndex`). Steps clamp at
+ * the ends; with no current turn, previous and next start from the end,
+ * where a thread opens.
+ */
+export function resolveTimelineTurnNavigationIndex(input: {
+  readonly itemCount: number;
+  readonly currentIndex: number | null;
+  readonly direction: TimelineTurnNavigation;
+}): number | null {
+  const lastIndex = input.itemCount - 1;
+  if (lastIndex < 0) return null;
+  switch (input.direction) {
+    case "first":
+      return 0;
+    case "last":
+      return lastIndex;
+    case "previous":
+      return input.currentIndex === null ? lastIndex : Math.max(0, input.currentIndex - 1);
+    case "next":
+      return input.currentIndex === null ? lastIndex : Math.min(lastIndex, input.currentIndex + 1);
+  }
+}
+
 /**
  * Side gutter between the viewport edge and the centered content column.
  * `contentWidth` is the rendered column width, which follows the Chat width

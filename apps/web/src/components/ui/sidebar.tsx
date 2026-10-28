@@ -36,7 +36,7 @@ type SidebarContextProps = {
   setOpen: (open: boolean) => void;
   openMobile: boolean;
   mobileSheetMounted: boolean;
-  setMobileSheetElement: (element: HTMLDivElement | null) => void;
+  setMobileSheetSettledOpen: (open: boolean) => void;
   setOpenMobile: (open: boolean) => void;
   isMobile: boolean;
   toggleSidebar: () => void;
@@ -109,10 +109,10 @@ function SidebarProvider({
 }) {
   const isMobile = useIsMobile();
   const [openMobile, setOpenMobile] = React.useState(false);
-  const [mobileSheetMounted, setMobileSheetMounted] = React.useState(false);
-  const setMobileSheetElement = React.useCallback((element: HTMLDivElement | null) => {
-    setMobileSheetMounted(element !== null);
-  }, []);
+  // The sheet stays mounted while closed, so "mounted" here means open or still
+  // running its closing transition.
+  const [mobileSheetSettledOpen, setMobileSheetSettledOpen] = React.useState(false);
+  const mobileSheetMounted = openMobile || mobileSheetSettledOpen;
 
   // This is the internal state of the sidebar.
   // We use openProp and setOpenProp for control from outside the component.
@@ -153,22 +153,13 @@ function SidebarProvider({
       open,
       openMobile,
       mobileSheetMounted,
-      setMobileSheetElement,
+      setMobileSheetSettledOpen,
       setOpen,
       setOpenMobile,
       state,
       toggleSidebar,
     }),
-    [
-      state,
-      open,
-      setOpen,
-      isMobile,
-      openMobile,
-      mobileSheetMounted,
-      setMobileSheetElement,
-      toggleSidebar,
-    ],
+    [state, open, setOpen, isMobile, openMobile, mobileSheetMounted, toggleSidebar],
   );
 
   return (
@@ -213,7 +204,7 @@ function Sidebar({
   collapsible?: "offcanvas" | "icon" | "none";
   resizable?: boolean | SidebarResizableOptions;
 }) {
-  const { isMobile, state, openMobile, setOpenMobile, setMobileSheetElement } = useSidebar();
+  const { isMobile, state, openMobile, setOpenMobile, setMobileSheetSettledOpen } = useSidebar();
   const resolvedResizable = React.useMemo<SidebarResolvedResizableOptions | null>(() => {
     if (isMobile || collapsible === "none" || !resizable) {
       return null;
@@ -253,9 +244,14 @@ function Sidebar({
   if (isMobile) {
     return (
       <SidebarInstanceContext value={instanceContextValue}>
-        <Sheet onOpenChange={setOpenMobile} open={openMobile}>
+        <Sheet
+          onOpenChange={setOpenMobile}
+          onOpenChangeComplete={setMobileSheetSettledOpen}
+          open={openMobile}
+        >
+          {/* Kept mounted so the sidebar's window shortcuts (thread jumps) work while it is closed. */}
           <SheetPopup
-            ref={setMobileSheetElement}
+            keepMounted
             className={cn(
               "w-(--sidebar-width) max-w-none bg-sidebar surface-grain p-0 text-sidebar-foreground",
               className,

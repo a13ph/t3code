@@ -362,6 +362,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["hide fold running monitoring threads inbox sidebar shelf"],
   },
   {
+    id: "always-show-jump-numbers",
+    title: "Always show thread numbers",
+    to: "/settings/general",
+    searchTerms: ["jump hints shortcut keyboard sidebar badge pinned 1-9 modifier"],
+  },
+  {
     id: "auto-settle-inactive-threads",
     title: "Auto-settle inactive threads",
     to: "/settings/general",
