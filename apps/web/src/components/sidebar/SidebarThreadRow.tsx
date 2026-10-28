@@ -1550,7 +1550,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             </div>
           </div>
           {props.jumpNumber ? <JumpNumberMark label={props.jumpNumber} /> : null}
-            {props.jumpLabel ? <JumpHintBadge label={props.jumpLabel} /> : null}
+          {props.jumpLabel ? <JumpHintBadge label={props.jumpLabel} /> : null}
         </TooltipTrigger>
         {detailsTooltip}
       </Tooltip>
