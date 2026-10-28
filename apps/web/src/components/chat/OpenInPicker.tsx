@@ -255,7 +255,7 @@ export const OpenInPicker = memo(function OpenInPicker({
   availableEditors: ReadonlyArray<EditorId>;
   openInCwd: string | null;
   openInCwdIsFile?: boolean;
-  /** Sent as `thread=` on Neovim and Obsidian links. */
+  /** Sent as `thread=` on Neovim and Obsidian links, for the link handler. */
   threadId?: string | null;
   presentation?: "toolbar" | "menu";
   compact?: boolean;
