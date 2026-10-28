@@ -4,6 +4,7 @@ import { MarkdownFindContext } from "./markdownFindContext";
 import { useChatCanvas } from "./ChatCanvasContext";
 import { WorkLogBlock } from "./WorkLog";
 import type { WorktreeSetupSnapshot } from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
 import { deriveTimelineMinimapItems } from "./timelineMinimapItems";
 import {
   type AssistantCitation,
@@ -30,6 +31,7 @@ import {
   memo,
   use,
   useContext,
+  useEffect,
   useLayoutEffect,
   useRef,
   useState,
@@ -67,12 +69,18 @@ import {
   isTimelineMinimapRowVisible,
   resolveTimelineMinimapVisibleRange,
   resolveTimelineMinimapHitStripWidth,
+  resolveTimelineTurnNavigationIndex,
+  timelineTurnNavigationFromCommand,
   timelineTurnFoldRunIdsByEntryId,
   worktreeSetupAgentStarted,
   type MessagesTimelineRow,
   type TimelineLatestRun,
 } from "./MessagesTimeline.logic";
 import { type ThreadFindMatch } from "./threadFind";
+import { resolveShortcutCommand } from "../../keybindings";
+import { isEditableFocused } from "../../lib/editableFocus";
+import { isTerminalFocused } from "../../lib/terminalFocus";
+import { primaryServerKeybindingsAtom } from "../../state/server";
 import { useThreadFindNavigation } from "./useThreadFindNavigation";
 import { TooltipScrollDismissArea } from "../ui/tooltip";
 import { WorktreeSetupCard } from "./WorktreeSetupCard";
@@ -782,6 +790,44 @@ const ConversationTimeline = memo(function ConversationTimeline({
         };
   const [minimapHitStripWidth, setMinimapHitStripWidth] = useState(0);
   const [minimapCurrentIndex, setMinimapCurrentIndex] = useState<number | null>(null);
+  // The turn navigation keys move between the minimap's turns, as its
+  // buttons do. Refs keep the listener from re-binding on every scroll tick.
+  const keybindings = useAtomValue(primaryServerKeybindingsAtom);
+  const minimapCurrentIndexRef = useRef(minimapCurrentIndex);
+  minimapCurrentIndexRef.current = minimapCurrentIndex;
+  const minimapItemsRef = useRef(minimapItems);
+  minimapItemsRef.current = minimapItems;
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      const command = resolveShortcutCommand(event, keybindings, {
+        context: {
+          terminalFocus: isTerminalFocused(),
+          editableFocus: isEditableFocused(event.target),
+        },
+      });
+      const direction = timelineTurnNavigationFromCommand(command);
+      if (direction === null) return;
+      const items = minimapItemsRef.current;
+      const targetIndex = resolveTimelineTurnNavigationIndex({
+        itemCount: items.length,
+        currentIndex: minimapCurrentIndexRef.current,
+        direction,
+      });
+      const target = targetIndex === null ? undefined : items[targetIndex];
+      if (!target) return;
+      event.preventDefault();
+      event.stopPropagation();
+      viewportRef.current?.navigate({ releasesFollow: true });
+      void listRef.current?.scrollToIndex({
+        index: target.rowIndex,
+        animated: !window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+        viewOffset: 24,
+      });
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [keybindings, listRef]);
   const handleAnchorReady = (info: { anchorIndex: number | undefined }) => {
     if (anchorMessageId !== null && info.anchorIndex !== undefined) {
       onAnchorReady(anchorMessageId, info.anchorIndex);

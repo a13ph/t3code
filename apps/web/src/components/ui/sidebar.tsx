@@ -36,7 +36,7 @@ type SidebarContextProps = {
   setOpen: (open: boolean) => void;
   openMobile: boolean;
   mobileSheetMounted: boolean;
-  setMobileSheetElement: (element: HTMLDivElement | null) => void;
+  setMobileSheetSettledOpen: (open: boolean) => void;
   setOpenMobile: (open: boolean) => void;
   isMobile: boolean;
   toggleSidebar: () => void;
@@ -186,10 +186,10 @@ function SidebarProvider({
     store.getSnapshot,
     store.getSnapshot,
   );
-  const [mobileSheetMounted, setMobileSheetMounted] = React.useState(false);
-  const setMobileSheetElement = (element: HTMLDivElement | null) => {
-    setMobileSheetMounted(element !== null);
-  };
+  // The sheet stays mounted while closed, so "mounted" here means open or still
+  // running its closing transition.
+  const [mobileSheetSettledOpen, setMobileSheetSettledOpen] = React.useState(false);
+  const mobileSheetMounted = openMobile || mobileSheetSettledOpen;
 
   const state = resolveSidebarState({ isMobile, open, openMobile });
 
@@ -198,7 +198,7 @@ function SidebarProvider({
     open,
     openMobile,
     mobileSheetMounted,
-    setMobileSheetElement,
+    setMobileSheetSettledOpen,
     setOpen: store.setOpen,
     setOpenMobile: store.setOpenMobile,
     state,
@@ -270,7 +270,7 @@ function Sidebar({
   collapsible?: "offcanvas" | "icon" | "none";
   resizable?: boolean | SidebarResizableOptions;
 }) {
-  const { isMobile, state, openMobile, setOpenMobile, setMobileSheetElement } = useSidebar();
+  const { isMobile, state, openMobile, setOpenMobile, setMobileSheetSettledOpen } = useSidebar();
   const offcanvasCollapsed = !isMobile && collapsible === "offcanvas" && state === "collapsed";
 
   const resolvedResizable = resolveSidebarResizable({ collapsible, isMobile, resizable });
@@ -296,9 +296,14 @@ function Sidebar({
   if (isMobile) {
     return (
       <SidebarInstanceContext value={instanceContextValue}>
-        <Sheet onOpenChange={setOpenMobile} open={openMobile}>
+        <Sheet
+          onOpenChange={setOpenMobile}
+          onOpenChangeComplete={setMobileSheetSettledOpen}
+          open={openMobile}
+        >
+          {/* Kept mounted so the sidebar's window shortcuts (thread jumps) work while it is closed. */}
           <SheetPopup
-            ref={setMobileSheetElement}
+            keepMounted
             className={cn(
               "w-(--sidebar-width) max-w-none bg-sidebar surface-grain p-0 text-sidebar-foreground",
               className,
