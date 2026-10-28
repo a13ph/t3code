@@ -425,16 +425,16 @@ const permissionLine = (requestId: string) =>
 
 /** Resolves with the first line number acknowledged to the keeper. */
 const spyFirstKeeperAck = Effect.gen(function* () {
-  const first = Promise.withResolvers<number>();
+  const first = yield* Deferred.make<number>();
   const ack = vi.spyOn(KeeperProcess.prototype, "ack").mockImplementation(function (
     this: { _request: (msg: unknown) => Promise<unknown> },
     after: number,
   ) {
-    first.resolve(after);
+    Deferred.doneUnsafe(first, Exit.succeed(after));
     return this._request({ op: "ack", after });
   });
   yield* Effect.addFinalizer(() => Effect.sync(() => ack.mockRestore()));
-  return first.promise;
+  return Deferred.await(first);
 });
 
 describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI process", () => {
@@ -766,7 +766,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI in 
       // The CLI prints u2 only after it read the answer.
       assert.equal((yield* Queue.take(received)).uuid, "u2");
       session.handled?.(u1);
-      assert.equal(yield* Effect.promise(() => firstAck), 2);
+      assert.equal(yield* firstAck, 2);
       yield* session.close;
     }).pipe(Effect.provide(realQueryRunner)),
   );
@@ -789,7 +789,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI in 
       yield* Queue.take(received);
       // Handling u2 settles u1 before it, but not the open prompt between.
       session.handled?.(yield* Queue.take(received));
-      assert.equal(yield* Effect.promise(() => firstAck), 1);
+      assert.equal(yield* firstAck, 1);
       yield* session.close;
     }).pipe(Effect.provide(realQueryRunner)),
   );
