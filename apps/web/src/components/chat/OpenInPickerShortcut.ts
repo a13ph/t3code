@@ -1,7 +1,7 @@
 import type { EditorId, EnvironmentId, ResolvedKeybindingsConfig } from "@t3tools/contracts";
 import { useEffect } from "react";
 
-import { usePreferredEditor } from "../../editorPreferences";
+import { isPreferredOpenInApp, usePreferredEditor } from "../../editorPreferences";
 import { editorLabelForPlatform } from "../../editorLabels";
 import { isOpenFavoriteEditorShortcut } from "../../keybindings";
 import { announce } from "../../lib/announce";
@@ -57,6 +57,8 @@ export function useOpenFavoriteEditorShortcut({
     const handler = (event: globalThis.KeyboardEvent) => {
       if (event.defaultPrevented || !isOpenFavoriteEditorShortcut(event, keybindings)) return;
       if (!openInCwd || !preferredEditor) return;
+      // A Neovim or Obsidian pick opens from the picker's own shortcut.
+      if (isPreferredOpenInApp()) return;
 
       event.preventDefault();
       const label = editorLabelForPlatform(preferredEditor, navigator.platform);
