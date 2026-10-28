@@ -21,9 +21,10 @@ branch, tagged `t3-<version>-<commit>`.
 2. Bring this commit's files over.
 3. In `fork/base.json`, set `version` to the tag without its `v`, and
    `pnpmLockSha256` to the `sha256sum` of `pnpm-lock.yaml`.
-4. When the release moves the pnpm or Node major in `package.json`
+4. When the release moves pnpm or Node in `package.json`
    (`packageManager`, `engines.node`), move `pnpm` and `nodejs` in
-   `flake.nix` with it.
+   `flake.nix` with it. pnpm may come from the newer `nixpkgs-pnpm`
+   input when the main nixpkgs ships too old a one.
 5. Set `pnpmDepsHash` to `lib.fakeHash`'s value, run
    `nix build .#desktop`, and take the hash it reports.
 
