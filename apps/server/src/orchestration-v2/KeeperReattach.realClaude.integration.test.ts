@@ -234,6 +234,8 @@ const layerFixedMcpSession = Layer.succeed(
     set: () => Effect.void,
     read: (id) => Effect.sync(() => (id === threadId ? mcpCredential : undefined)),
     clear: () => Effect.void,
+    recordHtmlRender: () => Effect.void,
+    takeHtmlRender: () => Effect.succeed(undefined),
   }),
 );
 
