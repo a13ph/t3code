@@ -5,9 +5,16 @@
   # toolchain (electron, node, pnpm). Moving it changes every store path, so
   # machines that take these packages download them again from the cache.
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/c59305bab2065cfecc4944690d9eedbb56f3a9fa";
+  # Only pnpm comes from here, for a release that needs a newer one than the
+  # nixpkgs above ships.
+  inputs.nixpkgs-pnpm.url = "github:NixOS/nixpkgs/31ecbaca1bdefa45dffc409f0250bd8039ea0010";
 
   outputs =
-    { self, nixpkgs }:
+    {
+      self,
+      nixpkgs,
+      nixpkgs-pnpm,
+    }:
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
@@ -28,9 +35,10 @@
         );
       };
 
-      # The recipe's pnpm and Node majors, matched to the `packageManager` and
-      # `engines.node` of the release in base.json.
-      pnpm = pkgs.pnpm_12;
+      # The recipe's pnpm and Node, matched to the `packageManager` and
+      # `engines.node` of the release in base.json. pnpm before 12.9 fails to
+      # apply a patch that deletes a file without its old text (dbus-next's).
+      pnpm = nixpkgs-pnpm.legacyPackages.${system}.pnpm_12;
       nodejs = pkgs.nodejs_26;
 
       recipe = pkgs.t3code.unwrapped.override {
