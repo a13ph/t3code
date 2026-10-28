@@ -1,0 +1,152 @@
+name: Fork Windows installer
+
+# Builds the unsigned Windows x64 installer of this fork's release branch with
+# upstream's packaging job (release-desktop.yml) and attaches it, with its
+# updater feed, to the GitHub Release of the branch's commit. The installed
+# app looks for updates in this repository's Releases, since the build takes
+# its update feed from GITHUB_REPOSITORY. T3 Connect is off: the relay and
+# Clerk values of upstream's production deployment are not passed in.
+
+on:
+  push:
+    branches: [fork-release]
+  workflow_dispatch:
+
+concurrency:
+  group: fork-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  meta:
+    name: Resolve version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+      - id: meta
+        run: |
+          version="$(fork/check-base.sh)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=t3-$version-${GITHUB_SHA::10}" >> "$GITHUB_OUTPUT"
+
+  # The platform-independent JS (server bundle, web client, Electron main),
+  # as upstream's release.yml builds it for every platform job.
+  bundle:
+    name: Build JS bundle
+    needs: [meta]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: false
+      - run: vp install --filter=t3... --filter=@t3tools/web... --filter=@t3tools/desktop... --filter=@t3tools/scripts...
+      - run: node scripts/update-release-package-versions.ts "${{ needs.meta.outputs.version }}"
+      - uses: ./.github/actions/setup-apt-mirrors
+      - run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
+      - run: vp run build:desktop
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: js-bundle
+          path: |
+            apps/server/dist
+            apps/desktop/dist-electron
+          if-no-files-found: error
+          retention-days: 1
+
+  # The Windows app embeds the Linux CLI archive as its WSL runtime, so the
+  # Linux job runs too; its AppImage is not published.
+  linux_x64:
+    name: Desktop Linux x64
+    needs: [meta, bundle]
+    uses: ./.github/workflows/release-desktop.yml
+    with:
+      version: ${{ needs.meta.outputs.version }}
+      ref: ${{ github.sha }}
+      release_channel: stable
+      relay_client_tracing: false
+      clerk_publishable_key: ""
+      clerk_jwt_template: ""
+      clerk_cli_oauth_client_id: ""
+      relay_url: ""
+      label: Linux x64
+      runner: ubuntu-24.04
+      platform: linux
+      target: AppImage
+      arch: x64
+      rust_target: x86_64-unknown-linux-gnu
+      resource_key: linux-x64
+      cli_archive: true
+
+  win_x64:
+    name: Desktop Windows x64
+    needs: [meta, bundle]
+    uses: ./.github/workflows/release-desktop.yml
+    with:
+      version: ${{ needs.meta.outputs.version }}
+      ref: ${{ github.sha }}
+      release_channel: stable
+      relay_client_tracing: false
+      clerk_publishable_key: ""
+      clerk_jwt_template: ""
+      clerk_cli_oauth_client_id: ""
+      relay_url: ""
+      label: Windows x64
+      runner: windows-2025
+      platform: win
+      target: nsis
+      arch: x64
+      rust_target: x86_64-pc-windows-msvc
+      resource_key: win32-x64
+      cli_archive: false
+
+  release:
+    name: Attach to Release
+    needs: [meta, win_x64]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: fork
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: desktop-win-x64
+          path: win
+      # release-desktop.yml suffixes the feed per arch for upstream's merge
+      # step; with one arch the suffixed file is the feed itself.
+      - run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for feed in win/*-win-x64.yml; do
+            mv "$feed" "${feed%-win-x64.yml}.yml"
+          done
+          ls -l win
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: fork/attach-release.sh "${{ needs.meta.outputs.tag }}" "${{ needs.meta.outputs.version }}" win/*.exe win/*.blockmap win/latest.yml
