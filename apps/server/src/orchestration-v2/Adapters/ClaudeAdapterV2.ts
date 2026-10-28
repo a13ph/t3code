@@ -10357,6 +10357,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           // Read when a shutdown leaves this CLI in t3-keeper: what the next
           // server needs to tell this turn's result from another turn's.
           // Dropped when this query ends.
+          const runFork = Effect.runForkWith(yield* Effect.context<never>());
           const readKeeperTurnState = () => {
             const turn = Ref.getUnsafe(activeTurn);
             if (turn === null || Ref.getUnsafe(queryContext) !== context) return null;
@@ -10372,7 +10373,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             } catch (cause) {
               // No state, no reattach: the shutdown closes the CLI and the
               // run is continued after the restart, as without t3-keeper.
-              Effect.runFork(
+              runFork(
                 Effect.logWarning("t3-keeper turn state not recorded", {
                   threadId: turnInput.threadId,
                   cause,
@@ -10476,22 +10477,23 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     });
             const startedAt = reattached?.seed.startedAt ?? (yield* DateTime.now);
             // Use fresh uuids: native sessions can outlive this database, and Claude skips previously recorded prompts.
+            // A reattached turn's prompt is already in its CLI.
+            const newPromptUuid =
+              reattached !== undefined || isClaudeProviderContinuationTurn(turnInput)
+                ? null
+                : yield* crypto.randomUUIDv4().pipe(
+                    Effect.filterOrFail(isClaudePromptUuid),
+                    Effect.mapError(
+                      (cause) =>
+                        new ProviderAdapter.ProviderAdapterProtocolError({
+                          driver: CLAUDE_PROVIDER,
+                          detail: "Failed to allocate a Claude prompt uuid.",
+                          payload: cause,
+                        }),
+                    ),
+                  );
             const promptUuid =
-              reattached !== undefined
-                ? reattached.state.promptUuid
-                : isClaudeProviderContinuationTurn(turnInput)
-                  ? null
-                  : yield* crypto.randomUUIDv4().pipe(
-                      Effect.filterOrFail(isClaudePromptUuid),
-                      Effect.mapError(
-                        (cause) =>
-                          new ProviderAdapter.ProviderAdapterProtocolError({
-                            driver: CLAUDE_PROVIDER,
-                            detail: "Failed to allocate a Claude prompt uuid.",
-                            payload: cause,
-                          }),
-                      ),
-                    );
+              reattached !== undefined ? reattached.state.promptUuid : newPromptUuid;
             const providerTurnOrdinal = turnInput.providerTurnOrdinal;
             const currentTurn = yield* Ref.get(activeTurn);
             if (currentTurn !== null) {
@@ -10523,9 +10525,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               pdfBudgets.get(nativeThreadId)!,
               persistAttachmentBudget(nativeThreadId),
             );
-            // A reattached turn's prompt is already in its CLI.
             const userMessage =
-              promptUuid === null || reattached !== undefined
+              newPromptUuid === null
                 ? null
                 : yield* makeClaudeUserMessageWithAttachments({
                     text: applyClaudePromptEffortPrefix(
@@ -10537,7 +10538,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     fileSystem,
                     pdfReservation,
                     skills: yield* userInvocableSkills(turnInput.runtimePolicy.cwd),
-                    uuid: promptUuid,
+                    uuid: newPromptUuid,
                   }).pipe(
                     Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
                     Effect.provideService(Path.Path, path),

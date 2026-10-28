@@ -783,11 +783,8 @@ export const make = Effect.gen(function* () {
 
   // A reattach recorded at shutdown for this thread's running run and the
   // keeper handle it still has.
-  const awaitsKeeperReattach = (
-    projection: ProjectionStore.ProjectionRuntimeRecoveryState,
-    handle: string,
-  ) =>
-    Effect.gen(function* () {
+  const awaitsKeeperReattach = Effect.fn("ProviderRuntimeRecoveryService.awaitsKeeperReattach")(
+    function* (projection: ProjectionStore.ProjectionRuntimeRecoveryState, handle: string) {
       const run = keeperReattachableRun(projection);
       if (run === undefined) return false;
       const effects = yield* outbox.listByCommandId(keeperReattachCommandId(run.id)).pipe(
@@ -807,7 +804,8 @@ export const make = Effect.gen(function* () {
           effect.request.runId === run.id &&
           effect.request.handle === handle,
       );
-    });
+    },
+  );
 
   // Shutdown, before the sessions are released: for each thread whose CLI
   // was left in t3-keeper mid-turn, records the reattach the next server runs.
