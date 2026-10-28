@@ -1,4 +1,5 @@
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
+import { keeperSpawnProcess } from "./ClaudeKeeperSpawn.ts";
 import {
   dynamicToolTitle,
   formatReadToolLabel,
@@ -777,10 +778,13 @@ export const layerQueryRunner: Layer.Layer<
                 executableArgs: [...launch.args, ...(queryOptions.executableArgs ?? [])],
               };
         // A spawner the caller passed keeps its process. Windows has no process
-        // groups, so there the SDK spawns the CLI itself.
+        // groups, so there the SDK spawns the CLI itself. With T3_KEEPER_SOCKET
+        // set, t3-keeper spawns it (ClaudeKeeperSpawn.ts).
         const spawnClaudeCodeProcess =
           options.spawnClaudeCodeProcess ??
-          (platform === "win32" ? undefined : spawnClaudeProcessGroup);
+          (platform === "win32"
+            ? undefined
+            : (keeperSpawnProcess(input.threadId) ?? spawnClaudeProcessGroup));
         // The CLI is running once query() returns, so it is closed if anything
         // before the session is handed out fails or is interrupted.
         const queryRuntime = yield* Effect.uninterruptibleMask((restore) =>
