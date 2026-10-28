@@ -1,7 +1,8 @@
 # Fork release builds
 
-The `fork-release` branch is an upstream release tag with this fork's
-`public/*` branches merged on top, plus the files that build it:
+Each `fork-release-<version>` branch is an upstream release tag with
+this fork's `public/*` branches merged on top, plus the files that
+build it. A push to any `fork-release*` branch runs the workflows:
 
 - `flake.nix`: the `desktop`, `server` (no Codex) and `t3-keeper-src`
   packages for NixOS, from nixpkgs' T3 Code recipe.
@@ -16,8 +17,8 @@ branch, tagged `t3-<version>-<commit>`.
 
 # Moving to a new upstream release
 
-1. Make the branch from the new tag and merge the rebased `public/*`
-   branches onto it.
+1. Make a new `fork-release-<version>` branch from the new tag and
+   merge the rebased `public/*` branches onto it.
 2. Bring this commit's files over.
 3. In `fork/base.json`, set `version` to the tag without its `v`, and
    `pnpmLockSha256` to the `sha256sum` of `pnpm-lock.yaml`.
