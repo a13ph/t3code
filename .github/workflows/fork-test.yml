@@ -1,0 +1,106 @@
+name: Fork tests
+
+# Typechecks and the tests the fork branches touch, plus upstream's LaTeX
+# tests, on GitHub's free runners. The same file runs on a branch at plain
+# upstream, so a failure both share is upstream's.
+on:
+  push:
+    branches: ["ci/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Typecheck and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: ./.github/actions/setup-ci-deps
+
+      - name: Resolve Playwright version
+        id: playwright_version
+        run: echo "version=$(node -p "require('./apps/web/node_modules/playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Chromium
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-shell-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright_version.outputs.version }}
+
+      - name: Install Chromium for web browser tests
+        run: |
+          node apps/web/node_modules/playwright/cli.js install --only-shell chromium
+          browser=$(find "$HOME/.cache/ms-playwright" -name chrome-headless-shell -type f -print -quit)
+          test -n "$browser"
+          if ldd "$browser" | grep '=> not found'; then
+            node apps/web/node_modules/playwright/cli.js install-deps chromium
+          fi
+
+      - name: Typecheck contracts
+        if: ${{ !cancelled() }}
+        run: vp run --filter @t3tools/contracts typecheck
+
+      - name: Typecheck shared
+        if: ${{ !cancelled() }}
+        run: vp run --filter @t3tools/shared typecheck
+
+      - name: Typecheck server
+        if: ${{ !cancelled() }}
+        run: vp run --filter t3 typecheck
+
+      - name: Typecheck web
+        if: ${{ !cancelled() }}
+        run: vp run --filter @t3tools/web typecheck
+
+      - name: Test contracts and shared
+        if: ${{ !cancelled() }}
+        run: |
+          (cd packages/contracts && vp test run --config ../../vite.config.ts --dir . --passWithNoTests src/settings.test.ts)
+          (cd packages/shared && vp test run --config ../../vite.config.ts --dir . --passWithNoTests \
+            src/threadFindText.test.ts src/markdownMath.test.ts src/composerInlineTokens.test.ts)
+
+      - name: Test web
+        if: ${{ !cancelled() }}
+        working-directory: apps/web
+        run: |
+          vp test run --passWithNoTests --project unit --project browser \
+            src/components/ChatMarkdown.browser.test.tsx \
+            src/components/chat/MessagesTimeline.browser.test.tsx \
+            src/components/chat/MessagesTimeline.logic.test.ts \
+            src/components/chat/timelineTurnNavigation.test.ts \
+            src/components/Sidebar.jumpKeys.test.ts \
+            src/composer-logic.test.ts \
+            src/composer-rich-text-doc.test.ts \
+            src/editorPreferences.test.ts \
+            src/markdown-clipboard.test.ts \
+            src/openInApps.test.ts \
+            src/remoteFileLinks.test.ts \
+            src/rightPanelStore.test.ts
+
+      - name: Test server
+        if: ${{ !cancelled() }}
+        working-directory: apps/server
+        run: |
+          vp test run --passWithNoTests \
+            src/orchestration-v2/Adapters/ClaudeAgentSdkQueryRunner.test.ts \
+            src/orchestration-v2/Adapters/ClaudeKeeperReattach.test.ts \
+            src/orchestration-v2/FoundationPersistence.test.ts \
+            src/orchestration-v2/KeeperReattach.integration.test.ts \
+            src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts \
+            src/orchestration-v2/ProviderTurnStartService.test.ts
