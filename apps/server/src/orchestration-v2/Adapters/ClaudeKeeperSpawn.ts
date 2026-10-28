@@ -44,7 +44,7 @@ export function keeperSpawnProcess(
     group: true,
     // nothing reattaches, so the keeper may drop each line once delivered
     autoAck: true,
-    // a keeper restarting (2 s) still gets the CLI
+    // a keeper that is restarting still gets the CLI
     connectRetryMs: options.connectRetryMs ?? 10_000,
     fallbackLocal: true,
     onFallback: (error: NodeJS.ErrnoException) => {
@@ -53,8 +53,8 @@ export function keeperSpawnProcess(
       );
     },
   });
-  // The CLI and its commands do not get the socket, so a T3 dev server or
-  // test started from a chat never spawns into this keeper.
+  // The CLI and its commands do not get the socket, so a T3 server or
+  // test run started by the CLI never spawns into this keeper.
   return (spawnOptions) => {
     const { T3_KEEPER_SOCKET: _, ...env } = spawnOptions.env;
     return spawner({ ...spawnOptions, env });
