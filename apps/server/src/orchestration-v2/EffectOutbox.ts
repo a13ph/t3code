@@ -44,6 +44,17 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     type: Schema.Literal("provider-turn.start"),
     runId: RunId,
   }),
+  /**
+   * A running run whose provider process a server shutdown left in t3-keeper:
+   * the next server attaches to it and lets the run finish there. Neither
+   * process-bound nor replayed after a crash: a later startup decides again.
+   */
+  Schema.Struct({
+    type: Schema.Literal("provider-turn.reattach"),
+    runId: RunId,
+    handle: Schema.String,
+    adapterState: Schema.Unknown,
+  }),
   Schema.Struct({
     type: Schema.Literal("provider-turn.interrupt"),
     providerSessionId: ProviderSessionId,
@@ -500,8 +511,14 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             completed_at = ${now},
             updated_at = ${now},
             last_error = 'Cancelled because the server process ended before the effect completed.'
-          WHERE status IN ('pending', 'running')
-            AND effect_type IN ${sql.in(PROCESS_BOUND_EFFECT_TYPES)}
+          WHERE (
+              status IN ('pending', 'running')
+              AND effect_type IN ${sql.in(PROCESS_BOUND_EFFECT_TYPES)}
+            )
+            -- A reattach cut by the end of its process: the shutdown that cut
+            -- it recorded a fresh one if the turn still runs in t3-keeper. A
+            -- pending reattach is that record, and is left for this startup.
+            OR (status = 'running' AND effect_type = 'provider-turn.reattach')
           RETURNING effect_id
         `;
         const requeuedRows = yield* sql<{ readonly effect_id: string }>`
