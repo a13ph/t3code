@@ -17,6 +17,13 @@ import {
   useRemoteOpenState,
 } from "../../remoteOpen";
 import { useEnvironment } from "../../state/environments";
+import {
+  buildOpenInAppUrl,
+  canOfferOpenInApps,
+  isOpenInAppId,
+  OPEN_IN_APP_IDS,
+  type OpenInTargetId,
+} from "../../openInApps";
 import { ChevronDownIcon, FolderClosedIcon, SquareArrowOutUpRightIcon } from "lucide-react";
 
 import { Group, GroupSeparator } from "../ui/group";
@@ -74,13 +81,35 @@ import { useComposerMenuState } from "./useComposerMenuState";
 type OpenInOption = {
   label: string;
   Icon: Icon;
-  value: EditorId;
+  value: OpenInTargetId;
   kind: "brand" | "generic";
 };
 
+const letterIcon =
+  (letter: string, fill: string): Icon =>
+  (props) => (
+    <svg viewBox="0 0 24 24" fill="none" {...props}>
+      <rect x="2" y="2" width="20" height="20" rx="5" fill={fill} />
+      <text
+        x="12"
+        y="16.5"
+        textAnchor="middle"
+        fontSize="13"
+        fontWeight="700"
+        fontFamily="system-ui, sans-serif"
+        fill="var(--color-zinc-25)"
+      >
+        {letter}
+      </text>
+    </svg>
+  );
+
+const NeovimIcon = letterIcon("N", "#3E9B4F");
+const ObsidianIcon = letterIcon("O", "#7C3AED");
+
 export const resolveOpenInOptions = (
   platform: string,
-  availableEditors: ReadonlyArray<EditorId>,
+  availableEditors: ReadonlyArray<OpenInTargetId>,
 ) => {
   const baseOptions: ReadonlyArray<Omit<OpenInOption, "label">> = [
     {
@@ -183,6 +212,8 @@ export const resolveOpenInOptions = (
       value: "webstorm",
       kind: "brand",
     },
+    { Icon: NeovimIcon, value: "nvim", kind: "brand" },
+    { Icon: ObsidianIcon, value: "obsidian", kind: "brand" },
     {
       Icon: isMacPlatform(platform)
         ? FinderIcon
@@ -212,11 +243,14 @@ export const OpenInPicker = memo(function OpenInPicker({
   compact = false,
   enableShortcut = true,
   displayMode = "toolbar",
+  threadId = null,
 }: {
   environmentId: EnvironmentId;
   keybindings: ResolvedKeybindingsConfig;
   availableEditors: ReadonlyArray<EditorId>;
   openInCwd: string | null;
+  /** Sent as `thread=` on Neovim and Obsidian links. */
+  threadId?: string | null;
   presentation?: "toolbar" | "menu";
   compact?: boolean;
   enableShortcut?: boolean;
@@ -236,7 +270,12 @@ export const OpenInPicker = memo(function OpenInPicker({
   const environmentLabel = useEnvironment(environmentId)?.label ?? "this machine";
   // Remote mode ignores the server's PATH probe: what matters is what runs on
   // the viewing machine, which only the desktop app can probe.
-  const effectiveEditors = remote.mode === "local-exec" ? availableEditors : remoteCapableEditors;
+  // The link-only apps open through the desktop shell on this machine, so the
+  // desktop offers them whatever either probe found; a browser cannot.
+  const effectiveEditors = useMemo((): ReadonlyArray<OpenInTargetId> => {
+    const editors = remote.mode === "local-exec" ? availableEditors : remoteCapableEditors;
+    return canOfferOpenInApps() ? [...editors, ...OPEN_IN_APP_IDS] : editors;
+  }, [availableEditors, remote.mode, remoteCapableEditors]);
   const [preferredEditor, setPreferredEditor] = usePreferredEditor(effectiveEditors);
   const options = useMemo(
     () => resolveOpenInOptions(navigator.platform, effectiveEditors),
@@ -245,11 +284,24 @@ export const OpenInPicker = memo(function OpenInPicker({
   const primaryOption = options.find(({ value }) => value === preferredEditor) ?? null;
 
   const openInEditor = useCallback(
-    (editorId: EditorId | null) => {
+    (editorId: OpenInTargetId | null) => {
       if (!openInCwd) return;
       const editor = editorId ?? preferredEditor;
       if (!editor) return;
       if (remote.mode === "remote-unavailable") return;
+      if (isOpenInAppId(editor)) {
+        const url = buildOpenInAppUrl({
+          app: editor,
+          host: remote.mode === "remote-links" ? remote.host.host : null,
+          absolutePath: openInCwd,
+          threadId,
+        });
+        void openRemoteEditorUrl(url).then((opened) => {
+          if (!opened) return;
+          setPreferredEditor(editor);
+        });
+        return;
+      }
       if (remote.mode === "remote-links") {
         const url = buildRemoteOpenUrl({
           editor,
@@ -285,6 +337,7 @@ export const OpenInPicker = memo(function OpenInPicker({
       preferredEditor,
       remote,
       setPreferredEditor,
+      threadId,
     ],
   );
 

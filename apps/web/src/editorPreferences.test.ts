@@ -80,6 +80,16 @@ it("keeps the stored available editor for an authorized launch", async () => {
   expect(state.setPreference).not.toHaveBeenCalled();
 });
 
+it("replaces a stored pick that no longer decodes with the first available editor", async () => {
+  state.allowed.add(secondary);
+  state.getPreference.mockImplementation(() => {
+    throw new Error("decode");
+  });
+  const open = useOpenInPreferredEditor(secondary, ["vscode"]);
+  expect(await open("/work")).toMatchObject({ _tag: "Success", value: "vscode" });
+  expect(state.setPreference).toHaveBeenCalledTimes(1);
+});
+
 it("returns the existing failures for a missing environment or editor", async () => {
   state.allowed.add(secondary);
   expect((await useOpenInPreferredEditor(null, ["vscode"])("/work"))._tag).toBe("Failure");

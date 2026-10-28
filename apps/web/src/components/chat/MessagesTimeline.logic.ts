@@ -1056,6 +1056,53 @@ function failedTimelineRunIds(
   return failed;
 }
 
+/** Claude's AskUserQuestion tool call, which arrives just before its user_input_request. */
+function workEntryIsAskUserQuestionCall(entry: WorkLogEntry): boolean {
+  const item = entry.projectedItem?.item;
+  return item?.type === "dynamic_tool" && item.toolName === "AskUserQuestion";
+}
+
+/**
+ * The text an agent wrote right before asking the user a question, and the
+ * question itself. The user answered with that text in front of them, so it
+ * stays readable after the turn folds. Reasoning and the question's own tool
+ * call between the two do not break the pair, and the tool call still folds,
+ * so the question renders as its own row; any other work breaks it.
+ */
+function questionContextEntryIds(entries: ReadonlyArray<TimelineEntry>): ReadonlySet<string> {
+  const kept = new Set<string>();
+  let leadIn: TimelineEntry[] = [];
+  let inQuestion = false;
+  for (const entry of entries) {
+    if (entry.kind === "message" && entry.message.role === "assistant") {
+      if (inQuestion) leadIn = [];
+      inQuestion = false;
+      leadIn.push(entry);
+      continue;
+    }
+    if (entry.kind === "work" && entry.entry.itemType === "reasoning") continue;
+    if (entry.kind === "work" && workEntryIsAskUserQuestionCall(entry.entry)) {
+      // The call itself folds; its lead-in stays even if no request follows.
+      for (const text of leadIn) kept.add(text.id);
+      inQuestion = inQuestion || leadIn.length > 0;
+      leadIn = [];
+      continue;
+    }
+    if (entry.kind === "work" && entry.entry.itemType === "user_input_request") {
+      if (leadIn.length > 0 || inQuestion) {
+        for (const text of leadIn) kept.add(text.id);
+        kept.add(entry.id);
+        inQuestion = true;
+      }
+      leadIn = [];
+      continue;
+    }
+    leadIn = [];
+    inQuestion = false;
+  }
+  return kept;
+}
+
 /**
  * Settled turns fold activity before their terminal assistant message behind
  * a "Worked for ..." row. Ordinary trailing work joins the fold, while failures
@@ -1178,6 +1225,7 @@ function deriveTurnFolds(input: {
       continue;
     }
     const hiddenEntryIds = new Set<string>();
+    const questionContextIds = questionContextEntryIds(group.entries);
     const terminalEntryIndex = group.terminalEntry
       ? group.entries.findIndex((entry) => entry.id === group.terminalEntry?.id)
       : group.entries.length;
@@ -1199,7 +1247,8 @@ function deriveTurnFolds(input: {
       if (
         timelineEntryIsPersistentResourceCard(entry) ||
         input.liveSubagentEntryIds.has(entry.id) ||
-        input.completeSupersededReplyEntryIds.has(entry.id)
+        input.completeSupersededReplyEntryIds.has(entry.id) ||
+        questionContextIds.has(entry.id)
       ) {
         continue;
       }

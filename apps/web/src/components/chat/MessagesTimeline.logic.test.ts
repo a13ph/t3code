@@ -1435,6 +1435,144 @@ describe("deriveMessagesTimelineRows", () => {
     ).toBeDefined();
   });
 
+  describe("text written before a question", () => {
+    const message = (id: string, text: string, at: string) => ({
+      id: `${id}-entry`,
+      kind: "message" as const,
+      createdAt: at,
+      message: {
+        id: id as never,
+        role: "assistant" as const,
+        text,
+        runId: "turn-1" as never,
+        createdAt: at,
+        updatedAt: at,
+        streaming: false,
+      },
+    });
+    const work = (id: string, at: string, extra: Record<string, unknown> = {}) => ({
+      id: `${id}-entry`,
+      kind: "work" as const,
+      createdAt: at,
+      entry: {
+        id,
+        createdAt: at,
+        runId: "turn-1" as never,
+        label: "Ran command",
+        tone: "tool" as const,
+        ...extra,
+      },
+    });
+    const question = (id: string, at: string) =>
+      work(id, at, { label: "Answered questions", itemType: "user_input_request" });
+    const user = {
+      id: "user-entry",
+      kind: "message" as const,
+      createdAt: "2026-01-01T00:00:00Z",
+      message: {
+        id: "user-1" as never,
+        role: "user" as const,
+        text: "What changed?",
+        runId: null,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+        streaming: false,
+      },
+    };
+    const visibleEntryIds = (timelineEntries: ReadonlyArray<TimelineEntry>) => {
+      const rows = deriveMessagesTimelineRows({
+        timelineEntries,
+        isWorking: false,
+        activeTurnStartedAt: null,
+        turnDiffSummaries: [],
+        supportsConversationRollback: false,
+      });
+      return rows.flatMap((row) =>
+        row.kind === "turn-fold"
+          ? [row.id]
+          : row.kind === "work"
+            ? row.groupedEntries.map((entry) => `${entry.id}-entry`)
+            : row.kind === "work-toggle"
+              ? [`toggle:${row.groupId}`]
+              : [row.id],
+      );
+    };
+
+    it("keeps the report and the question outside the fold", () => {
+      const ids = visibleEntryIds([
+        user,
+        message("assistant-first", "Reading the logs.", "2026-01-01T00:00:01Z"),
+        work("work-1", "2026-01-01T00:00:02Z"),
+        message("assistant-report", "1. Parser\n2. Tests\n3. Docs", "2026-01-01T00:00:03Z"),
+        work("thinking-1", "2026-01-01T00:00:04Z", { tone: "thinking", itemType: "reasoning" }),
+        question("ask-1", "2026-01-01T00:00:05Z"),
+        work("work-2", "2026-01-01T00:00:06Z"),
+        message("assistant-final", "Done.", "2026-01-01T00:00:07Z"),
+      ]);
+      expect(ids).toContain("turn-fold:turn-1");
+      expect(ids).toContain("assistant-report-entry");
+      expect(ids).toContain("ask-1-entry");
+      expect(ids.some((id) => id.startsWith("toggle:"))).toBe(false);
+      expect(ids).not.toContain("assistant-first-entry");
+      expect(ids).not.toContain("work-1-entry");
+      expect(ids).not.toContain("work-2-entry");
+      expect(ids.at(-1)).toBe("assistant-final-entry");
+    });
+
+    it.each([true, false])(
+      "shows Claude's question as its own row and folds its tool call (work after: %s)",
+      (workAfter) => {
+        const ids = visibleEntryIds([
+          user,
+          message("assistant-report", "Two bugs fixed.", "2026-01-01T00:00:01Z"),
+          work("ask-tool", "2026-01-01T00:00:02Z", {
+            projectedItem: { item: { type: "dynamic_tool", toolName: "AskUserQuestion" } },
+          }),
+          question("ask-1", "2026-01-01T00:00:03Z"),
+          ...(workAfter ? [work("work-2", "2026-01-01T00:00:04Z")] : []),
+          message("assistant-final", "Done.", "2026-01-01T00:00:05Z"),
+        ]);
+        expect(ids).toEqual([
+          "user-entry",
+          "turn-fold:turn-1",
+          "assistant-report-entry",
+          "ask-1-entry",
+          "assistant-final-entry",
+        ]);
+      },
+    );
+
+    it("keeps the report when Claude's question call has no request after it", () => {
+      const ids = visibleEntryIds([
+        user,
+        message("assistant-report", "A or B?", "2026-01-01T00:00:01Z"),
+        work("ask-tool", "2026-01-01T00:00:02Z", {
+          projectedItem: { item: { type: "dynamic_tool", toolName: "AskUserQuestion" } },
+        }),
+        message("assistant-final", "Picking A.", "2026-01-01T00:00:03Z"),
+      ]);
+      expect(ids).toEqual([
+        "user-entry",
+        "turn-fold:turn-1",
+        "assistant-report-entry",
+        "assistant-final-entry",
+      ]);
+    });
+
+    it("folds text that a tool call, not a question, follows", () => {
+      const ids = visibleEntryIds([
+        user,
+        message("assistant-report", "1. Parser\n2. Tests", "2026-01-01T00:00:01Z"),
+        work("work-1", "2026-01-01T00:00:02Z"),
+        question("ask-1", "2026-01-01T00:00:03Z"),
+        message("assistant-final", "Done.", "2026-01-01T00:00:04Z"),
+      ]);
+      expect(ids).not.toContain("assistant-report-entry");
+      expect(ids).not.toContain("ask-1-entry");
+      expect(ids).toEqual(["user-entry", "turn-fold:turn-1", "assistant-final-entry"]);
+    });
+  });
+
   it.each([1, 2, 3])("folds %i completed activities after the terminal response", (count) => {
     const runId = RunId.make("turn-1");
     const timelineEntries = [

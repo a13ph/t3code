@@ -127,6 +127,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                   environmentId={props.environmentId}
                   availableEditors={props.availableEditors}
                   openInCwd={props.gitCwd}
+                  threadId={props.threadId}
                   displayMode="panel"
                 />
               ) : null}

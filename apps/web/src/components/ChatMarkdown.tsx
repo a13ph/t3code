@@ -149,6 +149,13 @@ import {
   usePreferredEditor,
 } from "../editorPreferences";
 import { openInEditorMenuLabel } from "../editorLabels";
+import {
+  buildChipOpenUrl,
+  canOfferOpenInApps,
+  chipOpenTargetLabel,
+  resolveChipOpenTargets,
+  type ChipOpenTarget,
+} from "../openInApps";
 import { resolveDiffThemeName, type DiffThemeName } from "../lib/diffRendering";
 import { fnv1a32 } from "../lib/diffRendering";
 import { LRUCache } from "../lib/lruCache";
@@ -178,7 +185,7 @@ import { isElectron } from "../env";
 import { readLocalApi } from "../localApi";
 import { useAssetUrlRefresh, useAssetUrlState } from "../assets/assetUrls";
 import { cn } from "../lib/utils";
-import { useRemoteOpenResolution, type RemoteOpenMode } from "../remoteOpen";
+import { openRemoteEditorUrl, useRemoteOpenResolution, type RemoteOpenMode } from "../remoteOpen";
 import { useRightPanelStore } from "../rightPanelStore";
 import { readThreadShell, useProjects } from "../state/entities";
 import { serverEnvironment } from "../state/server";
@@ -1220,6 +1227,16 @@ interface MarkdownFileLinkProps {
   /** Platform-specific menu label ("Reveal in Finder", ...); required for the
       reveal item to show. */
   revealLabel?: string | undefined;
+  /** "Open in <app>" context-menu targets (Neovim, Obsidian, VSCodium). */
+  openTargets?: ReadonlyArray<ChipOpenTarget> | undefined;
+  onOpenTarget?:
+    | ((
+        target: ChipOpenTarget,
+        filePath: string,
+        targetPath: string,
+        line: number | undefined,
+      ) => void)
+    | undefined;
 }
 
 const MARKDOWN_FILE_LINK_CLASS_NAME = "chat-markdown-file-link";
@@ -1967,6 +1984,8 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   onOpenMedia,
   onReveal,
   revealLabel,
+  openTargets,
+  onOpenTarget,
 }: MarkdownFileLinkProps) {
   const handleOpenInEditor = useCallback(() => {
     if (!onOpen) {
@@ -2143,6 +2162,12 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
           [
             ...(onOpenMedia ? ([{ id: "preview-media", label: "Preview media" }] as const) : []),
             ...(onOpen ? ([{ id: "open", label: openInEditorMenuLabel }] as const) : []),
+            ...(onOpenTarget
+              ? (openTargets ?? []).map((target) => ({
+                  id: `open-target:${target}` as const,
+                  label: `Open in ${chipOpenTargetLabel(target)}`,
+                }))
+              : []),
             ...(onOpenInBrowser
               ? ([{ id: "open-in-browser", label: "Open in integrated browser" }] as const)
               : []),
@@ -2159,6 +2184,11 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         }
         if (clicked === "open") {
           handleOpenInEditor();
+          return;
+        }
+        if (clicked?.startsWith("open-target:")) {
+          const target = openTargets?.find((candidate) => clicked === `open-target:${candidate}`);
+          if (target !== undefined) onOpenTarget?.(target, iconPath, targetPath, line);
           return;
         }
         if (clicked === "open-in-browser") {
@@ -2189,11 +2219,15 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
       handleOpenInBrowser,
       handleOpenInEditor,
       handleRevealInFileManager,
+      iconPath,
+      line,
       onOpenInBrowser,
       onOpenMedia,
       onOpen,
+      onOpenTarget,
       onReveal,
       openInEditorMenuLabel,
+      openTargets,
       revealLabel,
       targetPath,
     ],
@@ -2317,7 +2351,9 @@ function areMarkdownFileLinkPropsEqual(
     previous.onOpenInBrowser === next.onOpenInBrowser &&
     previous.onOpenMedia === next.onOpenMedia &&
     previous.onReveal === next.onReveal &&
-    previous.revealLabel === next.revealLabel
+    previous.revealLabel === next.revealLabel &&
+    previous.openTargets === next.openTargets &&
+    previous.onOpenTarget === next.onOpenTarget
   );
 }
 
@@ -2419,6 +2455,56 @@ function useChatMarkdownState({
   const openInEditor = useAtomCommand(shellEnvironment.openInEditor, {
     reportFailure: false,
   });
+  const chipOpenTargets = useMemo(
+    () =>
+      resolveChipOpenTargets({
+        isDesktop: canOfferOpenInApps(),
+        isRemoteOpenResolved: remoteOpen.isResolved,
+        remoteOpenMode: remoteOpen.state.mode,
+        canUseShellActions,
+        availableEditors,
+      }),
+    [availableEditors, canUseShellActions, remoteOpen.isResolved, remoteOpen.state.mode],
+  );
+  const remoteOpenState = remoteOpen.state;
+  const chipThreadId = threadRef?.threadId ?? null;
+  const openChipTarget = useCallback(
+    (target: ChipOpenTarget, filePath: string, targetPath: string, line: number | undefined) => {
+      const showFailure = (description: string) =>
+        toastManager.add(
+          stackedThreadToast({ type: "error", title: "Unable to open file", description }),
+        );
+      // Local VSCodium keeps the stock route: the server launches `codium`.
+      if (target === "vscodium" && remoteOpenState.mode === "local-exec") {
+        if (environmentId === null) return;
+        void openInEditor({
+          environmentId,
+          input: { cwd: targetPath, editor: "vscodium" },
+        }).then((result) => {
+          if (result._tag === "Success" || isAtomCommandInterrupted(result)) return;
+          const error = squashAtomCommandFailure(result);
+          showFailure(error instanceof Error ? error.message : "An error occurred.");
+        });
+        return;
+      }
+      if (!isAbsolutePath(filePath)) {
+        showFailure(`${filePath} is not an absolute path.`);
+        return;
+      }
+      const url = buildChipOpenUrl({
+        target,
+        state: remoteOpenState,
+        absolutePath: filePath,
+        line,
+        threadId: chipThreadId,
+      });
+      if (url === undefined) return;
+      void openRemoteEditorUrl(url).then((opened) => {
+        if (!opened) showFailure("The desktop app refused the link.");
+      });
+    },
+    [chipThreadId, environmentId, openInEditor, remoteOpenState],
+  );
   const revealInFileManagerLabel =
     environmentId !== null &&
     serverConfig?.shellRevealInFileManager === true &&
@@ -2706,6 +2792,8 @@ function useChatMarkdownState({
               : undefined
           }
           revealLabel={revealInFileManagerLabel}
+          openTargets={chipOpenTargets}
+          onOpenTarget={chipOpenTargets.length > 0 ? openChipTarget : undefined}
           onOpenInBrowser={
             threadRef &&
             canOperatePreview &&
@@ -2720,8 +2808,10 @@ function useChatMarkdownState({
     [
       canUseShellActions,
       canOperatePreview,
+      chipOpenTargets,
       environmentId,
       fileLinkParentSuffixByPath,
+      openChipTarget,
       openFileInPanel,
       openInPreferredEditor,
       openMarkdownFileInPreview,
@@ -2951,7 +3041,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
     } = use(ChatMarkdownRendererContext);
     const citation = href ? parseAssistantCitationHref(href) : null;
     if (citation) return <AssistantCitationChip citation={citation} />;
-    // A thread link names a thread in this message's environment and opens it in the app.
+    // A thread link names a thread in any connected environment and opens it in the app.
     const linkedThreadId = href ? parseThreadLinkHref(href) : null;
     if (linkedThreadId) {
       const label = hastPlainTextDeep(node) || linkedThreadId;
