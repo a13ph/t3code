@@ -8,7 +8,7 @@ tag="$1"
 version="$2"
 shift 2
 if ! gh release view "$tag" >/dev/null 2>&1; then
-  notes="T3 Code $version with this fork's patches, built from $GITHUB_SHA on the fork-release branch."
+  notes="T3 Code $version with this fork's patches, built from $GITHUB_SHA on the $GITHUB_REF_NAME branch."
   # A second workflow may make it between the check and here.
   gh release create "$tag" --target "$GITHUB_SHA" --title "T3 Code $version ($tag)" --notes "$notes" \
     || gh release view "$tag" >/dev/null

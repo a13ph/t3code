@@ -9,7 +9,7 @@ name: Fork Windows installer
 
 on:
   push:
-    branches: [fork-release]
+    branches: ['fork-release*']
   workflow_dispatch:
 
 concurrency:
