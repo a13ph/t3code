@@ -28,6 +28,7 @@ import {
   firstKeeperAck,
   keeperSocket,
   keeperTestModelSelection as modelSelection,
+  listKeeper,
   makeKeeperTestAdapter,
   realQueryRunner,
   SLOW_COMMAND,
@@ -38,8 +39,6 @@ import {
   keeperDetachedThreads,
   keeperTurnStateThreads,
 } from "./ClaudeKeeperSpawn.ts";
-// @ts-ignore - plain ESM without types
-import { request as keeperRequest } from "../../t3Keeper/shim.mjs";
 
 const runtimePolicy = (cwd: string) =>
   ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
@@ -181,16 +180,13 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
         assert.isDefined(detached);
         yield* before.close;
         const runningItem = before.events.map(toolItem).findLast((item) => item !== undefined)!;
-        const list = yield* Effect.promise(() => keeperRequest(keeper.socketPath, { op: "list" }));
+        const list = yield* listKeeper(keeper.socketPath);
         assert.deepEqual(
-          list.handles.map((h: { name: string; alive: boolean; attached: boolean }) => [
-            h.name,
-            h.alive,
-            h.attached,
-          ]),
+          list.handles.map((h) => [h.name, h.alive, h.attached]),
           [[threadId, true, false]],
         );
-        assert.equal(list.handles[0].acked, ackedLine);
+        const kept = list.handles[0]!;
+        assert.equal(kept.acked, ackedLine);
 
         // The server after it.
         const after = yield* openSession(
@@ -206,7 +202,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
             cwd: fake.dir,
             reattach: {
               handle: detached!.handle,
-              after: list.handles[0].acked,
+              after: kept.acked,
               turnItems: [runningItem as OrchestrationV2TurnItem],
               adapterState: detached!.adapterState,
             },
