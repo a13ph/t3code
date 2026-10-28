@@ -1103,6 +1103,35 @@ function questionContextEntryIds(entries: ReadonlyArray<TimelineEntry>): Readonl
   return kept;
 }
 
+/** The row the server adds where a Stop hook sent Claude back to work. */
+function workEntryIsStopHook(entry: WorkLogEntry): boolean {
+  const item = entry.projectedItem?.item;
+  return item?.type === "dynamic_tool" && item.toolName === "Stop hook";
+}
+
+/**
+ * Text right before a Stop hook row, with only reasoning between: a reply the
+ * agent had finished when the hook sent it back to work. It answers the
+ * prompt, so it stays readable after the turn folds, whatever the hook made
+ * the agent write last.
+ */
+function stopHookReplyEntryIds(entries: ReadonlyArray<TimelineEntry>): ReadonlySet<string> {
+  const kept = new Set<string>();
+  let leadIn: string[] = [];
+  for (const entry of entries) {
+    if (entry.kind === "message" && entry.message.role === "assistant") {
+      leadIn.push(entry.id);
+      continue;
+    }
+    if (entry.kind === "work" && entry.entry.itemType === "reasoning") continue;
+    if (entry.kind === "work" && workEntryIsStopHook(entry.entry)) {
+      for (const id of leadIn) kept.add(id);
+    }
+    leadIn = [];
+  }
+  return kept;
+}
+
 /**
  * Settled turns fold activity before their terminal assistant message behind
  * a "Worked for ..." row. Ordinary trailing work joins the fold, while failures
@@ -1226,6 +1255,7 @@ function deriveTurnFolds(input: {
     }
     const hiddenEntryIds = new Set<string>();
     const questionContextIds = questionContextEntryIds(group.entries);
+    const stopHookReplyIds = stopHookReplyEntryIds(group.entries);
     const terminalEntryIndex = group.terminalEntry
       ? group.entries.findIndex((entry) => entry.id === group.terminalEntry?.id)
       : group.entries.length;
@@ -1248,7 +1278,8 @@ function deriveTurnFolds(input: {
         timelineEntryIsPersistentResourceCard(entry) ||
         input.liveSubagentEntryIds.has(entry.id) ||
         input.completeSupersededReplyEntryIds.has(entry.id) ||
-        questionContextIds.has(entry.id)
+        questionContextIds.has(entry.id) ||
+        stopHookReplyIds.has(entry.id)
       ) {
         continue;
       }

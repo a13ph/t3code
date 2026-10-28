@@ -1086,6 +1086,72 @@ describe("buildThreadFeed", () => {
     ]);
   });
 
+  describe("text a Stop hook sent back to work", () => {
+    const text = (id: string, at: string, ordinal: number, body: string) => ({
+      ...base(id, at, ordinal),
+      type: "assistant_message" as const,
+      messageId: MessageId.make(`message-${id}`),
+      text: body,
+      streaming: false,
+    });
+    const thinking = (id: string, at: string, ordinal: number) => ({
+      ...base(id, at, ordinal),
+      type: "reasoning" as const,
+      text: "Checking the hook.",
+      streaming: false,
+    });
+    const stopHook = (id: string, at: string, ordinal: number) => ({
+      ...base(id, at, ordinal),
+      type: "dynamic_tool" as const,
+      toolName: "Stop hook",
+      input: { feedback: "lint: line 5 is too long" },
+    });
+    const shownTexts = (items: ReadonlyArray<OrchestrationV2TurnItem>) =>
+      deriveThreadFeedPresentation(
+        buildThreadFeed(items.map((item, index) => projected(item, index))),
+        {
+          runId,
+          status: "completed",
+          startedAt: "2026-06-20T00:00:01.000Z",
+          completedAt: "2026-06-20T00:00:09.000Z",
+        },
+        new Set(),
+      ).flatMap((entry) => (entry.type === "message" ? [entry.message.text] : []));
+
+    it("keeps a reply a Stop hook sent back to work", () => {
+      expect(
+        shownTexts([
+          userMessage(),
+          text("first", "2026-06-20T00:00:01.500Z", 1, "Reading the config."),
+          { ...command(), ordinal: 2 },
+          text("reply", "2026-06-20T00:00:03.000Z", 3, "1. Before\n2. After"),
+          thinking("thinking", "2026-06-20T00:00:04.000Z", 4),
+          stopHook("hook", "2026-06-20T00:00:05.000Z", 5),
+          text("lookup", "2026-06-20T00:00:06.000Z", 6, "Looking up the link."),
+          {
+            ...command("2026-06-20T00:00:07.000Z"),
+            id: TurnItemId.make("item-command-2"),
+            ordinal: 7,
+          },
+          text("fix", "2026-06-20T00:00:08.000Z", 8, "The link is fixed."),
+        ]),
+      ).toEqual(["Run checks", "Reading the config.", "1. Before\n2. After", "The link is fixed."]);
+    });
+
+    it("still folds text without a Stop hook after it", () => {
+      expect(
+        shownTexts([
+          userMessage(),
+          text("first", "2026-06-20T00:00:02.000Z", 1, "Reading the config."),
+          { ...command("2026-06-20T00:00:03.000Z"), ordinal: 2 },
+          text("middle", "2026-06-20T00:00:04.000Z", 3, "Checking one more detail."),
+          thinking("thinking", "2026-06-20T00:00:05.000Z", 4),
+          text("final", "2026-06-20T00:00:06.000Z", 5, "Fixed."),
+        ]),
+      ).toEqual(["Run checks", "Reading the config.", "Fixed."]);
+    });
+  });
+
   it("keeps an active run expanded and detects failures from completed command output", () => {
     const failedCommand: OrchestrationV2TurnItem = {
       ...command(),

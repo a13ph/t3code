@@ -1573,6 +1573,122 @@ describe("deriveMessagesTimelineRows", () => {
     });
   });
 
+  describe("text a Stop hook sent back to work", () => {
+    const message = (id: string, text: string, at: string) => ({
+      id: `${id}-entry`,
+      kind: "message" as const,
+      createdAt: at,
+      message: {
+        id: id as never,
+        role: "assistant" as const,
+        text,
+        runId: "turn-1" as never,
+        createdAt: at,
+        updatedAt: at,
+        streaming: false,
+      },
+    });
+    const work = (id: string, at: string, extra: Record<string, unknown> = {}) => ({
+      id: `${id}-entry`,
+      kind: "work" as const,
+      createdAt: at,
+      entry: {
+        id,
+        createdAt: at,
+        runId: "turn-1" as never,
+        label: "Ran command",
+        tone: "tool" as const,
+        ...extra,
+      },
+    });
+    const thinking = (id: string, at: string) =>
+      work(id, at, { tone: "thinking", itemType: "reasoning" });
+    const stopHook = (id: string, at: string) =>
+      work(id, at, {
+        label: "Stop hook",
+        itemType: "dynamic_tool_call",
+        projectedItem: { item: { type: "dynamic_tool", toolName: "Stop hook" } },
+      });
+    const user = {
+      id: "user-entry",
+      kind: "message" as const,
+      createdAt: "2026-01-01T00:00:00Z",
+      message: {
+        id: "user-1" as never,
+        role: "user" as const,
+        text: "Fix the helper.",
+        runId: null,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+        streaming: false,
+      },
+    };
+    const visibleEntryIds = (timelineEntries: ReadonlyArray<TimelineEntry>) =>
+      deriveMessagesTimelineRows({
+        timelineEntries,
+        isWorking: false,
+        activeTurnStartedAt: null,
+        turnDiffSummaries: [],
+        supportsConversationRollback: false,
+      }).flatMap((row) =>
+        row.kind === "turn-fold"
+          ? [row.id]
+          : row.kind === "work"
+            ? row.groupedEntries.map((entry) => `${entry.id}-entry`)
+            : row.kind === "work-toggle"
+              ? [`toggle:${row.groupId}`]
+              : [row.id],
+      );
+
+    it("keeps a reply a Stop hook followed with a short correction", () => {
+      const ids = visibleEntryIds([
+        user,
+        message("assistant-first", "Reading the config.", "2026-01-01T00:00:01Z"),
+        work("work-1", "2026-01-01T00:00:02Z"),
+        message("assistant-reply", "1. Before\n2. After\n3. Gap", "2026-01-01T00:00:03Z"),
+        stopHook("hook-1", "2026-01-01T00:00:04Z"),
+        message("assistant-fix", "**Before.** The fixed line.", "2026-01-01T00:00:05Z"),
+      ]);
+      expect(ids).toEqual([
+        "user-entry",
+        "turn-fold:turn-1",
+        "assistant-reply-entry",
+        "assistant-fix-entry",
+      ]);
+    });
+
+    it("keeps a reply a Stop hook sent back to work with tools", () => {
+      const ids = visibleEntryIds([
+        user,
+        work("work-1", "2026-01-01T00:00:01Z"),
+        message("assistant-reply", "Fixed. The helper points at gh.", "2026-01-01T00:00:02Z"),
+        thinking("thinking-1", "2026-01-01T00:00:03Z"),
+        stopHook("hook-1", "2026-01-01T00:00:04Z"),
+        message("assistant-lookup", "Looking up the thread link.", "2026-01-01T00:00:05Z"),
+        work("work-2", "2026-01-01T00:00:06Z"),
+        message("assistant-fix", "The thread is linked now.", "2026-01-01T00:00:07Z"),
+      ]);
+      expect(ids).toEqual([
+        "user-entry",
+        "turn-fold:turn-1",
+        "assistant-reply-entry",
+        "assistant-fix-entry",
+      ]);
+    });
+
+    it("still folds text without a Stop hook after it", () => {
+      const ids = visibleEntryIds([
+        user,
+        message("assistant-first", "Reading the config.", "2026-01-01T00:00:01Z"),
+        work("work-1", "2026-01-01T00:00:02Z"),
+        message("assistant-middle", "Checking one more detail.", "2026-01-01T00:00:03Z"),
+        thinking("thinking-1", "2026-01-01T00:00:04Z"),
+        message("assistant-final", "Fixed.", "2026-01-01T00:00:05Z"),
+      ]);
+      expect(ids).toEqual(["user-entry", "turn-fold:turn-1", "assistant-final-entry"]);
+    });
+  });
+
   it.each([1, 2, 3])("folds %i completed activities after the terminal response", (count) => {
     const runId = RunId.make("turn-1");
     const timelineEntries = [

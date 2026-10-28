@@ -33,6 +33,7 @@ import {
   NodeId,
   type OrchestrationV2AppThread,
   type OrchestrationV2ProviderThread,
+  type OrchestrationV2TurnItem,
   ProjectId,
   ProviderInstanceId,
   type ProviderInstanceEnvironment,
@@ -14298,6 +14299,64 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             lastCheck: "One test still fails.",
           },
           { objective: condition, status: "complete", checks: 1 },
+        ]);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    );
+
+    it.effect("marks where a Stop hook sent Claude back to work", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("stop-hook-attempt"),
+            text: "Fix the helper.",
+            attachments: [],
+          }),
+        );
+        for (const frame of [
+          makeAssistantTextFrame({ uuid: "stop-hook-reply", text: "Fixed: 1. Before 2. After" }),
+          claudeSdkFrame({
+            type: "user",
+            message: {
+              role: "user",
+              content: "Stop hook feedback:\nlint: line 5 is too long",
+            },
+            parent_tool_use_id: null,
+            isSynthetic: true,
+            uuid: "stop-hook-check",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+          makeAssistantTextFrame({ uuid: "stop-hook-fix", text: "**Before.** The fixed line." }),
+          makeResultFrame({ uuid: "stop-hook-result", result: "**Before.** The fixed line." }),
+        ]) {
+          yield* Queue.offer(harness.sdkMessages, frame);
+        }
+        const terminal = yield* Queue.take(harness.terminalReceipts);
+        assert.equal(terminal.status, "completed");
+        const items = new Map<string, OrchestrationV2TurnItem>();
+        for (const event of harness.events) {
+          if (event.type === "turn_item.updated") items.set(event.turnItem.id, event.turnItem);
+        }
+        const rows = [...items.values()]
+          .filter((item) => item.type === "assistant_message" || item.type === "dynamic_tool")
+          .toSorted((left, right) => left.ordinal - right.ordinal)
+          .map((item) =>
+            item.type === "assistant_message"
+              ? item.text
+              : `${item.toolName}: ${JSON.stringify(item.input)}`,
+          );
+        assert.deepEqual(rows, [
+          "Fixed: 1. Before 2. After",
+          'Stop hook: {"feedback":"lint: line 5 is too long"}',
+          "**Before.** The fixed line.",
         ]);
       }).pipe(
         Effect.scoped,

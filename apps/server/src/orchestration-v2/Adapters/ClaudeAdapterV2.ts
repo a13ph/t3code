@@ -1317,6 +1317,30 @@ function claudeWritesUpdatesAsThinking(model: string): boolean {
 // goal, and each unmet evaluator check returns as Stop hook feedback.
 const CLAUDE_GOAL_SET_PREFIX = "Goal set: ";
 const CLAUDE_GOAL_ACTIVE = /^Goal active: ([\s\S]+?) \((?:not yet evaluated|(\d+) turns?)\)/u;
+const CLAUDE_STOP_HOOK_FEEDBACK_PREFIX = "Stop hook feedback:\n";
+/** The row that marks a Stop hook sending Claude back to work; the web keys on this name. */
+const CLAUDE_STOP_HOOK_TOOL_NAME = "Stop hook";
+
+/**
+ * The text of a root frame that carries a Stop hook's feedback, or null. Claude
+ * had ended its turn when a Stop hook returned it, so the text it wrote last was
+ * a finished reply, whatever the hook makes it do next.
+ */
+function claudeStopHookFeedbackText(message: SDKMessage): string | null {
+  if (
+    message.type !== "user" ||
+    message.parent_tool_use_id !== null ||
+    message.isSynthetic !== true
+  ) {
+    return null;
+  }
+  const content = message.message.content;
+  const text =
+    typeof content === "string"
+      ? content
+      : content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
+  return text.startsWith(CLAUDE_STOP_HOOK_FEEDBACK_PREFIX) ? text : null;
+}
 
 /**
  * The goal after one root SDK frame, or undefined when the frame says nothing
@@ -1345,20 +1369,11 @@ function nextClaudeGoal(
       checks: Number(active[2] ?? 0),
     };
   }
-  if (
-    message.type !== "user" ||
-    message.parent_tool_use_id !== null ||
-    message.isSynthetic !== true ||
-    current === null
-  ) {
+  const text = claudeStopHookFeedbackText(message);
+  if (text === null || current === null) {
     return undefined;
   }
-  const prefix = `Stop hook feedback:\n[${current.objective}]: `;
-  const content = message.message.content;
-  const text =
-    typeof content === "string"
-      ? content
-      : content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
+  const prefix = `${CLAUDE_STOP_HOOK_FEEDBACK_PREFIX}[${current.objective}]: `;
   if (!text.startsWith(prefix)) return undefined;
   return {
     ...current,
@@ -6953,6 +6968,47 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             return;
           }
           yield* trackClaudeGoal({ nativeThreadId: liveQuery.nativeThreadId, context, message });
+
+          const stopHookFeedback = claudeStopHookFeedbackText(message);
+          if (stopHookFeedback !== null && message.type === "user") {
+            // The frame's own uuid and time keep the row the same item when a
+            // restarted server replays the frame into the run.
+            const sentMs = message.timestamp === undefined ? NaN : Date.parse(message.timestamp);
+            const now = Number.isFinite(sentMs) ? DateTime.makeUnsafe(sentMs) : yield* DateTime.now;
+            const nativeItemId = `stop-hook:${message.uuid ?? `${context.providerTurnId}:${DateTime.toEpochMillis(now)}`}`;
+            yield* emitProviderEvent({
+              type: "turn_item.updated",
+              driver: CLAUDE_PROVIDER,
+              turnItem: {
+                id: idAllocator.derive.turnItemFromProviderItem({
+                  driver: CLAUDE_PROVIDER,
+                  nativeItemId,
+                }),
+                threadId: context.input.threadId,
+                runId: context.input.runId,
+                nodeId: context.input.rootNodeId,
+                providerThreadId: context.input.providerThread.id,
+                providerTurnId: context.providerTurnId,
+                nativeItemRef: {
+                  driver: CLAUDE_PROVIDER,
+                  nativeId: nativeItemId,
+                  strength: "weak",
+                },
+                parentItemId: null,
+                ordinal: yield* resolveItemOrdinal(context, nativeItemId),
+                type: "dynamic_tool",
+                status: "completed",
+                title: CLAUDE_STOP_HOOK_TOOL_NAME,
+                toolName: CLAUDE_STOP_HOOK_TOOL_NAME,
+                input: {
+                  feedback: stopHookFeedback.slice(CLAUDE_STOP_HOOK_FEEDBACK_PREFIX.length),
+                },
+                startedAt: now,
+                completedAt: now,
+                updatedAt: now,
+              },
+            });
+          }
 
           // Subagent narration belongs to its child thread, never the parent log.
           if (message.type === "stream_event" && !message.parent_tool_use_id) {
