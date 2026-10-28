@@ -48,6 +48,9 @@ jobs:
         with:
           name: ${{ env.CACHIX_CACHE }}
           authToken: ${{ env.CACHIX_AUTH_TOKEN }}
+          # Build-time downloads (the pnpm store, vendored crates) are about
+          # half of a version's upload and no machine installs them.
+          pushFilter: "(-pnpm-deps|-vendor|-vendor-staging)$"
       - name: Build
         run: |
           set -euo pipefail
