@@ -1,3 +1,4 @@
+// @effect-diagnostics globalConsole:off - The SDK calls the spawner outside the Effect runtime.
 /**
  * Spawns the Claude CLI through t3-keeper (`../../t3Keeper/`) when
  * `T3_KEEPER_SOCKET` names its socket. A relative path is taken under
