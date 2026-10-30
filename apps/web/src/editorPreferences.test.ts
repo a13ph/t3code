@@ -67,3 +67,13 @@ it("checks revocation and regrant when a retained editor callback is invoked", a
   });
   expect(state.setPreference).toHaveBeenCalledTimes(1);
 });
+
+it("replaces a stored pick that no longer decodes with the first available editor", async () => {
+  state.allowed.add(secondary);
+  state.getPreference.mockImplementation(() => {
+    throw new Error("decode");
+  });
+  const open = useOpenInPreferredEditor(secondary, ["vscode"]);
+  expect(await open("/work")).toMatchObject({ _tag: "Success", value: "vscode" });
+  expect(state.setPreference).toHaveBeenCalledTimes(1);
+});
