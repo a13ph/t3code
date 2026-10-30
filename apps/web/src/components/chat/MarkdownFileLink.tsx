@@ -10,6 +10,7 @@ import { memo, type MouseEvent as ReactMouseEvent } from "react";
 import { readLocalApi } from "../../localApi";
 import { cn } from "../../lib/utils";
 import { shouldOpenMarkdownFileLinkInEditor } from "../../markdown-links";
+import { chipOpenTargetLabel, type ChipOpenTarget } from "../../openInApps";
 import type { markdownFileCopyPaths } from "../../markdownFileHostPath";
 import { documentChipKindForFileName } from "../../pierre-icons";
 import { ContextChip } from "../ContextChip";
@@ -44,6 +45,16 @@ interface MarkdownFileLinkProps {
   onOpenMedia?: (() => void) | undefined;
   onReveal?: (() => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
   revealLabel?: string | undefined;
+  /** "Open in <app>" context-menu targets (Neovim, Obsidian, VSCodium). */
+  openTargets?: ReadonlyArray<ChipOpenTarget> | undefined;
+  onOpenTarget?:
+    | ((
+        target: ChipOpenTarget,
+        filePath: string,
+        targetPath: string,
+        line: number | undefined,
+      ) => void)
+    | undefined;
 }
 
 const MARKDOWN_FILE_LINK_CLASS_NAME = "chat-markdown-file-link";
@@ -67,6 +78,8 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
   onOpenMedia,
   onReveal,
   revealLabel,
+  openTargets,
+  onOpenTarget,
   resolveCopyPaths,
 }: MarkdownFileLinkProps) {
   const handleOpenInEditor = () => {
@@ -251,6 +264,12 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
         [
           ...(onOpenMedia ? ([{ id: "preview-media", label: "Preview media" }] as const) : []),
           ...(onOpen ? ([{ id: "open", label: openInEditorMenuLabel }] as const) : []),
+          ...(onOpenTarget
+            ? (openTargets ?? []).map((target) => ({
+                id: `open-target:${target}` as const,
+                label: `Open in ${chipOpenTargetLabel(target)}`,
+              }))
+            : []),
           ...(onOpenInBrowser
             ? ([{ id: "open-in-browser", label: "Open in integrated browser" }] as const)
             : []),
@@ -266,6 +285,11 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
       }
       if (clicked === "open") {
         handleOpenInEditor();
+        return;
+      }
+      if (clicked?.startsWith("open-target:")) {
+        const target = openTargets?.find((candidate) => clicked === `open-target:${candidate}`);
+        if (target !== undefined) onOpenTarget?.(target, iconPath, targetPath, line);
         return;
       }
       if (clicked === "open-in-browser") {
@@ -410,6 +434,8 @@ function areMarkdownFileLinkPropsEqual(
     previous.onOpenMedia === next.onOpenMedia &&
     previous.onReveal === next.onReveal &&
     previous.resolveCopyPaths === next.resolveCopyPaths &&
-    previous.revealLabel === next.revealLabel
+    previous.revealLabel === next.revealLabel &&
+    previous.openTargets === next.openTargets &&
+    previous.onOpenTarget === next.onOpenTarget
   );
 }
