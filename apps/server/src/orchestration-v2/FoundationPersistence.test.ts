@@ -2859,7 +2859,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         },
       });
       yield* outbox.enqueue([reattach("effect:foundation-stale-reattach:1")]);
-      const cut = yield* outbox.claimNext({ workerId: "cut-worker", leaseDurationMs: 30_000 });
+      const cut = yield* outbox.claimNext({ workerId: "cut-worker" });
       assert.equal(Option.getOrUndefined(cut)?.id, "effect:foundation-stale-reattach:1");
       yield* outbox.enqueue([reattach("effect:foundation-stale-reattach:2")]);
 
@@ -2868,7 +2868,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         Option.getOrUndefined(yield* outbox.get("effect:foundation-stale-reattach:1"))?.status,
         "cancelled",
       );
-      const next = yield* outbox.claimNext({ workerId: "next-worker", leaseDurationMs: 30_000 });
+      const next = yield* outbox.claimNext({ workerId: "next-worker" });
       assert.equal(Option.getOrUndefined(next)?.id, "effect:foundation-stale-reattach:2");
       yield* outbox.succeed({
         effectId: "effect:foundation-stale-reattach:2",

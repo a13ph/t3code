@@ -17,6 +17,7 @@ import { vi } from "vite-plus/test";
 
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { ProviderEventLoggers } from "@t3tools/provider-core/server/ProviderEventLoggers";
+import * as PortScanner from "../../preview/PortScanner.ts";
 import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
 // @ts-ignore - plain ESM without types
 import { startKeeper } from "../../t3Keeper/keeper.mjs";
@@ -285,6 +286,7 @@ export const keeperAckedThrough = (threadId: string) =>
 
 export const realQueryRunner = ClaudeAdapterV2.layerQueryRunner.pipe(
   Layer.provide(Layer.succeed(ProviderEventLoggers, { native: undefined, canonical: undefined })),
+  Layer.provide(PortScanner.layerTest),
   Layer.provide(NodeServices.layer),
 );
 

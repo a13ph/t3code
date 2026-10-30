@@ -4073,7 +4073,6 @@ const ClaudeKeeperSubagentState = Schema.Struct({
   taskIdsByToolUseId: StringPairs,
   turnTaskIds: Schema.Array(Schema.String),
   turnTaskIdsByToolUseId: StringPairs,
-  turnNodesByTaskId: StringPairs,
   toolCalls: Schema.Array(ClaudeKeeperToolCall),
   pendingLaunches: Schema.Array(
     Schema.Tuple([
@@ -4937,7 +4936,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 return taskId == null ? [] : [[toolUseId, taskId] as const];
               },
             ),
-            turnNodesByTaskId: [...turn.subagentNodesByTaskId],
             toolCalls: [...subagentToolCalls.values()].map((call) => ({
               nativeItemId: call.nativeItemId,
               toolName: call.toolName,
@@ -5024,9 +5022,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           for (const [toolUseId, taskId] of state.turnTaskIdsByToolUseId) {
             const subagent = byTaskId.get(taskId);
             if (subagent !== undefined) turn.subagentsByToolUseId.set(toolUseId, subagent);
-          }
-          for (const [taskId, nodeId] of state.turnNodesByTaskId) {
-            turn.subagentNodesByTaskId.set(taskId, nodeId as OrchestrationV2ExecutionNode["id"]);
           }
         });
         const settledTurnByNativeThread = new Map<string, ActiveClaudeTurnContext>();
