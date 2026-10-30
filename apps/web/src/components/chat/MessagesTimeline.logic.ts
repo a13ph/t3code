@@ -421,6 +421,50 @@ export function resolveTimelineMinimapCurrentIndex(input: {
   return precedingIndex;
 }
 
+export type TimelineTurnNavigation = "first" | "previous" | "next" | "last";
+
+export function timelineTurnNavigationFromCommand(
+  command: string | null,
+): TimelineTurnNavigation | null {
+  switch (command) {
+    case "chat.turn.first":
+      return "first";
+    case "chat.turn.previous":
+      return "previous";
+    case "chat.turn.next":
+      return "next";
+    case "chat.turn.last":
+      return "last";
+    default:
+      return null;
+  }
+}
+
+/**
+ * The minimap item the turn navigation keys scroll to, from the turn at the
+ * reader's position (`resolveTimelineMinimapCurrentIndex`). Steps clamp at
+ * the ends; with no current turn, previous and next start from the end,
+ * where a thread opens.
+ */
+export function resolveTimelineTurnNavigationIndex(input: {
+  readonly itemCount: number;
+  readonly currentIndex: number | null;
+  readonly direction: TimelineTurnNavigation;
+}): number | null {
+  const lastIndex = input.itemCount - 1;
+  if (lastIndex < 0) return null;
+  switch (input.direction) {
+    case "first":
+      return 0;
+    case "last":
+      return lastIndex;
+    case "previous":
+      return input.currentIndex === null ? lastIndex : Math.max(0, input.currentIndex - 1);
+    case "next":
+      return input.currentIndex === null ? lastIndex : Math.min(lastIndex, input.currentIndex + 1);
+  }
+}
+
 function resolveTimelineSideGutter(viewportWidth: number, contentWidth: number): number {
   if (!Number.isFinite(viewportWidth) || viewportWidth <= 0 || !Number.isFinite(contentWidth)) {
     return 0;
@@ -991,6 +1035,53 @@ function itemizedFailedRunIds(
   );
 }
 
+/** Claude's AskUserQuestion tool call, which arrives just before its user_input_request. */
+function workEntryIsAskUserQuestionCall(entry: WorkLogEntry): boolean {
+  const item = entry.projectedItem?.item;
+  return item?.type === "dynamic_tool" && item.toolName === "AskUserQuestion";
+}
+
+/**
+ * The text an agent wrote right before asking the user a question, and the
+ * question itself. The user answered with that text in front of them, so it
+ * stays readable after the turn folds. Reasoning and the question's own tool
+ * call between the two do not break the pair, and the tool call still folds,
+ * so the question renders as its own row; any other work breaks it.
+ */
+function questionContextEntryIds(entries: ReadonlyArray<TimelineEntry>): ReadonlySet<string> {
+  const kept = new Set<string>();
+  let leadIn: TimelineEntry[] = [];
+  let inQuestion = false;
+  for (const entry of entries) {
+    if (entry.kind === "message" && entry.message.role === "assistant") {
+      if (inQuestion) leadIn = [];
+      inQuestion = false;
+      leadIn.push(entry);
+      continue;
+    }
+    if (entry.kind === "work" && entry.entry.itemType === "reasoning") continue;
+    if (entry.kind === "work" && workEntryIsAskUserQuestionCall(entry.entry)) {
+      // The call itself folds; its lead-in stays even if no request follows.
+      for (const text of leadIn) kept.add(text.id);
+      inQuestion = inQuestion || leadIn.length > 0;
+      leadIn = [];
+      continue;
+    }
+    if (entry.kind === "work" && entry.entry.itemType === "user_input_request") {
+      if (leadIn.length > 0 || inQuestion) {
+        for (const text of leadIn) kept.add(text.id);
+        kept.add(entry.id);
+        inQuestion = true;
+      }
+      leadIn = [];
+      continue;
+    }
+    leadIn = [];
+    inQuestion = false;
+  }
+  return kept;
+}
+
 function deriveTurnFolds(input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
   terminalAssistantMessageIds: ReadonlySet<string>;
@@ -1110,6 +1201,7 @@ function deriveTurnFolds(input: {
       continue;
     }
     const hiddenEntryIds = new Set<string>();
+    const questionContextIds = questionContextEntryIds(group.entries);
     const terminalEntryIndex = group.terminalEntry
       ? group.entries.findIndex((entry) => entry.id === group.terminalEntry?.id)
       : group.entries.length;
@@ -1129,7 +1221,8 @@ function deriveTurnFolds(input: {
         isCompaction ||
         timelineEntryIsPersistentResourceCard(entry) ||
         input.liveSubagentEntryIds.has(entry.id) ||
-        input.completeSupersededReplyEntryIds.has(entry.id)
+        input.completeSupersededReplyEntryIds.has(entry.id) ||
+        questionContextIds.has(entry.id)
       ) {
         continue;
       }

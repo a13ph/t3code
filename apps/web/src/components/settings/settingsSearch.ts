@@ -446,6 +446,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["beta boring sidebar folder rows multiline branch pull request details"],
   },
   {
+    id: "always-show-jump-numbers",
+    title: "Always show thread numbers",
+    to: "/settings/general",
+    searchTerms: ["jump hints shortcut keyboard sidebar badge pinned 1-9 modifier"],
+  },
+  {
     id: "guest-links",
     title: "Guest links",
     to: "/settings/labs",
