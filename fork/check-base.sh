@@ -8,6 +8,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 version="$(jq -r .version fork/base.json)"
 lock_sha="$(jq -r .pnpmLockSha256 fork/base.json)"
+# The fork holds only the tags upstream had when it was forked. The tag is
+# fetched, not pushed: a pushed release tag would start upstream's release.yml.
+if ! git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+  git fetch --quiet --no-tags https://github.com/pingdotgg/t3code "refs/tags/v$version:refs/tags/v$version"
+fi
 tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-*' HEAD)"
 if [[ "$tag" != "v$version" ]]; then
   echo "fork/base.json says $version, but the newest release tag under HEAD is $tag." >&2
