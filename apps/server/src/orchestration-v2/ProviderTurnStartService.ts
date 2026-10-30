@@ -15,6 +15,7 @@ import {
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -48,6 +49,7 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
+import { closeKeeperThread, listKeeperThreads } from "./Adapters/ClaudeKeeperSpawn.ts";
 import {
   ContextHandoffBackgroundWorkError,
   knownProviderFailureMessage,
@@ -93,6 +95,17 @@ class WorktreeRecreateNoBaseError extends Schema.TaggedError<WorktreeRecreateNoB
 
 const isProviderTurnStartError = Schema.is(ProviderTurnStartError);
 
+/** A t3-keeper reattach that cannot go on; the run is written off instead. */
+class KeeperReattachAbandoned extends Schema.TaggedError<KeeperReattachAbandoned>()(
+  "KeeperReattachAbandoned",
+  {
+    reason: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
+
+const isKeeperReattachAbandoned = Schema.is(KeeperReattachAbandoned);
+
 /**
  * Claude refuses these before it reads the prompt: replacing a process running background work,
  * launch arguments whose appended system prompt or settings cannot be read, or MCP registration
@@ -115,6 +128,17 @@ export interface ProviderTurnStartServiceV2Shape {
     readonly threadId: ThreadId;
     readonly runId: RunId;
     readonly willRetry?: boolean;
+  }) => Effect.Effect<void, ProviderTurnStartError>;
+  /**
+   * Continues a running run in the provider process a server shutdown left
+   * in t3-keeper: its later output lands in the same run, which then
+   * completes as usual. A run that cannot be continued is failed.
+   */
+  readonly reattach?: (input: {
+    readonly threadId: ThreadId;
+    readonly runId: RunId;
+    readonly handle: string;
+    readonly adapterState: unknown;
   }) => Effect.Effect<void, ProviderTurnStartError>;
 }
 
@@ -1519,7 +1543,317 @@ export const layer: Layer.Layer<
       });
     });
 
+    // A reattach that failed: the run ends as a restart without t3-keeper
+    // ends it, cancelled, with the restart continuation recorded, so "Continue
+    // where you left off." resumes it (the setting and the chain limit are
+    // checked when it is delivered). The kept Claude process is closed, so it
+    // does not work on beside the continuation.
+    const writeOffReattach = Effect.fn("orchestrationV2.providerTurnStart.writeOffReattach")(
+      function* (
+        input: { readonly threadId: ThreadId; readonly runId: RunId; readonly handle: string },
+        cause: Cause.Cause<unknown>,
+      ) {
+        const { runId } = input;
+        const error = Cause.squash(cause);
+        const reason =
+          isKeeperReattachAbandoned(error)
+            ? error.reason
+            : "the reattach failed before the turn was running again.";
+        yield* Effect.logWarning("t3-keeper reattach failed", { runId, reason, cause });
+        yield* Effect.promise(() => closeKeeperThread(input.handle));
+        const projection = yield* projectionStore.getTurnStartContext(input.threadId, runId);
+        const run = projection.runs.find((candidate) => candidate.id === runId);
+        if (run === undefined || run.status !== "running") return;
+        const attempt = projection.attempts.find(
+          (candidate) => candidate.id === run.activeAttemptId,
+        );
+        const rootNode = projection.nodes.find((candidate) => candidate.id === run.rootNodeId);
+        if (attempt === undefined || rootNode === undefined) return;
+        const providerThread = projection.providerThreads.find(
+          (candidate) => candidate.id === run.providerThreadId,
+        );
+        const now = yield* DateTime.now;
+        const open = (status: string) =>
+          status === "pending" || status === "running" || status === "waiting";
+        const lost: OrchestrationV2TurnItem = {
+          id: idAllocator.derive.runSignalTurnItem({ runId, signal: "keeper-reattach-failure" }),
+          threadId: projection.thread.id,
+          runId,
+          nodeId: rootNode.id,
+          providerThreadId: providerThread?.id ?? null,
+          providerTurnId:
+            projection.providerTurns.find((turn) => turn.runAttemptId === attempt.id)?.id ?? null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: Math.max(0, ...projection.turnItems.map((candidate) => candidate.ordinal)) + 1,
+          status: "failed",
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+          type: "error",
+          title: "Turn lost in a server restart",
+          failure: makeProviderFailure({
+            class: "provider_error",
+            message: `The turn could not be continued after the server restarted: ${reason}`,
+          }),
+        };
+        const payloads: Array<
+          Omit<
+            OrchestrationV2DomainEvent,
+            "id" | "threadId" | "runId" | "nodeId" | "providerInstanceId" | "occurredAt"
+          >
+        > = [
+          ...projection.turnItems
+            .filter((item) => item.runId === runId && open(item.status))
+            .map((item) => ({
+              type: "turn-item.updated" as const,
+              payload: { ...item, status: "cancelled" as const, completedAt: now, updatedAt: now },
+            })),
+          { type: "turn-item.updated", payload: lost },
+          ...projection.providerTurns
+            .filter((turn) => turn.runAttemptId === attempt.id && open(turn.status))
+            .map((turn) => ({
+              type: "provider-turn.updated" as const,
+              payload: { ...turn, status: "cancelled" as const, completedAt: now },
+            })),
+          // The run's subagents ran in the closed CLI too.
+          ...projection.subagents
+            .filter((subagent) => subagent.runId === runId && open(subagent.status))
+            .map((subagent) => ({
+              type: "subagent.updated" as const,
+              payload: {
+                ...subagent,
+                status: "cancelled" as const,
+                completedAt: now,
+                updatedAt: now,
+              },
+            })),
+          ...projection.nodes
+            .filter((node) => node.runId === runId && open(node.status))
+            .map((node) => ({
+              type: "node.updated" as const,
+              payload: { ...node, status: "cancelled" as const, completedAt: now },
+            })),
+          {
+            type: "run-attempt.updated",
+            payload: { ...attempt, status: "cancelled", completedAt: now },
+          },
+          {
+            type: "run.updated",
+            payload: { ...run, status: "cancelled", queuePosition: null, completedAt: now },
+          },
+        ] as never;
+        const events = yield* Effect.forEach(payloads, (event) =>
+          Effect.gen(function* () {
+            return {
+              ...event,
+              id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
+              threadId: projection.thread.id,
+              runId,
+              nodeId: rootNode.id,
+              providerInstanceId: run.providerInstanceId,
+              occurredAt: now,
+            } as OrchestrationV2DomainEvent;
+          }),
+        );
+        if (providerThread !== undefined && providerThread.status === "active") {
+          events.push({
+            id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
+            type: "provider-thread.updated",
+            threadId: projection.thread.id,
+            driver: providerThread.driver,
+            providerInstanceId: providerThread.providerInstanceId,
+            occurredAt: now,
+            payload: { ...providerThread, status: "idle", updatedAt: now },
+          });
+        }
+        const commandId = CommandId.make(`command:keeper-reattach-write-off:${runId}`);
+        yield* eventSink.writeIfRunCurrent({
+          commandId,
+          threadId: projection.thread.id,
+          runId,
+          activeAttemptId: attempt.id,
+          expectedStatus: "running",
+          events,
+          effects: [
+            {
+              id: `effect:restart-continuation:${runId}`,
+              commandId,
+              threadId: projection.thread.id,
+              request: { type: "provider-runtime.continue", sourceRunId: runId },
+            },
+          ],
+        });
+      },
+    );
+
+    const reattach = Effect.fn("orchestrationV2.providerTurnStart.reattach")(function* (input: {
+      readonly threadId: ThreadId;
+      readonly runId: RunId;
+      readonly handle: string;
+      readonly adapterState: unknown;
+    }) {
+      const { runId } = input;
+      const projection = yield* projectionStore.getTurnStartContext(input.threadId, runId);
+      const run = projection.runs.find((candidate) => candidate.id === runId);
+      // Settled meanwhile, or a reattach left from an earlier start.
+      if (run === undefined || run.status !== "running") return;
+      const rootNode = projection.nodes.find((candidate) => candidate.id === run.rootNodeId);
+      const attempt = projection.attempts.find((candidate) => candidate.id === run.activeAttemptId);
+      const providerThread = projection.providerThreads.find(
+        (candidate) => candidate.id === run.providerThreadId,
+      );
+      const message = projection.messages.find((candidate) => candidate.id === run.userMessageId);
+      const checkpointScope = projection.checkpointScopes.find(
+        (candidate) => candidate.id === rootNode?.checkpointScopeId,
+      );
+      const providerTurn = projection.providerTurns.find(
+        (candidate) => candidate.runAttemptId === attempt?.id && candidate.status === "running",
+      );
+      const abandon = (reason: string, cause?: unknown) =>
+        Effect.fail(new KeeperReattachAbandoned({ reason, cause }));
+      const keeperThread = (yield* Effect.promise(() => listKeeperThreads()))?.get(input.threadId);
+      if (keeperThread === undefined || keeperThread.handle !== input.handle) {
+        return yield* abandon("t3-keeper no longer holds its Claude process.");
+      }
+      if (
+        rootNode === undefined ||
+        attempt === undefined ||
+        providerThread === undefined ||
+        providerThread.providerSessionId === null ||
+        message === undefined ||
+        checkpointScope === undefined ||
+        providerTurn === undefined
+      ) {
+        return yield* abandon("the run is missing its execution projection state.");
+      }
+      const providerSessionId = providerThread.providerSessionId;
+      const resolvedRuntimePolicy = yield* runtimePolicy.resolve({
+        thread: projection.thread,
+        modelSelection: run.modelSelection,
+      });
+      const existingSessionProjection = projection.providerSessions.find(
+        (candidate) => candidate.id === providerSessionId,
+      );
+      const sessionResult = yield* Effect.result(
+        providerSessions.open({
+          threadId: projection.thread.id,
+          providerSessionId,
+          modelSelection: run.modelSelection,
+          runtimePolicy: resolvedRuntimePolicy,
+          ...(existingSessionProjection === undefined
+            ? {}
+            : { resumeFromSession: existingSessionProjection }),
+          ...(providerThread.nativeThreadRef?.nativeId == null
+            ? {}
+            : { initialNativeThreadId: providerThread.nativeThreadRef.nativeId }),
+          ...(providerThread.nativeMetadata?.itemIdentityVersion === undefined
+            ? {}
+            : {
+                initialProviderItemIdentityVersion:
+                  providerThread.nativeMetadata.itemIdentityVersion,
+              }),
+        }),
+      );
+      if (sessionResult._tag === "Failure") {
+        return yield* abandon("its provider session failed to open.", sessionResult.failure);
+      }
+      const session = sessionResult.success;
+      const resumed = yield* Effect.result(
+        session.resumeThread({
+          providerThread,
+          threadId: projection.thread.id,
+          modelSelection: run.modelSelection,
+          runtimePolicy: resolvedRuntimePolicy,
+        }),
+      );
+      if (resumed._tag === "Failure") {
+        return yield* abandon("its provider thread failed to load.", resumed.failure);
+      }
+      const runControls = makeRunControls({
+        threadId: projection.thread.id,
+        runId: run.id,
+        attemptId: attempt.id,
+        providerThreadId: providerThread.id,
+        runOrdinal: run.ordinal,
+        inheritedBackgroundTurnItems: [],
+      });
+      // The run's own subagents go on in the kept CLI, so their child
+      // threads stay this run's, as do those a new run would take over.
+      const runSubagents = projection.subagents.filter((subagent) => subagent.runId === run.id);
+      const relatedSubagents = [
+        ...runSubagents,
+        ...projection.subagents.filter(
+          (subagent) =>
+            subagent.runId !== run.id &&
+            RunExecutionService.canRouteRelatedSubagent(subagent.status),
+        ),
+      ];
+      yield* runExecution.startRootRun({
+        commandId: CommandId.make(`command:effect:provider-turn.reattach:${run.id}`),
+        relatedThreadIds: relatedSubagents.flatMap((subagent) =>
+          subagent.childThreadId === null ? [] : [subagent.childThreadId],
+        ),
+        relatedProviderThreadIds: relatedSubagents.flatMap((subagent) =>
+          subagent.providerThreadId === null ? [] : [subagent.providerThreadId],
+        ),
+        reattachedSubagents: runSubagents,
+        appThread: projection.thread,
+        providerSessionId,
+        session,
+        run,
+        rootNode,
+        checkpointScope,
+        providerThread,
+        attempt,
+        attemptId: attempt.id,
+        loadInheritedBackgroundTurnItems: runControls.loadInheritedBackgroundTurnItems,
+        providerTurnOrdinal: providerTurn.ordinal,
+        nativeThreadHasTurns: true,
+        shouldStartProviderTurn: runControls.shouldStartProviderTurn,
+        shouldFinalizeRun: runControls.shouldFinalizeRun,
+        hasUnpairedRunInterruptRequest: runControls.hasUnpairedRunInterruptRequest,
+        loadRunInterruptReason: runControls.loadRunInterruptReason,
+        message: {
+          messageId: message.id,
+          text: projectComposerContextForProvider({
+            text: message.text,
+            records: message.context?.records ?? [],
+          }),
+          attachments: message.attachments,
+          createdBy: message.createdBy,
+          creationSource: message.creationSource,
+        },
+        modelSelection: run.modelSelection,
+        runtimePolicy: resolvedRuntimePolicy,
+        reattach: {
+          handle: keeperThread.handle,
+          after: keeperThread.after,
+          turnItems: projection.turnItems,
+          adapterState: input.adapterState,
+        },
+      });
+    });
+
     return ProviderTurnStartServiceV2.of({
+      reattach: (input) =>
+        Effect.gen(function* () {
+          const { thread } = yield* projectionStore.getThreadRecords(input.threadId, []);
+          yield* thread.worktreePath === null
+            ? reattach(input)
+            : withWorkspaceLease(path.resolve(thread.worktreePath), reattach(input));
+        }).pipe(
+          // Whatever failed, the run is written off as a restart would have.
+          Effect.catchCauseIf(
+            (cause) => !Cause.hasInterruptsOnly(cause),
+            (cause) => writeOffReattach(input, cause),
+          ),
+          Effect.mapError((cause) =>
+            isProviderTurnStartError(cause)
+              ? cause
+              : new ProviderTurnStartError({ runId: input.runId, cause }),
+          ),
+        ),
       start: Effect.fn("ProviderTurnStartService.start")(
         function* (input) {
           // Storage cleanup removes worktrees under the same lease. Only startup

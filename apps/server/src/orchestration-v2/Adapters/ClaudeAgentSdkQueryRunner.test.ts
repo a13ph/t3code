@@ -16,6 +16,8 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Queue from "effect/Queue";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { vi } from "vite-plus/test";
 
@@ -31,11 +33,11 @@ import {
   layerQueryRunner,
   spawnClaudeProcessGroup,
 } from "./ClaudeAdapterV2.ts";
-import { keeperSpawnProcess } from "./ClaudeKeeperSpawn.ts";
+import { detachKeeperChildren, keeperSpawnProcess } from "./ClaudeKeeperSpawn.ts";
 // @ts-ignore - plain ESM without types
 import { startKeeper } from "../../t3Keeper/keeper.mjs";
 // @ts-ignore - plain ESM without types
-import { request as keeperRequest } from "../../t3Keeper/shim.mjs";
+import { KeeperProcess, request as keeperRequest } from "../../t3Keeper/shim.mjs";
 
 vi.mock("@anthropic-ai/claude-agent-sdk", { spy: true });
 
@@ -396,7 +398,7 @@ function fakeClaudeCli(script: string): string {
   return cli;
 }
 
-const openFakeCli = (cli: string) =>
+const openFakeCli = (cli: string, extra: Pick<ClaudeSdk.Options, "canUseTool"> = {}) =>
   Effect.gen(function* () {
     const runner = yield* ClaudeAgentSdkQueryRunner;
     return yield* runner.open({
@@ -408,9 +410,32 @@ const openFakeCli = (cli: string) =>
         tools: [],
         permissionMode: "default",
         pathToClaudeCodeExecutable: cli,
+        ...extra,
       },
     });
   });
+
+/** A status line the SDK yields as a message, quoted for a shell `printf`. */
+const statusLine = (uuid: string) =>
+  `'{"type":"system","subtype":"status","status":null,"session_id":"s","uuid":"${uuid}"}'`;
+
+/** A can_use_tool control request, quoted for a shell `printf`. */
+const permissionLine = (requestId: string) =>
+  `'{"type":"control_request","request_id":"${requestId}","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"true"},"tool_use_id":"toolu_${requestId}"}}'`;
+
+/** Resolves with the first line number acknowledged to the keeper. */
+const spyFirstKeeperAck = Effect.gen(function* () {
+  const first = yield* Deferred.make<number>();
+  const ack = vi.spyOn(KeeperProcess.prototype, "ack").mockImplementation(function (
+    this: { _request: (msg: unknown) => Promise<unknown> },
+    after: number,
+  ) {
+    Deferred.doneUnsafe(first, Exit.succeed(after));
+    return this._request({ op: "ack", after });
+  });
+  yield* Effect.addFinalizer(() => Effect.sync(() => ack.mockRestore()));
+  return Deferred.await(first);
+});
 
 describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI process", () => {
   // The leftover child holds a FIFO open; its death produces EOF without polling.
@@ -644,6 +669,131 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI in 
     }).pipe(Effect.provide(realQueryRunner)),
   );
 
+  it.effect("leaves the CLI running in the keeper when shutdown detached it", () =>
+    Effect.gen(function* () {
+      const { keeper } = yield* keeperSocket;
+      const cli = fakeClaudeCli('exec 3> "$(dirname "$0")/started"; cat > /dev/null');
+      const started = fifoOpened(cli, "started");
+      const session = yield* openFakeCli(cli);
+      yield* Effect.promise(() => started.opened);
+      assert.equal(detachKeeperChildren(), 1);
+      yield* session.close;
+      const list = yield* listKeeper(keeper.socketPath);
+      assert.deepEqual(
+        list.handles.map((h) => [h.name, h.alive, h.attached]),
+        [["thread-fake-cli", true, false]],
+      );
+      yield* Effect.promise(() =>
+        keeperRequest(keeper.socketPath, { op: "close", handle: list.handles[0]!.handle }),
+      );
+      yield* Effect.promise(() => started.closed);
+    }).pipe(Effect.provide(realQueryRunner)),
+  );
+
+  // The keeper may drop a line only once T3 holds what it carried. Lines the
+  // SDK consumes itself (keep_alive here) yield no message, so the n-th
+  // message is not the n-th line, and handling one message acks through its
+  // own line, not through the last line delivered.
+  it.effect("acks the line of the handled message, not the lines after it", () =>
+    Effect.gen(function* () {
+      const { keeper } = yield* keeperSocket;
+      const status = (uuid: string) =>
+        `'{"type":"system","subtype":"status","status":null,"session_id":"s","uuid":"${uuid}"}'`;
+      const cli = fakeClaudeCli(
+        `printf '%s\\n' ${status("u1")} '{"type":"keep_alive"}' ${status("u2")} ${status("u3")}; cat > /dev/null`,
+      );
+      const acks: number[] = [];
+      const firstAck = Promise.withResolvers<void>();
+      const ack = vi.spyOn(KeeperProcess.prototype, "ack").mockImplementation(function (
+        this: { _request: (msg: unknown) => Promise<unknown> },
+        after: number,
+      ) {
+        acks.push(after);
+        firstAck.resolve();
+        return this._request({ op: "ack", after });
+      });
+      yield* Effect.addFinalizer(() => Effect.sync(() => ack.mockRestore()));
+      const session = yield* openFakeCli(cli);
+      // Ending the stream would close the CLI, so it is read into a queue.
+      const received = yield* Queue.unbounded<ClaudeSdk.SDKMessage>();
+      yield* session.messages.pipe(
+        Stream.runForEach((message) => Queue.offer(received, message)),
+        Effect.forkScoped,
+      );
+      const messages = [
+        yield* Queue.take(received),
+        yield* Queue.take(received),
+        yield* Queue.take(received),
+      ];
+      assert.deepEqual(
+        messages.map((message): string | undefined => message.uuid),
+        ["u1", "u2", "u3"],
+      );
+      session.handled?.(messages[1]!);
+      assert.deepEqual(acks, []);
+      yield* Effect.promise(() => firstAck.promise);
+      assert.deepEqual(acks, [3]);
+      const list = yield* listKeeper(keeper.socketPath);
+      assert.equal(list.handles[0]?.acked, 3);
+      yield* session.close;
+    }).pipe(Effect.provide(realQueryRunner)),
+  );
+
+  // A permission prompt is a control request the SDK answers itself. Once
+  // answered, its line must be acked even when no message follows it (a long
+  // Bash call), or a restart replays it and asks for the tool a second time.
+  it.effect("acks a permission prompt once the SDK answered it", () =>
+    Effect.gen(function* () {
+      yield* keeperSocket;
+      const cli = fakeClaudeCli(
+        [
+          `printf '%s\\n' ${statusLine("u1")} ${permissionLine("perm-1")}`,
+          'while read -r line; do case "$line" in *control_response*perm-1*) break;; esac; done',
+          `printf '%s\\n' ${statusLine("u2")}`,
+          "cat > /dev/null",
+        ].join("\n"),
+      );
+      const firstAck = yield* spyFirstKeeperAck;
+      const session = yield* openFakeCli(cli, {
+        canUseTool: async () => ({ behavior: "allow", updatedInput: {} }),
+      });
+      const received = yield* Queue.unbounded<ClaudeSdk.SDKMessage>();
+      yield* session.messages.pipe(
+        Stream.runForEach((message) => Queue.offer(received, message)),
+        Effect.forkScoped,
+      );
+      const u1 = yield* Queue.take(received);
+      // The CLI prints u2 only after it read the answer.
+      assert.equal((yield* Queue.take(received)).uuid, "u2");
+      session.handled?.(u1);
+      assert.equal(yield* firstAck, 2);
+      yield* session.close;
+    }).pipe(Effect.provide(realQueryRunner)),
+  );
+
+  it.effect("holds the ack below a permission prompt nobody answered", () =>
+    Effect.gen(function* () {
+      yield* keeperSocket;
+      const cli = fakeClaudeCli(
+        `printf '%s\\n' ${statusLine("u1")} ${permissionLine("perm-2")} ${statusLine("u2")}; cat > /dev/null`,
+      );
+      const firstAck = yield* spyFirstKeeperAck;
+      const session = yield* openFakeCli(cli, {
+        canUseTool: () => new Promise<never>(() => {}),
+      });
+      const received = yield* Queue.unbounded<ClaudeSdk.SDKMessage>();
+      yield* session.messages.pipe(
+        Stream.runForEach((message) => Queue.offer(received, message)),
+        Effect.forkScoped,
+      );
+      yield* Queue.take(received);
+      // Handling u2 settles u1 before it, but not the open prompt between.
+      session.handled?.(yield* Queue.take(received));
+      assert.equal(yield* firstAck, 1);
+      yield* session.close;
+    }).pipe(Effect.provide(realQueryRunner)),
+  );
+
   it.effect("stops what the CLI left running when the session closes", () =>
     Effect.gen(function* () {
       yield* keeperSocket;
@@ -682,7 +832,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI in 
       assert.isDefined(spawn);
       const cli = fakeClaudeCli('exec 3> "$(dirname "$0")/started"; cat > /dev/null');
       const started = fifoOpened(cli, "started");
-      const child = spawn!({
+      const child = spawn!.spawn({
         command: cli,
         args: [],
         cwd: dir,
