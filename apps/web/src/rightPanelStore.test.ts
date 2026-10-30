@@ -38,6 +38,73 @@ async function reloadRightPanelStore() {
   expect(useRightPanelStore.persist.hasHydrated()).toBe(true);
 }
 
+describe("rightPanelStore file surfaces on another server", () => {
+  it("keeps one path on two servers as two tabs and the thread's own as a plain one", () => {
+    const store = useRightPanelStore.getState();
+    store.openFile(refA, "/home/user/x.md", undefined, "env-1");
+    store.openFile(refA, "/home/user/x.md", 3, "env-2");
+    const surfaces = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)
+      .surfaces;
+    expect(surfaces.map((surface) => surface.id)).toEqual([
+      "file:/home/user/x.md",
+      "file:env-2:/home/user/x.md",
+    ]);
+    expect(surfaces[0]).not.toHaveProperty("environmentId");
+    expect(surfaces[1]).toMatchObject({ environmentId: "env-2", revealLine: 3 });
+  });
+
+  it("keeps the server through a reload", () => {
+    const migrated = migratePersistedRightPanelState({
+      byThreadKey: {
+        "env-1:thread-A": {
+          isOpen: true,
+          activeSurfaceId: "file:env-2:/x",
+          surfaces: [
+            {
+              id: "file:env-2:/x",
+              kind: "file",
+              relativePath: "/x",
+              revealLine: null,
+              revealRequestId: 1,
+              environmentId: "env-2",
+            },
+            {
+              id: "file:/y",
+              kind: "file",
+              relativePath: "/y",
+              revealLine: null,
+              revealRequestId: 1,
+              environmentId: 7,
+            },
+          ],
+        },
+      },
+    });
+    const surfaces = migrated.byThreadKey["env-1:thread-A"]?.surfaces ?? [];
+    expect(surfaces[0]).toMatchObject({ environmentId: "env-2" });
+    expect(surfaces[1]).not.toHaveProperty("environmentId");
+  });
+
+  it("walks up to a folder on the same server", () => {
+    const store = useRightPanelStore.getState();
+    store.openFile(refA, "/home/user/x.md", undefined, "env-2");
+    store.navigateFolder(
+      refA,
+      "file:env-2:/home/user/x.md",
+      "/home/user",
+      "/home/user/x.md",
+      true,
+    );
+    const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.activeSurfaceId).toBe("file:env-2:/home/user");
+    expect(state.surfaces[1]).toMatchObject({
+      relativePath: "/home/user",
+      environmentId: "env-2",
+      folderTrail: "/home/user/x.md",
+    });
+  });
+});
+
 describe("rightPanelStore", () => {
   it("records single and bulk tab closes, newest first", () => {
     const store = useRightPanelStore.getState();

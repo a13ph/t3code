@@ -371,4 +371,19 @@ describe("ChatMarkdown Windows file links", () => {
       expect(fileHrefs(container)).toEqual([]);
     }
   });
+
+  it("shows a labelled file link's text as the chip label, once", async () => {
+    setup();
+    for (const parseRawHtml of [true, false]) {
+      await using screen = await renderWindows(
+        String.raw`See [the entry point](C:\Users\shawn\project\src\index.ts) here`,
+        parseRawHtml,
+      );
+      const { container } = screen;
+      const labels = [...container.querySelectorAll('[data-slot="context-chip-label"]')];
+      expect(labels.map((label) => label.textContent)).toEqual(["the entry point"]);
+      expect(container.textContent?.split("the entry point").length).toBe(2);
+      expect(container.textContent).not.toContain("index.ts");
+    }
+  });
 });
