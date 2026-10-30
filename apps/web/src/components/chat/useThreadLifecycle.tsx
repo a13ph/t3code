@@ -595,7 +595,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     },
     "thread.snooze": ({ event }) => {
       if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return false;
-      if (event.repeat || !activeThreadShell || !activeThreadRef || !supportsSnooze) return;
+      if (event.repeat || !activeThreadShell || !activeThreadRef || !serverConfigLoaded) return;
       // Snoozed: the same key wakes it, as the thread menu's Wake item does.
       if (activeThreadSnoozed) {
         void handleUnsnoozeActiveThread();
@@ -610,6 +610,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
           ? { x: headerRect.left, y: headerRect.bottom + 4 }
           : { x: Math.round(window.innerWidth / 2), y: 64 },
         timestampFormat,
+        threadRef.environmentId,
       ).then((preset) => {
         if (!preset) return;
         // Same as the sidebar's Snooze: snooze, then open the next thread.

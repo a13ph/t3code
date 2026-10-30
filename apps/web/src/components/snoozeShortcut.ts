@@ -1,8 +1,13 @@
+import type { EnvironmentId } from "@t3tools/contracts";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
 
 import { readLocalApi } from "../localApi";
 import { requestCustomSnooze } from "./CustomSnoozeDialog";
-import { resolveSnoozePresets, type SnoozePreset } from "./Sidebar.snooze";
+import {
+  pickSnoozePreset as pickShownSnoozePreset,
+  resolveSnoozePresets,
+  type SnoozePreset,
+} from "./Sidebar.snooze";
 
 /**
  * The `thread.snooze` shortcut's picker: the thread menu's snooze presets as
@@ -12,10 +17,11 @@ import { resolveSnoozePresets, type SnoozePreset } from "./Sidebar.snooze";
 export async function pickSnoozePreset(
   position: { x: number; y: number },
   timestampFormat: TimestampFormat,
+  environmentId: EnvironmentId,
 ): Promise<Pick<SnoozePreset, "snoozedUntil"> | null> {
   const api = readLocalApi();
   if (!api) return null;
-  const presets = resolveSnoozePresets(new Date(), timestampFormat);
+  const presets = resolveSnoozePresets(new Date(), timestampFormat, environmentId);
   const picked = await api.contextMenu.show(
     [
       ...presets.map((preset) => ({
@@ -28,5 +34,5 @@ export async function pickSnoozePreset(
   );
   if (picked === null) return null;
   if (picked === "custom") return (await requestCustomSnooze()) ?? null;
-  return presets.find((preset) => preset.id === picked) ?? null;
+  return pickShownSnoozePreset(presets, picked, timestampFormat, environmentId) ?? null;
 }
