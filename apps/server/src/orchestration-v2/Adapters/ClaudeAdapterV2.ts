@@ -1,6 +1,7 @@
 import * as DocumentText from "../../provider/DocumentText.ts";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import { claudeTaskOutputRoot, tailClaudeTaskOutput } from "./ClaudeTaskOutputTail.ts";
+import { keeperSpawnProcess } from "./ClaudeKeeperSpawn.ts";
 import {
   dynamicToolTitle,
   formatReadToolLabel,
@@ -992,9 +993,19 @@ export const layerQueryRunner: Layer.Layer<
           const unit = launch?.unit;
           const stopScope =
             unit === undefined ? undefined : () => void runFork(agentScope.stop(unit));
+          // With T3_KEEPER_SOCKET set, t3-keeper spawns the CLI (ClaudeKeeperSpawn.ts).
+          const keeperSpawn =
+            options.spawnClaudeCodeProcess !== undefined || platform === "win32"
+              ? undefined
+              : keeperSpawnProcess(input.threadId);
           const spawnProcess =
             options.spawnClaudeCodeProcess ??
             ((spawnOptions: ClaudeSpawnOptions) => {
+              if (keeperSpawn !== undefined) {
+                const child = keeperSpawn(spawnOptions);
+                if (stopScope !== undefined) child.once("exit", stopScope);
+                return child;
+              }
               if (platform !== "win32") return spawnClaudeProcessGroup(spawnOptions, stopScope);
               const child = NodeChildProcess.spawn(spawnOptions.command, spawnOptions.args, {
                 cwd: spawnOptions.cwd,
