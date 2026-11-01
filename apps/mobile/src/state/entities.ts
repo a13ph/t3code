@@ -14,12 +14,18 @@ import type {
   ServerConfig,
   ThreadId,
 } from "@t3tools/contracts";
-import { hasThreadLinks, relabelThreadLinks } from "@t3tools/shared/threadLinks";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import {
+  hasThreadLinks,
+  percentDecodedThreadLinkId,
+  relabelThreadLinks,
+} from "@t3tools/shared/threadLinks";
 import { Atom } from "effect/reactivity";
 import { useMemo } from "react";
 
 import { environmentProjects } from "./projects";
 import { environmentServerConfigsAtom, serverEnvironment } from "./server";
+import { environmentShell } from "./shell";
 import { environmentThreadDetails, environmentThreadShells } from "./threads";
 
 const EMPTY_PROJECT_ATOM = Atom.make<EnvironmentProject | null>(null).pipe(
@@ -39,20 +45,55 @@ const EMPTY_THREAD_TITLES_ATOM = Atom.make(EMPTY_THREAD_TITLES).pipe(
   Atom.withLabel("mobile-thread-titles:empty"),
 );
 
-/** Thread titles in one environment. Emits when a title changes, not on every shell update. */
+/**
+ * Thread titles in one environment, then in every other connected environment for ids it
+ * does not hold. Emits when a title changes, not on every shell update.
+ */
 const threadTitlesAtom = Atom.family((environmentId: EnvironmentId) => {
   let previous = EMPTY_THREAD_TITLES;
   return Atom.make((get) => {
-    const index = get(environmentThreadShells.environmentThreadIndexAtom(environmentId));
-    const unchanged =
-      index.size === previous.size &&
-      Array.from(index).every(([threadId, shell]) => previous.get(threadId) === shell.title);
-    if (!unchanged) {
-      previous = new Map(Array.from(index, ([threadId, shell]) => [threadId, shell.title]));
+    const next = new Map<ThreadId, string>();
+    for (const shell of get(environmentThreadShells.threadShellsAtom)) {
+      if (shell.environmentId !== environmentId) next.set(shell.id, shell.title);
     }
+    for (const [threadId, shell] of get(
+      environmentThreadShells.environmentThreadIndexAtom(environmentId),
+    )) {
+      next.set(threadId, shell.title);
+    }
+    const unchanged =
+      next.size === previous.size &&
+      Array.from(next).every(([threadId, title]) => previous.get(threadId) === title);
+    if (!unchanged) previous = next;
     return previous;
   }).pipe(Atom.withLabel(`mobile-thread-titles:${environmentId}`));
 });
+
+/**
+ * The thread a link in `environmentId` opens: the id as written or its percent-decoded form,
+ * in that environment when it holds the thread, else in whichever other connected environment
+ * does. Thread ids are UUIDs, so a match elsewhere is this thread. Looks elsewhere only once
+ * the own environment is live, so a link to a local thread never points away while the local
+ * index loads. Reads the shell state the open thread route keeps mounted.
+ */
+export function resolveThreadLink(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+): ScopedThreadRef {
+  const decodedId = percentDecodedThreadLinkId(threadId);
+  const own = appAtomRegistry.get(
+    environmentThreadShells.environmentThreadIndexAtom(environmentId),
+  );
+  if (own.has(threadId)) return scopeThreadRef(environmentId, threadId);
+  if (decodedId !== null && own.has(decodedId)) return scopeThreadRef(environmentId, decodedId);
+  if (appAtomRegistry.get(environmentShell.stateValueAtom(environmentId)).status === "live") {
+    const elsewhere = appAtomRegistry
+      .get(environmentThreadShells.threadRefsAtom)
+      .find((ref) => ref.threadId === threadId || ref.threadId === decodedId);
+    if (elsewhere) return elsewhere;
+  }
+  return scopeThreadRef(environmentId, threadId);
+}
 
 /** Resolves when the project event reaches the live client store. */
 export function waitForProject(
@@ -105,7 +146,7 @@ export function useChildThreadInputs(ref: ScopedThreadRef) {
   return useAtomValue(environmentThreadShells.childThreadInputsAtom(ref));
 }
 
-/** `markdown` with each thread link labeled by the thread's current title in `environmentId`. */
+/** `markdown` with each thread link labeled by the thread's current title, `environmentId` first. */
 export function useLiveThreadLinkLabels(markdown: string, environmentId: EnvironmentId): string {
   const titles = useAtomValue(
     hasThreadLinks(markdown) ? threadTitlesAtom(environmentId) : EMPTY_THREAD_TITLES_ATOM,
