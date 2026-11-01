@@ -210,6 +210,12 @@ import {
 import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
 import { usePreparedConnection } from "../../state/session";
 import { resolveThreadLink, useLiveThreadLinkLabels } from "../../state/entities";
+import { useRemoteFileServers } from "../../state/remote-file-servers";
+import {
+  parseRemoteFileHref,
+  remoteFileDirectory,
+  resolveRemoteFileServer,
+} from "../../lib/remoteFileLinks";
 import { useThreadSelection } from "../../state/use-thread-selection";
 import { composerDocumentAttachmentRecord } from "../../lib/composerContext";
 import * as Option from "effect/Option";
@@ -1822,6 +1828,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const iconSubtleColor = theme["--color-icon-subtle"];
   const screenColor = theme["--color-screen"];
   const userBubbleColor = theme["--color-user-bubble"];
+  const remoteFileServers = useRemoteFileServers();
   const onMarkdownLinkPress = useCallback(
     (href: string, imageEmbed = false) => {
       // A thread link names a thread in this feed's environment or another connected one.
@@ -1831,6 +1838,31 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         navigation.navigate("Thread", {
           environmentId: String(target.environmentId),
           threadId: String(target.threadId),
+        });
+        return;
+      }
+      // A file on a named server opens read-only from that server, outside any thread there.
+      const remoteFile = parseRemoteFileHref(href);
+      if (remoteFile) {
+        const server = resolveRemoteFileServer(remoteFile, remoteFileServers);
+        if (server._tag !== "found") {
+          Dialog.alert(
+            "File not available",
+            server._tag === "ambiguous"
+              ? `More than one connected server is named ${remoteFile.server}: ${server.labels.join(", ")}`
+              : remoteFile.byEnvironmentId
+                ? `This device is not connected to the server with id ${remoteFile.server}`
+                : `No connected server is named ${remoteFile.server}`,
+          );
+          return;
+        }
+        void Haptics.selectionAsync();
+        navigation.navigate("ThreadFile", {
+          environmentId: server.environmentId,
+          path: fileRoutePathSegments(remoteFile.path),
+          cwd: remoteFileDirectory(remoteFile.path),
+          projectName: server.label,
+          ...(remoteFile.line ? { line: String(remoteFile.line) } : {}),
         });
         return;
       }
@@ -1891,7 +1923,14 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         void openPullRequest(presentation.href);
       }
     },
-    [props.environmentId, props.threadId, props.workspaceRoot, navigation, openPullRequest],
+    [
+      props.environmentId,
+      props.threadId,
+      props.workspaceRoot,
+      navigation,
+      openPullRequest,
+      remoteFileServers,
+    ],
   );
   const resolveImageSource = useMarkdownImageSource({
     environmentId: props.environmentId,

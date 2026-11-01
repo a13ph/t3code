@@ -4,7 +4,17 @@ import {
   formatComposerContextHref,
   formatComposerContextReference,
 } from "@t3tools/shared/composerContextReferences";
-import { markdownWithHtml } from "../lib/markdownDocument";
+import { markdownWithEmptyLinkLabels, markdownWithHtml } from "../lib/markdownDocument";
+import { resolveMarkdownLinkPresentation } from "../lib/markdownLinks";
+import {
+  parseRemoteFileHref,
+  remoteFileChipLabel,
+  remoteFileInlineCodePattern,
+  remoteFileServerNames,
+  resolveRemoteFileServer,
+  type RemoteFileServerCandidate,
+} from "../lib/remoteFileLinks";
+import { useRemoteFileServers } from "../state/remote-file-servers";
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { Platform, Share, StyleSheet, View } from "react-native";
 import {
@@ -138,9 +148,34 @@ function enrichedStyle(
   };
 }
 
+/** The text a file link written as `[](<path>)` shows: its chip label, or for a server this
+ * client does not know, the path, so the link still reads as something. */
+function emptyFileLinkLabel(
+  url: string,
+  remoteFileServers: ReadonlyArray<RemoteFileServerCandidate>,
+): string | null {
+  const remoteFile = parseRemoteFileHref(url);
+  if (remoteFile) {
+    const server = resolveRemoteFileServer(remoteFile, remoteFileServers);
+    if (server._tag === "found") return remoteFileChipLabel(remoteFile, server.label);
+    return remoteFile.byEnvironmentId ? remoteFile.path : url;
+  }
+  const link = resolveMarkdownLinkPresentation(url);
+  return link.kind === "file" ? link.label : null;
+}
+
 export function MobileEnrichedMarkdownText(props: SelectableMarkdownTextProps) {
   const { renderImage, resolveImageSource } = props;
-  const markdown = useMemo(() => markdownWithHtml(props.markdown), [props.markdown]);
+  const remoteFileServers = useRemoteFileServers();
+  const markdown = useMemo(
+    () =>
+      markdownWithHtml(
+        markdownWithEmptyLinkLabels(props.markdown, (url) =>
+          emptyFileLinkLabel(url, remoteFileServers),
+        ),
+      ),
+    [props.markdown, remoteFileServers],
+  );
   const { themeAppearance } = useAppearancePreferences();
   const [documentAssets, setDocumentAssets] = useState<DocumentAssetsEvent["assets"]>([]);
   const onDocumentAssets = useCallback(({ assets }: DocumentAssetsEvent) => {
@@ -162,14 +197,22 @@ export function MobileEnrichedMarkdownText(props: SelectableMarkdownTextProps) {
         : assets,
     );
   }, []);
-  const { linkVariants, linkPillContent } = useEnrichedLinkVariants(documentAssets, props);
-  const linkRecognition = useMemo(
-    () => ({
-      text: enrichedSkillLinkRegex(props.skills) ?? undefined,
-      inlineCode: ENRICHED_INLINE_FILE_LINK_REGEX,
-    }),
-    [props.skills],
+  const { linkVariants, linkPillContent } = useEnrichedLinkVariants(
+    documentAssets,
+    props,
+    remoteFileServers,
   );
+  const linkRecognition = useMemo(() => {
+    // `vps:/home/user/x.md` in a code span is a file on that server, when this client knows it.
+    const remoteFileCode = remoteFileInlineCodePattern(remoteFileServerNames(remoteFileServers));
+    return {
+      text: enrichedSkillLinkRegex(props.skills) ?? undefined,
+      inlineCode:
+        remoteFileCode === null
+          ? ENRICHED_INLINE_FILE_LINK_REGEX
+          : new RegExp(`^(?:${remoteFileCode})$|${ENRICHED_INLINE_FILE_LINK_REGEX.source}`),
+    };
+  }, [props.skills, remoteFileServers]);
   const [activeMenu, setActiveMenu] = useState<{
     url: string;
     menu: NonNullable<ReturnType<NonNullable<typeof props.fileContextMenu>>>;

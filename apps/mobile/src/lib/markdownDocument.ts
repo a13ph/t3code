@@ -141,6 +141,31 @@ export function markdownWithHtml(markdown: string): string {
   return markdown;
 }
 
+/**
+ * Gives a link written with no text, `[](<dest>)`, the text `labelFor(url)` returns. The native
+ * renderer draws a link over its text, so a link with none draws nothing: no chip, no tap target.
+ * Links `labelFor` returns null for, and anything inside code, are left as written.
+ */
+export function markdownWithEmptyLinkLabels(
+  markdown: string,
+  labelFor: (url: string) => string | null,
+): string {
+  if (!markdown.includes("[](")) return markdown;
+  const edits: Array<{ offset: number; content: string }> = [];
+  const visit = (node: MarkdownNode) => {
+    if (node.type === "link" && node.children.length === 0) {
+      const start = node.position?.start.offset;
+      const label = start !== undefined && markdown.startsWith("[](", start) && labelFor(node.url);
+      if (label)
+        edits.push({ offset: start! + 1, content: label.replace(/[\\`*_[\]<>~|&!]/g, "\\$&") });
+    } else if ("children" in node) node.children.forEach(visit);
+  };
+  visit(parser.parse(markdown));
+  for (const edit of edits.reverse())
+    markdown = markdown.slice(0, edit.offset) + edit.content + markdown.slice(edit.offset);
+  return markdown;
+}
+
 export function parseMarkdownDocument(markdown: string): Root {
   return parser.parse(markdownWithHtml(markdown));
 }
