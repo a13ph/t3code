@@ -189,5 +189,6 @@ export function remoteFileInlineCodePattern(names: ReadonlyArray<string>): strin
   const alternatives = [...names]
     .sort((a, b) => b.length - a.length)
     .map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  return `(?:${alternatives.join("|")}):(?:/(?!/)|[A-Za-z]:[/\\\\])[^\\n\`]+`;
+  // A `%` only as an escape the link parser can decode, or the span becomes a dead link.
+  return `(?:${alternatives.join("|")}):(?:/(?!/)|[A-Za-z]:[/\\\\])(?:[^\\n\`%]|%[0-9A-Fa-f]{2})+`;
 }

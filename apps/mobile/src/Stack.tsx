@@ -856,6 +856,13 @@ const RootStackConfig = createWorkspaceStackNavigator({
       linking: `${THREAD_LINKING_PREFIX}/files/:path*`,
       options: GLASS_HEADER_OPTIONS,
     }),
+    // A file a chat link names on another connected server: no thread there, so the route
+    // names the server and the file's folder itself, and its path holds no thread id.
+    EnvironmentFile: createNativeStackScreen({
+      screen: ThreadFileScreen,
+      linking: "environments/:environmentId/files/:path*",
+      options: GLASS_HEADER_OPTIONS,
+    }),
     ThreadMcpApp: createNativeStackScreen({
       screen: McpAppFullscreenScreen,
       linking: `${THREAD_LINKING_PREFIX}/apps/:itemId`,

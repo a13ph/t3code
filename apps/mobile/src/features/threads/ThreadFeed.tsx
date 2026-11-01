@@ -1857,7 +1857,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
           return;
         }
         void Haptics.selectionAsync();
-        navigation.navigate("ThreadFile", {
+        navigation.navigate("EnvironmentFile", {
           environmentId: server.environmentId,
           path: fileRoutePathSegments(remoteFile.path),
           cwd: remoteFileDirectory(remoteFile.path),

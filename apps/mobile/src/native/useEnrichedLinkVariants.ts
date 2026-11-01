@@ -29,11 +29,17 @@ import {
   enrichedSkillReference,
 } from "../lib/enrichedLinkPresentation";
 
+type LinkPresentation = MarkdownLinkCustomization & {
+  readonly isFile?: boolean;
+  /** Shown as its own text in the link color, with no pill. */
+  readonly isText?: boolean;
+};
+
 function presentation(
   url: string,
   props: Pick<SelectableMarkdownTextProps, "linkCustomization" | "skills" | "textStyle">,
   remoteFileServers: ReadonlyArray<RemoteFileServerCandidate>,
-): (MarkdownLinkCustomization & { readonly isFile?: boolean }) | undefined {
+): LinkPresentation | undefined {
   const custom = props.linkCustomization?.(url);
   if (custom) return custom;
   const context = enrichedContextLinkPresentation(url);
@@ -84,9 +90,10 @@ export function useEnrichedLinkVariants(
   const { linkCustomization, skills, textStyle } = props;
   const links = useMemo(() => {
     const byUrl = new Map<string, NonNullable<ReturnType<typeof presentation>>>();
-    // A file link written with text of its own shows that text, as everywhere else in Markdown.
-    // The file name stands in only when no occurrence has any, as for a bare code span, whose
-    // text is the URL itself.
+    // A file link written with text of its own shows that text, as everywhere else in Markdown,
+    // as a colored link rather than a pill: a pill is one unbroken run that cuts a long label
+    // short. The file-name chip stands in only when no occurrence has text of its own, as for a
+    // bare code span, whose text is the URL itself.
     const authored = new Set(
       assets
         .filter(
@@ -104,7 +111,7 @@ export function useEnrichedLinkVariants(
       if (!value) continue;
       byUrl.set(
         asset.url,
-        value.isFile && authored.has(asset.url) ? { ...value, label: undefined } : value,
+        value.isFile && authored.has(asset.url) ? { color: value.color, isText: true } : value,
       );
     }
     return byUrl;
@@ -114,6 +121,12 @@ export function useEnrichedLinkVariants(
       Object.fromEntries(
         [...links].map(([url, link]) => {
           const color = link.color ?? textStyle.fileTextColor;
+          if (link.isText) {
+            return [
+              enrichedLinkVariantPattern(url),
+              { fontFamily: textStyle.fontFamily, color, underline: false },
+            ];
+          }
           return [
             enrichedLinkVariantPattern(url),
             {
@@ -137,14 +150,20 @@ export function useEnrichedLinkVariants(
   const linkPillContent = useMemo<Record<string, LinkPillContent>>(
     () =>
       Object.fromEntries(
-        [...links].map(([url, link]) => [
-          url,
-          {
-            label: link.label,
-            iconUri: link.icon ? Image.resolveAssetSource(link.icon)?.uri : undefined,
-            iconTintColor: link.iconTintColor,
-          },
-        ]),
+        [...links].flatMap(([url, link]) =>
+          link.isText
+            ? []
+            : [
+                [
+                  url,
+                  {
+                    label: link.label,
+                    iconUri: link.icon ? Image.resolveAssetSource(link.icon)?.uri : undefined,
+                    iconTintColor: link.iconTintColor,
+                  },
+                ] as const,
+              ],
+        ),
       ),
     [links],
   );

@@ -124,6 +124,9 @@ describe("remote file chips", () => {
     expect(pattern.test("other-pc:/x")).toBe(true);
     expect(pattern.test("nowhere:/etc/hosts")).toBe(false);
     expect(pattern.test("vps://host/x")).toBe(false);
+    // A span the link parser cannot decode stays code instead of becoming a dead link.
+    expect(pattern.test("vps:/home/user/100%.md")).toBe(false);
+    expect(pattern.test("vps:/home/user/a%20b.md")).toBe(true);
     expect(remoteFileInlineCodePattern([])).toBeNull();
   });
 });
