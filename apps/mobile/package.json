@@ -171,7 +171,13 @@
         "react-native-screens",
         "react-native-reanimated",
         "@react-native-menu/menu",
-        "expo-audio"
+        "expo-audio",
+        "expo-image-picker",
+        "expo-document-picker",
+        "expo-sharing",
+        "expo-crypto",
+        "expo-application",
+        "expo-haptics"
       ]
     }
   },
