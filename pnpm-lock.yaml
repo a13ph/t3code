@@ -163,8 +163,10 @@ patchedDependencies:
   dbus-next@0.10.2: cfff57561b0ee59b5addb3b2e6c6f20906e967507a530ab67e8db8108e520ba4
   expo-audio@58.0.9: 2c2f8c73a23d48804c8b537b8cd73c25eb331aa47d82eaa481c6766cb81e5add
   expo-blur@58.0.3: d0311b0c0b05bd94393bd9a84653cb42503d5f3c8a19eb2627c34ace08bedf18
+  expo-document-picker@58.0.4: 5880c8161320f64f9d53177a5a625b5c0606bfba04494c21f551b15ae32c763c
   expo-glass-effect@58.0.3: f750041c45ab838a3530451dc7b50d6640a79141037a1b0499c5e3412a860c57
-  expo-sharing@58.0.18: d0ca151b2a4eec8bb28df547c8663e4b803acd981ace492c6b401bcb279f524a
+  expo-image-picker@58.0.10: 20806dc3e06af4dfe43f28c304a5b4b272fa44b40d8a01c1a6c2ee2b3e37f678
+  expo-sharing@58.0.18: 55da2c80d3f660f35ec4a6e635834ae9fa7dd80220c16befdbd7f9b6bf8a7b65
   expo-widgets@58.0.18: 40806e85c756563935c7368b93d679bd3bb7742bff21d9c7611d9161e1aee602
   node-pty@1.2.0-beta.15: f2fe901c61cde17986240002d05c172d5d0272d83ffaab8d0ebeb922763be414
   react-native-gesture-handler@3.3.0: abe20e1d1c23549297cbbc818e14fe479b41455930d9663135d6b40fe359b626
@@ -455,7 +457,7 @@ importers:
         version: 58.0.5(expo@58.0.11)
       expo-document-picker:
         specifier: ~58.0.4
-        version: 58.0.4(expo@58.0.11)
+        version: 58.0.4(patch_hash=5880c8161320f64f9d53177a5a625b5c0606bfba04494c21f551b15ae32c763c)(expo@58.0.11)
       expo-file-system:
         specifier: ~58.0.9
         version: 58.0.9(expo@58.0.11)(react-native@0.88.0(@babel/core@7.29.7)(@react-native/metro-config@0.88.0(@babel/core@7.29.7)(bufferutil@4.1.0)(utf-8-validate@6.0.6))(@types/react@19.3.0)(bufferutil@4.1.0)(react@19.3.0)(utf-8-validate@6.0.6))
@@ -476,7 +478,7 @@ importers:
         version: 58.0.14(expo@58.0.11)(react-native@0.88.0(@babel/core@7.29.7)(@react-native/metro-config@0.88.0(@babel/core@7.29.7)(bufferutil@4.1.0)(utf-8-validate@6.0.6))(@types/react@19.3.0)(bufferutil@4.1.0)(react@19.3.0)(utf-8-validate@6.0.6))(react@19.3.0)
       expo-image-picker:
         specifier: ~58.0.10
-        version: 58.0.10(expo@58.0.11)
+        version: 58.0.10(patch_hash=20806dc3e06af4dfe43f28c304a5b4b272fa44b40d8a01c1a6c2ee2b3e37f678)(expo@58.0.11)
       expo-keep-awake:
         specifier: ~58.0.3
         version: 58.0.3(expo@58.0.11)(react@19.3.0)
@@ -503,7 +505,7 @@ importers:
         version: 58.0.4(expo@58.0.11)(react-native@0.88.0(@babel/core@7.29.7)(@react-native/metro-config@0.88.0(@babel/core@7.29.7)(bufferutil@4.1.0)(utf-8-validate@6.0.6))(@types/react@19.3.0)(bufferutil@4.1.0)(react@19.3.0)(utf-8-validate@6.0.6))
       expo-sharing:
         specifier: 58.0.18
-        version: 58.0.18(patch_hash=d0ca151b2a4eec8bb28df547c8663e4b803acd981ace492c6b401bcb279f524a)(expo@58.0.11)(react-native@0.88.0(@babel/core@7.29.7)(@react-native/metro-config@0.88.0(@babel/core@7.29.7)(bufferutil@4.1.0)(utf-8-validate@6.0.6))(@types/react@19.3.0)(bufferutil@4.1.0)(react@19.3.0)(utf-8-validate@6.0.6))(react@19.3.0)(typescript@7.0.2)
+        version: 58.0.18(patch_hash=55da2c80d3f660f35ec4a6e635834ae9fa7dd80220c16befdbd7f9b6bf8a7b65)(expo@58.0.11)(react-native@0.88.0(@babel/core@7.29.7)(@react-native/metro-config@0.88.0(@babel/core@7.29.7)(bufferutil@4.1.0)(utf-8-validate@6.0.6))(@types/react@19.3.0)(bufferutil@4.1.0)(react@19.3.0)(utf-8-validate@6.0.6))(react@19.3.0)(typescript@7.0.2)
       expo-splash-screen:
         specifier: ~58.0.9
         version: 58.0.9(expo@58.0.11)(typescript@7.0.2)
@@ -5806,6 +5808,7 @@ packages:
   '@smithy/core@3.34.1':
     resolution: {integrity: sha512-dLcOUxz8YCv1RZUMKq6GbyUf95pLbrqh34bPvpCZ1+CByFF31BEAFewZjsGCnVsZTKdThNENfGyAgk2TJqVwSw==}
     engines: {node: '>=18.0.0'}
+    deprecated: Deprecated due to a bug in custom logger data redaction. See https://github.com/aws/aws-sdk-js-v3/issues/8393.
 
   '@smithy/credential-provider-imds@4.3.8':
     resolution: {integrity: sha512-5cAM+KZC02sTqDt6NaLXyu50M/GNMd1eTzDVR8Lb0BBsVtu7RWHo47VPPEEv1vt3Yub6uzr+M5FHC+GtoT0USg==}
@@ -19231,7 +19234,7 @@ snapshots:
       expo: 58.0.11(0279ba067f3e563cec3a046cc8b71592)
       ua-parser-js: 0.7.41
 
-  expo-document-picker@58.0.4(expo@58.0.11):
+  expo-document-picker@58.0.4(patch_hash=5880c8161320f64f9d53177a5a625b5c0606bfba04494c21f551b15ae32c763c)(expo@58.0.11):
     dependencies:
       expo: 58.0.11(0279ba067f3e563cec3a046cc8b71592)
 
@@ -19269,7 +19272,7 @@ snapshots:
       react: 19.3.0
       react-native: 0.88.0(@babel/core@7.29.7)(@react-native/metro-config@0.88.0(@babel/core@7.29.7)(bufferutil@4.1.0)(utf-8-validate@6.0.6))(@types/react@19.3.0)(bufferutil@4.1.0)(react@19.3.0)(utf-8-validate@6.0.6)
 
-  expo-image-picker@58.0.10(expo@58.0.11):
+  expo-image-picker@58.0.10(patch_hash=20806dc3e06af4dfe43f28c304a5b4b272fa44b40d8a01c1a6c2ee2b3e37f678)(expo@58.0.11):
     dependencies:
       expo: 58.0.11(0279ba067f3e563cec3a046cc8b71592)
       expo-image-loader: 58.0.3(expo@58.0.11)
@@ -19381,7 +19384,7 @@ snapshots:
 
   expo-server@58.0.5: {}
 
-  expo-sharing@58.0.18(patch_hash=d0ca151b2a4eec8bb28df547c8663e4b803acd981ace492c6b401bcb279f524a)(expo@58.0.11)(react-native@0.88.0(@babel/core@7.29.7)(@react-native/metro-config@0.88.0(@babel/core@7.29.7)(bufferutil@4.1.0)(utf-8-validate@6.0.6))(@types/react@19.3.0)(bufferutil@4.1.0)(react@19.3.0)(utf-8-validate@6.0.6))(react@19.3.0)(typescript@7.0.2):
+  expo-sharing@58.0.18(patch_hash=55da2c80d3f660f35ec4a6e635834ae9fa7dd80220c16befdbd7f9b6bf8a7b65)(expo@58.0.11)(react-native@0.88.0(@babel/core@7.29.7)(@react-native/metro-config@0.88.0(@babel/core@7.29.7)(bufferutil@4.1.0)(utf-8-validate@6.0.6))(@types/react@19.3.0)(bufferutil@4.1.0)(react@19.3.0)(utf-8-validate@6.0.6))(react@19.3.0)(typescript@7.0.2):
     dependencies:
       '@expo/config-plugins': 58.0.9(typescript@7.0.2)
       '@expo/config-types': 58.0.3

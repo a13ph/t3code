@@ -1,0 +1,14 @@
+diff --git a/android/src/main/java/expo/modules/imagepicker/ImagePickerModule.kt b/android/src/main/java/expo/modules/imagepicker/ImagePickerModule.kt
+index 50663d8..9cc7358 100644
+--- a/android/src/main/java/expo/modules/imagepicker/ImagePickerModule.kt
++++ b/android/src/main/java/expo/modules/imagepicker/ImagePickerModule.kt
+@@ -244,7 +244,8 @@ class ImagePickerModule : Module() {
+   private suspend fun launchPicker(
+     pickerLauncher: suspend () -> ImagePickerContractResult
+   ): ImagePickerContractResult.Success = withContext(Dispatchers.IO) {
+-    when (val pickingResult = pickerLauncher()) {
++    // startActivityForResult walks the view tree, which the UI thread may be changing (expo/expo#51164).
++    when (val pickingResult = withContext(Dispatchers.Main) { pickerLauncher() }) {
+       is ImagePickerContractResult.Success -> pickingResult
+       is ImagePickerContractResult.Cancelled -> throw OperationCanceledException()
+       is ImagePickerContractResult.Error -> throw FailedToPickMediaException()

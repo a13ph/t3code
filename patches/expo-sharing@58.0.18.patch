@@ -125,3 +125,24 @@ index 18af320..3a52b70 100644
  };
  
  export type BaseResolvedSharePayload = SharePayload & {
+diff --git a/android/src/main/java/expo/modules/sharing/SharingModule.kt b/android/src/main/java/expo/modules/sharing/SharingModule.kt
+index 69ccba6..2976d0e 100644
+--- a/android/src/main/java/expo/modules/sharing/SharingModule.kt
++++ b/android/src/main/java/expo/modules/sharing/SharingModule.kt
+@@ -8,6 +8,7 @@ import androidx.core.content.FileProvider
+ import expo.modules.core.errors.InvalidArgumentException
+ import expo.modules.kotlin.Promise
+ import expo.modules.kotlin.exception.Exceptions
++import expo.modules.kotlin.functions.Queues
+ import expo.modules.kotlin.modules.Module
+ import expo.modules.kotlin.modules.ModuleDefinition
+ import expo.modules.kotlin.services.FilePermissionService
+@@ -55,7 +56,7 @@ class SharingModule : Module() {
+       } catch (e: Exception) {
+         throw SharingFailedException("Failed to share the file: ${e.message}", e)
+       }
+-    }
++    }.runOnQueue(Queues.MAIN) // startActivityForResult walks the view tree, which the UI thread may be changing (expo/expo#51164).
+ 
+     Function("getSharedPayloads") {
+       val intent = SharingSingleton.intent

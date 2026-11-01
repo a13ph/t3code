@@ -1,0 +1,21 @@
+diff --git a/android/src/main/java/expo/modules/documentpicker/DocumentPickerModule.kt b/android/src/main/java/expo/modules/documentpicker/DocumentPickerModule.kt
+index 6ee5e2d..e02bfbb 100644
+--- a/android/src/main/java/expo/modules/documentpicker/DocumentPickerModule.kt
++++ b/android/src/main/java/expo/modules/documentpicker/DocumentPickerModule.kt
+@@ -10,6 +10,7 @@ import expo.modules.core.utilities.FileUtilities
+ import expo.modules.kotlin.Promise
+ import expo.modules.kotlin.exception.Exceptions
+ import expo.modules.kotlin.exception.toCodedException
++import expo.modules.kotlin.functions.Queues
+ import expo.modules.kotlin.modules.Module
+ import expo.modules.kotlin.modules.ModuleDefinition
+ import org.apache.commons.io.FilenameUtils
+@@ -50,7 +51,7 @@ class DocumentPickerModule : Module() {
+         }
+       }
+       appContext.throwingActivity.startActivityForResult(intent, OPEN_DOCUMENT_CODE)
+-    }
++    }.runOnQueue(Queues.MAIN) // startActivityForResult walks the view tree, which the UI thread may be changing (expo/expo#51164).
+ 
+     OnActivityResult { _, (requestCode, resultCode, intent) ->
+       if (requestCode != OPEN_DOCUMENT_CODE || pendingPromise == null) {
