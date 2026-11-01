@@ -1,0 +1,120 @@
+name: Fork mobile APK
+
+# Builds the mobile app of a fork-mobile* branch, which sits on an upstream
+# main commit rather than a release tag, as a sideloadable arm64 APK: the
+# production variant with over-the-air updates off, signed with the self-build
+# key from the ANDROID_KEYSTORE_* secrets, attached to a prerelease so the
+# fork's latest release stays the newest fork-release* build. The same key as
+# earlier self-builds lets the APK install as an update over them.
+
+on:
+  push:
+    branches: ['fork-mobile*']
+  workflow_dispatch:
+
+concurrency:
+  group: fork-mobile-android-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    name: Build APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    env:
+      APP_VARIANT: production
+      T3CODE_MOBILE_UPDATES_ENABLED: "0"
+      EXPO_NO_GIT_STATUS: "1"
+      CI: "1"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: false
+      - run: cp .env.example .env
+      - run: vp install --filter=@t3tools/mobile...
+      - name: Expo prebuild
+        working-directory: apps/mobile
+        run: ./node_modules/.bin/expo prebuild --platform android --clean --no-install
+      # Earlier self-builds carry versionCode 1 and fork-release* builds a small
+      # run number; 1000 up keeps these above both, in run order.
+      - id: meta
+        name: Set versionCode
+        working-directory: apps/mobile/android
+        run: |
+          set -euo pipefail
+          code=$(( ${{ github.run_number }} + 1000 ))
+          sed -i -E "s/^( *)versionCode [0-9]+$/\1versionCode $code/" app/build.gradle
+          grep -E '^ *version(Code|Name) ' app/build.gradle
+          name="$(sed -nE 's/^ *versionName "([^"]+)"$/\1/p' app/build.gradle)"
+          [ -n "$name" ] && grep -qE "^ *versionCode $code$" app/build.gradle \
+            || { echo "versionCode or versionName not found in app/build.gradle"; exit 1; }
+          echo "version=$name" >> "$GITHUB_OUTPUT"
+          echo "tag=t3-mobile-$name-${GITHUB_SHA::10}" >> "$GITHUB_OUTPUT"
+      - name: Gradle assembleRelease
+        working-directory: apps/mobile/android
+        env:
+          NODE_ENV: production
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon -PreactNativeArchitectures=arm64-v8a assembleRelease | tee "$RUNNER_TEMP/gradle.log"
+      # The patched pickers and sharing module reach the APK only when Gradle
+      # compiles them from source rather than taking their prebuilt archives.
+      - name: Check the patched modules compiled from source
+        run: |
+          set -euo pipefail
+          for m in expo-image-picker expo-document-picker expo-sharing; do
+            grep -q "> Task :$m:compileReleaseKotlin" "$RUNNER_TEMP/gradle.log" \
+              || { echo "$m was not compiled from source"; exit 1; }
+          done
+      - name: Sign
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keystore="$RUNNER_TEMP/t3code-release.jks"
+          pass="$RUNNER_TEMP/t3code-release.pass"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          printf '%s\n' "$ANDROID_KEYSTORE_PASSWORD" > "$pass"
+          build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 | sort -V | tail -1)"
+          out="t3code-mobile-${{ steps.meta.outputs.version }}-arm64-v8a.apk"
+          "$build_tools/apksigner" sign --ks "$keystore" --ks-key-alias t3code \
+            --ks-pass "file:$pass" --out "$out" \
+            apps/mobile/android/app/build/outputs/apk/release/app-release.apk
+          rm -f "$keystore" "$pass" "$out.idsig"
+          "$build_tools/apksigner" verify --verbose --print-certs "$out"
+          "$build_tools/aapt2" dump badging "$out" | sed -n 1p
+          sha256sum "$out" | tee "$out.sha256"
+      - name: Attach to a prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag="${{ steps.meta.outputs.tag }}"
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --prerelease \
+            --target "$GITHUB_SHA" --title "T3 Code mobile ${{ steps.meta.outputs.version }} ($tag)" \
+            --notes "The mobile app with this fork's patches, built from $GITHUB_SHA on the $GITHUB_REF_NAME branch."
+          gh release upload "$tag" --clobber t3code-mobile-*.apk t3code-mobile-*.apk.sha256
+          gh release view "$tag" --json assets --jq '.assets[] | "\(.name) \(.size)"'
