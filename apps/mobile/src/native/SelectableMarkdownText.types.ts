@@ -14,6 +14,8 @@ export interface NativeMarkdownTextStyle {
   readonly quoteMarkerColor: string;
   readonly dividerColor: string;
   readonly contextChipBorderColor?: string;
+  readonly fileChipBackgroundColor?: string;
+  readonly fileChipBorderColor?: string;
   readonly fontSize: number;
   readonly lineHeight: number;
   readonly fontFamily: string;

@@ -103,7 +103,7 @@ import { composerImageGallery } from "../../lib/composerImageGallery";
 import { messageImageGallery } from "./messageImageGallery";
 import { FilePreviewModal, type FilePreviewSource } from "../../components/FilePreviewModal";
 import { isPdfFile } from "../../lib/filePreview";
-import { flattenThemeColor } from "../../lib/mobileTheme";
+import { fileChipColors, flattenThemeColor } from "../../lib/mobileTheme";
 import { PresentationSource } from "../../components/ui/NativePresentation";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, { FadeIn, FadeInUp, type SharedValue } from "react-native-reanimated";
@@ -877,6 +877,24 @@ function useMarkdownStyles(): MarkdownStyleSets {
     theme["--color-border"],
     theme["--color-user-bubble"],
   );
+  const {
+    background: userFileChipBackground,
+    border: userFileChipBorder,
+    text: userFileChipText,
+  } = fileChipColors({
+    surface: theme["--color-user-bubble"],
+    border: theme["--color-border"],
+    foreground: theme["--color-user-bubble-foreground"],
+  });
+  const {
+    background: assistantFileChipBackground,
+    border: assistantFileChipBorder,
+    text: assistantFileChipText,
+  } = fileChipColors({
+    surface: theme["--color-thread-canvas"],
+    border: theme["--color-border"],
+    foreground: theme["--color-md-code-text"],
+  });
   const markdownUserBodyColor = theme["--color-user-bubble-foreground"];
   const markdownUserCodeBg = theme["--color-md-user-code-bg"];
   const markdownUserCodeText = theme["--color-md-user-code-text"];
@@ -899,7 +917,9 @@ function useMarkdownStyles(): MarkdownStyleSets {
           codeColor: markdownUserCodeText,
           codeBackgroundColor: markdownUserCodeBg,
           codeBlockBackgroundColor: markdownUserFenceBg,
-          fileTextColor: markdownUserBodyColor,
+          fileTextColor: userFileChipText,
+          fileChipBackgroundColor: userFileChipBackground,
+          fileChipBorderColor: userFileChipBorder,
           skillTextColor: userBubbleSkillForeground,
           quoteMarkerColor: markdownUserBodyColor,
           dividerColor: markdownUserBodyColor,
@@ -922,7 +942,9 @@ function useMarkdownStyles(): MarkdownStyleSets {
           codeColor: markdownCodeText,
           codeBackgroundColor: markdownCodeBg,
           codeBlockBackgroundColor: markdownCodeBg,
-          fileTextColor: markdownCodeText,
+          fileTextColor: assistantFileChipText,
+          fileChipBackgroundColor: assistantFileChipBackground,
+          fileChipBorderColor: assistantFileChipBorder,
           skillTextColor: inlineSkillForeground,
           quoteMarkerColor: markdownBlockquoteBorder,
           dividerColor: markdownHrColor,
@@ -937,6 +959,9 @@ function useMarkdownStyles(): MarkdownStyleSets {
       },
     };
   }, [
+    assistantFileChipBackground,
+    assistantFileChipBorder,
+    assistantFileChipText,
     boldFontFamily,
     contextChipBorderColor,
     inlineSkillForeground,
@@ -956,6 +981,9 @@ function useMarkdownStyles(): MarkdownStyleSets {
     nativeMarkdownTypography,
     regularFontFamily,
     userBubbleSkillForeground,
+    userFileChipBackground,
+    userFileChipBorder,
+    userFileChipText,
   ]);
 }
 

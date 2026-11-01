@@ -521,3 +521,33 @@ describe("flattenThemeColor", () => {
     expect(flattenThemeColor("rgb(255, 0, 0)", "#000000")).toBe("#ff0000");
   });
 });
+
+describe("fileChipColors", () => {
+  it("weights the web's file-link accent 11%, 34% and 22% into fill, border and text", async () => {
+    const { fileChipColors, themeColorToNativeColor } = await import("./mobileTheme");
+    const accent = themeColorToNativeColor("oklch(0.62 0.11 215)");
+    const scaled = (weight: number) =>
+      `#${accent
+        .slice(1)
+        .match(/.{2}/g)!
+        .map((channel) =>
+          Math.round(Number.parseInt(channel, 16) * weight)
+            .toString(16)
+            .padStart(2, "0"),
+        )
+        .join("")}`;
+    expect(
+      fileChipColors({ surface: "#000000", border: "#000000", foreground: "#000000" }),
+    ).toEqual({ background: scaled(0.11), border: scaled(0.34), text: scaled(0.22) });
+  });
+
+  it("flattens a translucent border over the chip's surface", async () => {
+    const { fileChipColors } = await import("./mobileTheme");
+    const colors = fileChipColors({
+      surface: "#ffffff",
+      border: "rgba(0, 0, 0, 0.5)",
+      foreground: "#27272a",
+    });
+    for (const color of Object.values(colors)) expect(color).toMatch(/^#[\da-f]{6}$/);
+  });
+});

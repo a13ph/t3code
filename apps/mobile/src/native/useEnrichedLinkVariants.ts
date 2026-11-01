@@ -114,20 +114,29 @@ export function useEnrichedLinkVariants(
       Object.fromEntries(
         [...links].map(([url, link]) => {
           const color = link.color ?? textStyle.fileTextColor;
+          // A file chip wears the web's file-link chip; its 1dp border comes out of the padding
+          // so the chip keeps its size.
+          const chip =
+            link.isFile && textStyle.fileChipBackgroundColor && textStyle.fileChipBorderColor
+              ? {
+                  background: textStyle.fileChipBackgroundColor,
+                  border: textStyle.fileChipBorderColor,
+                }
+              : null;
           return [
             enrichedLinkVariantPattern(url),
             {
               pill: {
-                borderColor: "transparent",
-                borderWidth: 0,
+                borderColor: chip?.border ?? "transparent",
+                borderWidth: chip ? 1 : 0,
                 borderRadius: 6,
-                paddingHorizontal: 5,
-                paddingVertical: 2,
+                paddingHorizontal: chip ? 4 : 5,
+                paddingVertical: chip ? 1 : 2,
               },
               fontFamily: textStyle.fontFamily,
               color,
               underline: false,
-              backgroundColor: "transparent",
+              backgroundColor: chip?.background ?? "transparent",
             },
           ];
         }),

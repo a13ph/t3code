@@ -171,6 +171,37 @@ export function flattenThemeColor(color: string, surface: string): string {
   return `#${channels.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
 }
 
+/** `color-mix(in srgb, accent weight, base)` for opaque hex colours; anything else gives `base`. */
+export function mixThemeColors(accent: string, base: string, weight: number): string {
+  const accentChannels = rgbChannels(accent);
+  const baseChannels = rgbChannels(base);
+  if (!accentChannels || !baseChannels) return base;
+  const channels = accentChannels.map((channel, index) =>
+    Math.round(channel * weight + baseChannels[index]! * (1 - weight)),
+  );
+  return `#${channels.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
+}
+
+/** The accent of the web's `mention` context chip, the chip a file link renders as there. */
+const FILE_CHIP_ACCENT = themeColorToNativeColor("oklch(0.62 0.11 215)");
+
+/**
+ * The web's file-link chip colours, made opaque over the surface the chip sits on: the accent at
+ * 11% for the fill, mixed 34% into the border and 22% into the text. The web mixes in OKLab;
+ * this mixes in sRGB, which differs by a shade at these weights.
+ */
+export function fileChipColors(roles: {
+  readonly surface: string;
+  readonly border: string;
+  readonly foreground: string;
+}) {
+  return {
+    background: flattenThemeColor(withAlpha(FILE_CHIP_ACCENT, 0.11), roles.surface),
+    border: mixThemeColors(FILE_CHIP_ACCENT, flattenThemeColor(roles.border, roles.surface), 0.34),
+    text: mixThemeColors(FILE_CHIP_ACCENT, roles.foreground, 0.22),
+  };
+}
+
 function relativeLuminance(channels: readonly [number, number, number]): number {
   const [red, green, blue] = channels.map((channel) => {
     const value = channel / 255;
