@@ -6,13 +6,15 @@ import { fileBasename } from "@t3tools/shared/path";
  *
  * - `<server>:<absolute path>`, as in `vps:/home/user/notes.md` or `win-vm:D:/user/notes.md`.
  *   The server is named by the client's label for the connection or by the server's own label.
- * - `remote-file://v1/<environmentId>/<absolute path>`, naming the server by its environment id.
+ * - `<name>-file://v1/<environmentId>/<absolute path>`, naming the server by its environment id.
+ *   Any name but `t3` is read, so links written under an older scheme name keep opening; a chip
+ *   still needs a connected environment with that id.
  *
  * Either may end in `:line` or `:line:column`. The path is absolute on the named server, so it is
  * read there as a host file, never as a path inside the message's workspace.
  */
 export interface RemoteFileLink {
-  /** The server as written: a label, or an environment id for the `remote-file` form. */
+  /** The server as written: a label, or an environment id for the `-file://` form. */
   readonly server: string;
   readonly byEnvironmentId: boolean;
   /** Absolute on that server, without the position suffix. */
@@ -22,8 +24,7 @@ export interface RemoteFileLink {
 }
 
 // Not `t3-file`, which upstream may define later.
-export const REMOTE_FILE_LINK_PROTOCOL = "remote-file";
-const REMOTE_FILE_LINK_PREFIX = `${REMOTE_FILE_LINK_PROTOCOL}://v1/`;
+const REMOTE_FILE_LINK_PREFIX = /^(?<name>[a-z][a-z0-9]*)-file:\/\/v1\//;
 
 // Two characters at least, so a Windows drive (`D:/user`) never reads as a server name.
 const SERVER_PATH =
@@ -77,8 +78,9 @@ function withPosition(
 export function parseRemoteFileHref(href: string | undefined | null): RemoteFileLink | null {
   if (!href) return null;
   const trimmed = href.trim().replace(/^<(.*)>$/, "$1");
-  if (trimmed.startsWith(REMOTE_FILE_LINK_PREFIX)) {
-    const rest = trimmed.slice(REMOTE_FILE_LINK_PREFIX.length);
+  const prefix = REMOTE_FILE_LINK_PREFIX.exec(trimmed);
+  if (prefix && prefix.groups?.name !== "t3") {
+    const rest = trimmed.slice(prefix[0].length);
     const slash = rest.indexOf("/");
     if (slash <= 0) return null;
     const environmentId = rest.slice(0, slash);

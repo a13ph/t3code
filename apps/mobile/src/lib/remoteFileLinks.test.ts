@@ -42,6 +42,14 @@ describe("parseRemoteFileHref", () => {
     expect(parseRemoteFileHref("remote-file://v1/env-1/D:/user/x.md")?.path).toBe("D:/user/x.md");
   });
 
+  it("reads the environment-id form under any scheme name but t3", () => {
+    expect(parseRemoteFileHref("shared-file://v1/env-1/x.md")).toMatchObject({
+      server: "env-1",
+      byEnvironmentId: true,
+    });
+    expect(parseRemoteFileHref("t3-file://v1/env-1/x.md")).toBeNull();
+  });
+
   it("leaves drive paths, URLs and relative refs alone", () => {
     for (const href of [
       "D:/user/x.md",
