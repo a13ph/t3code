@@ -6,6 +6,7 @@ name: Fork mobile APK
 # key from the ANDROID_KEYSTORE_* secrets, attached to a prerelease so the
 # fork's latest release stays the newest fork-release* build. The same key as
 # earlier self-builds lets the APK install as an update over them.
+# It runs on each push to a fork-mobile* branch and on workflow_dispatch.
 
 on:
   push:
