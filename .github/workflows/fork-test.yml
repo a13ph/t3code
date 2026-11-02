@@ -103,4 +103,5 @@ jobs:
             src/orchestration-v2/FoundationPersistence.test.ts \
             src/orchestration-v2/KeeperReattach.integration.test.ts \
             src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts \
-            src/orchestration-v2/ProviderTurnStartService.test.ts
+            src/orchestration-v2/ProviderTurnStartService.test.ts \
+            src/orchestration-v2/ProjectionStore.test.ts
