@@ -1889,33 +1889,24 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         WHERE thread_id = ${threadId} AND ordinal IN (500, 580)
       `;
 
-      const retainedRequestPlan = yield* sql<{ readonly detail: string }>`
-        EXPLAIN QUERY PLAN
-        WITH selected AS (
-          SELECT run_id, type
-          FROM orchestration_v2_projection_turn_items
-          WHERE thread_id = ${threadId}
-          ORDER BY ordinal DESC, turn_item_id DESC
-          LIMIT 77
-        )
-        SELECT request.payload_json
-        FROM orchestration_v2_projection_turn_items AS request
-        WHERE request.run_id IN (
-            SELECT run_id FROM selected
-            WHERE type = 'run_interrupt_result' AND run_id IS NOT NULL
-          )
-          AND request.type = 'run_interrupt_request'
-      `;
-      assert.isTrue(
-        retainedRequestPlan.some((row) =>
-          row.detail.includes("orchestration_v2_projection_turn_items_run_ordinal_idx"),
-        ),
+      const { statements: olderStatements, tracer: olderTracer } = traceSqlStatements();
+      const older = yield* projectionStore
+        .getThreadSnapshotWindow(threadId, {
+          rowLimit: 76,
+          anchorItemId: TurnItemId.make("turn-item:bounded-sql-history:925"),
+        })
+        .pipe(Effect.withTracer(olderTracer));
+      const windowQuery = olderStatements.find((statement) =>
+        statement.includes("retained AS MATERIALIZED"),
       );
-
-      const older = yield* projectionStore.getThreadSnapshotWindow(threadId, {
-        rowLimit: 76,
-        anchorItemId: TurnItemId.make("turn-item:bounded-sql-history:925"),
-      });
+      assert.isDefined(windowQuery);
+      const requestLookups = (yield* sql.unsafe<{ readonly detail: string }>(
+        `EXPLAIN QUERY PLAN ${windowQuery}`,
+      ))
+        .map((row) => row.detail)
+        .filter((detail) => /^(SCAN|SEARCH) request\b/.test(detail));
+      assert.isNotEmpty(requestLookups);
+      for (const lookup of requestLookups) assert.include(lookup, "thread_id=?");
       assert.lengthOf(older.projection.turnItems, 76);
       assert.lengthOf(older.projection.runs, 76);
       assert.strictEqual(older.projection.turnItems[0]?.ordinal, 850);
