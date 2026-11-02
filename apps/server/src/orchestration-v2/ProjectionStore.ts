@@ -2914,7 +2914,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   UNION
                   SELECT request.rowid AS item_rowid, request.ordinal, request.turn_item_id
                   FROM orchestration_v2_projection_turn_items AS request
-                  WHERE request.run_id IN (
+                  WHERE request.thread_id = ${threadId}
+                    AND request.run_id IN (
                       SELECT run_id FROM selected
                       WHERE type = 'run_interrupt_result' AND run_id IS NOT NULL
                     )
