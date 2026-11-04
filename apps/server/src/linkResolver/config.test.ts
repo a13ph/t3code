@@ -28,6 +28,8 @@ describe("decodeLinkResolvers", () => {
       for (const raw of [
         "not json",
         '["prog"]',
+        '{}',
+        '{"notes": ["prog"], "Bad": ["prog"]}',
         '{"Notes": ["prog"]}',
         '{"1notes": ["prog"]}',
         '{"notes": []}',

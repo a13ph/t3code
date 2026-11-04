@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off -- runs real resolver programs as child processes.
 import { spawn } from "node:child_process";
 
 import type { LinkResolveResult } from "@t3tools/contracts";
@@ -18,13 +19,15 @@ const PROGRAM = String.raw`
 const rl = require("node:readline").createInterface({ input: process.stdin });
 const mark = String.fromCodePoint(0x25e7);
 let seen = 0;
+let hung = false;
 rl.on("line", (raw) => {
   seen += 1;
   const { id } = JSON.parse(raw);
   const out = (value) => process.stdout.write(Buffer.from(JSON.stringify(value) + "\n", "utf8"));
   if (id === "missing") return out(null);
-  // Stops reading, as a stuck program does, and stays alive.
-  if (id === "hang") return rl.close(), setInterval(() => {}, 60000);
+  // Stops answering, as a stuck program does, and stays alive.
+  if (hung) return;
+  if (id === "hang") return (hung = true), setInterval(() => {}, 60000);
   if (id === "die") process.exit(3);
   if (id === "badutf8") return process.stdout.write(Buffer.from([0xff, 0xfe, 0x0a]));
   if (id === "garbage") return process.stdout.write("not json\n");

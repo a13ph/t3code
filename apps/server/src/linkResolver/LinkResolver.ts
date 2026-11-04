@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off globalTimers:off globalConsole:off -- one long-lived
+// child shared by every connection, read as raw bytes and timed per answer; called from a plain
+// Promise handler, outside any Effect runtime.
 /**
  * Resolves chat links of a configured scheme through an external program.
  *
@@ -18,7 +21,6 @@
  * UTF-8 is logged and answers unavailable rather than being read with replacement characters.
  */
 import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import * as Path from "node:path";
 
 import type { LinkResolveResult, ResolvedLink, ResolvedLinkTone } from "@t3tools/contracts";
 
@@ -98,7 +100,7 @@ function firstGrapheme(text: string): string {
 // `\\?\`) are refused, since reading one makes the server connect to the host it names.
 function isLocalAbsolutePath(path: string): boolean {
   if (/^[\\/]{2}/.test(path)) return false;
-  return Path.posix.isAbsolute(path) || /^[A-Za-z]:[\\/]/.test(path);
+  return path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path);
 }
 
 /** A program's answer as the client may show it, or null for anything that is not one. */
@@ -140,12 +142,12 @@ export class LinkResolverProcess {
   private readonly spawnChild: LinkResolverSpawn;
   private readonly log: (message: string) => void;
   private readonly now: () => number;
+  readonly scheme: string;
+  readonly argv: ReadonlyArray<string>;
 
-  constructor(
-    readonly scheme: string,
-    readonly argv: ReadonlyArray<string>,
-    options: LinkResolverOptions = {},
-  ) {
+  constructor(scheme: string, argv: ReadonlyArray<string>, options: LinkResolverOptions = {}) {
+    this.scheme = scheme;
+    this.argv = argv;
     this.answerTimeoutMs = options.answerTimeoutMs ?? LINK_RESOLVER_ANSWER_TIMEOUT_MS;
     this.answerCacheMs = options.answerCacheMs ?? ANSWER_CACHE_MS;
     this.maxPending = options.maxPending ?? MAX_PENDING;
