@@ -6,6 +6,7 @@ import {
   CHAT_MARKDOWN_REHYPE_PLUGINS,
   CHAT_MARKDOWN_REMARK_PLUGINS,
   chatMarkdownRehypePlugins,
+  unwrapResolvedLinkHref,
 } from "./markdownPipeline.ts";
 
 const hrefsAfterSanitizing = (markdown: string, plugins: typeof CHAT_MARKDOWN_REHYPE_PLUGINS) => {
@@ -27,29 +28,40 @@ const hrefsAfterSanitizing = (markdown: string, plugins: typeof CHAT_MARKDOWN_RE
   return hrefs;
 };
 
-it("keeps links of the extra protocols a caller passes, and only those", () => {
-  const markdown = "[a](notes://n1) <notes://n2> [b](wiki://w1) [c](javascript:alert(1))";
+it("keeps links of the resolved schemes a caller passes as t3-resolved links, and only those", () => {
+  const markdown =
+    '[a](notes://n1) <NOTES://n2> [b](wiki://w1) [c](javascript:alert(1)) <a href="notes://n3">d</a>';
   expect(hrefsAfterSanitizing(markdown, CHAT_MARKDOWN_REHYPE_PLUGINS)).toEqual([
+    undefined,
     undefined,
     undefined,
     undefined,
     undefined,
   ]);
   expect(hrefsAfterSanitizing(markdown, chatMarkdownRehypePlugins(["notes"]))).toEqual([
-    "notes://n1",
-    "notes://n2",
+    "t3-resolved:notes://n1",
+    "t3-resolved:NOTES://n2",
     undefined,
+    undefined,
+    "t3-resolved:notes://n3",
+  ]);
+  expect(unwrapResolvedLinkHref("t3-resolved:notes://n1")).toBe("notes://n1");
+  expect(unwrapResolvedLinkHref("notes://n1")).toBeNull();
+});
+
+it("never lets a resolved scheme's other link forms through the sanitizer", () => {
+  // A server naming an OS handler as its scheme does not make chat keep links to that handler.
+  const markdown = '[a](ms-msdt:/id) [b](ms-msdt://id) <a href="ms-msdt:id">c</a>';
+  expect(hrefsAfterSanitizing(markdown, chatMarkdownRehypePlugins(["ms-msdt"]))).toEqual([
+    undefined,
+    "t3-resolved:ms-msdt://id",
     undefined,
   ]);
-  // Script and data schemes stay out even when a caller passes them.
-  expect(
-    hrefsAfterSanitizing(markdown, chatMarkdownRehypePlugins(["javascript", "data", "Bad Name"])),
-  ).toEqual([undefined, undefined, undefined, undefined]);
 });
 
 it("returns one plugin list per set of extra protocols", () => {
   expect(chatMarkdownRehypePlugins([])).toBe(CHAT_MARKDOWN_REHYPE_PLUGINS);
-  expect(chatMarkdownRehypePlugins(["javascript"])).toBe(CHAT_MARKDOWN_REHYPE_PLUGINS);
+  expect(chatMarkdownRehypePlugins(["Bad Name"])).toBe(CHAT_MARKDOWN_REHYPE_PLUGINS);
   expect(chatMarkdownRehypePlugins(["b", "a"])).toBe(chatMarkdownRehypePlugins(["a", "b", "a"]));
   expect(chatMarkdownRehypePlugins(["a"])).not.toBe(chatMarkdownRehypePlugins(["b"]));
 });

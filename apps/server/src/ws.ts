@@ -202,7 +202,7 @@ import * as PortScanner from "./preview/PortScanner.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as KnownWorkspaces from "./workspace/KnownWorkspaces.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
-import { linkResolverFor } from "./linkResolver/LinkResolver.ts";
+import { resolveLink } from "./linkResolver/LinkResolver.ts";
 import { readWorkflowScript } from "./orchestration-v2/workflowScriptQuery.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
@@ -2827,15 +2827,8 @@ export const layerWsRpc = (
           ),
         [WS_METHODS.shellOpenInEditor]: (input) => externalLauncher.launchEditor(input),
         [WS_METHODS.filesystemGetMetadata]: (input) => workspaceFileSystem.getMetadata(input),
-        [WS_METHODS.linksResolve]: (input) => {
-          const resolvers = config.linkResolvers;
-          // A scheme this server has no program for is "not here", as is a program's failure.
-          if (resolvers === undefined || !Object.hasOwn(resolvers, input.scheme)) {
-            return Effect.succeed(null);
-          }
-          const resolver = linkResolverFor(input.scheme, resolvers[input.scheme]!);
-          return Effect.promise(() => resolver.resolve(input.id));
-        },
+        [WS_METHODS.linksResolve]: (input) =>
+          Effect.promise(() => resolveLink(config.linkResolvers, input)),
         [WS_METHODS.filesystemBrowse]: (input) =>
           workspaceEntries.browse(input).pipe(
             Effect.mapError(

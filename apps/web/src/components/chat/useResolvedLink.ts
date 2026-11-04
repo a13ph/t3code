@@ -46,7 +46,8 @@ const RETRY_AFTER_MISS_MS = 6_000;
  *
  * Once found, the link is asked for again on that server while the page is visible (see
  * `resolvedLinkLiveRefresh`), so its label and mark stay current. If that server then does not
- * know it, fails or goes silent, the chain runs again from the chat's own server.
+ * know it, fails or goes silent, the chain runs again from the chat's own server. A server whose
+ * program is unavailable keeps the target it last gave.
  */
 export function useResolvedLink(
   link: ResolvedLinkRef,
@@ -118,7 +119,18 @@ export function useResolvedLink(
     pendingSeenStep === stepKey ||
     (result.isSuccess && result.dataUpdatedAt >= startedAt);
   const answered = !isPending && settled && answeredThisRound;
-  const hit = result.isSuccess ? result.data : null;
+  const data = result.isSuccess ? result.data : null;
+  const unavailable = data !== null && "unavailable" in data;
+  const fresh = data !== null && !unavailable ? data : null;
+  // A program that cannot answer now says nothing about the link, so the target this server
+  // last gave stays; before any, it counts as a miss and the next server is asked.
+  const [kept, setKept] = useState<{ readonly stepKey: string; readonly target: ResolvedLink } | null>(
+    null,
+  );
+  useEffect(() => {
+    if (fresh !== null) setKept({ stepKey, target: fresh });
+  }, [fresh, stepKey]);
+  const hit = fresh ?? (unavailable && kept?.stepKey === stepKey ? kept.target : null);
   const settledMiss = currentEnvironmentId !== null && answered && hit === null;
 
   // The step whose server last knew the link. When that server then loses it, fails or goes

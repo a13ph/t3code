@@ -16,6 +16,20 @@ import {
 import { isWindowsDrivePathHref, normalizeMarkdownLinkDestination } from "./markdownLinks.ts";
 import { THREAD_LINK_PROTOCOL } from "./threadLinks.ts";
 
+/**
+ * Links of a scheme a connected server resolves are carried through the sanitizer under this
+ * protocol, as `t3-resolved:<scheme>://<id>`, so the sanitizer never allows a scheme a server
+ * names: a server could otherwise name an OS handler and make chat keep links to it.
+ */
+export const RESOLVED_LINK_PROTOCOL = "t3-resolved";
+const RESOLVED_LINK_PREFIX = `${RESOLVED_LINK_PROTOCOL}:`;
+const SCHEME_OF_LINK = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//;
+
+/** The href a `t3-resolved:` link carries, as written, or null for any other href. */
+export function unwrapResolvedLinkHref(href: string): string | null {
+  return href.startsWith(RESOLVED_LINK_PREFIX) ? href.slice(RESOLVED_LINK_PREFIX.length) : null;
+}
+
 type MarkdownImageHastNode = {
   type?: string;
   value?: string;
@@ -157,6 +171,7 @@ const CHAT_MARKDOWN_SANITIZE_SCHEMA = {
       "t3-citation",
       "t3-context",
       THREAD_LINK_PROTOCOL,
+      RESOLVED_LINK_PROTOCOL,
     ],
     src: [...(defaultSchema.protocols?.src ?? []), "file", "t3-context"],
   },
@@ -192,39 +207,48 @@ export const CHAT_MARKDOWN_REHYPE_PLUGINS: PluggableList = [
   [rehypeSanitize, CHAT_MARKDOWN_SANITIZE_SCHEMA],
 ];
 
-const SAFE_EXTRA_PROTOCOL = /^[a-z][a-z0-9+.-]*$/;
-const UNSAFE_PROTOCOLS = new Set(["javascript", "vbscript", "data", "blob"]);
-const rehypePluginsByProtocols = new Map<string, PluggableList>();
+// A resolved link is `<scheme>://<id>`; a scheme's other forms, such as `x:/a`, stay plain links.
+function rehypeWrapResolvedLinks(schemes: ReadonlySet<string>) {
+  return (tree: MarkdownImageHastNode) => {
+    const visit = (node: MarkdownImageHastNode) => {
+      const href = node.properties?.href;
+      if (node.type === "element" && node.tagName === "a" && typeof href === "string") {
+        const written = href.trim();
+        const scheme = SCHEME_OF_LINK.exec(written)?.[1]?.toLowerCase();
+        if (scheme !== undefined && schemes.has(scheme)) {
+          node.properties = { ...node.properties, href: `${RESOLVED_LINK_PREFIX}${written}` };
+        }
+      }
+      node.children?.forEach(visit);
+    };
+    visit(tree);
+  };
+}
+
+const RESOLVED_SCHEME = /^[a-z][a-z0-9+.-]*$/;
+const rehypePluginsBySchemes = new Map<string, PluggableList>();
 
 /**
- * The rehype plugins with `extraHrefProtocols` also kept on links, such as the schemes connected
- * servers resolve. Script and data schemes are never added. One list per set of protocols, so a
- * caller that passes the same set gets the same array.
+ * The rehype plugins with links of `resolvedSchemes`, the schemes connected servers resolve,
+ * kept as `t3-resolved:` links; the sanitizer's own protocol list is unchanged. One list per set
+ * of schemes, so a caller that passes the same set gets the same array.
  */
-export function chatMarkdownRehypePlugins(
-  extraHrefProtocols: Iterable<string>,
-): PluggableList {
-  const extra = [...new Set(extraHrefProtocols)]
-    .filter((protocol) => SAFE_EXTRA_PROTOCOL.test(protocol) && !UNSAFE_PROTOCOLS.has(protocol))
+export function chatMarkdownRehypePlugins(resolvedSchemes: Iterable<string>): PluggableList {
+  const schemes = [...new Set(resolvedSchemes)]
+    .filter((scheme) => RESOLVED_SCHEME.test(scheme))
     .sort();
-  if (extra.length === 0) return CHAT_MARKDOWN_REHYPE_PLUGINS;
-  const key = extra.join(",");
-  const cached = rehypePluginsByProtocols.get(key);
+  if (schemes.length === 0) return CHAT_MARKDOWN_REHYPE_PLUGINS;
+  const key = schemes.join(",");
+  const cached = rehypePluginsBySchemes.get(key);
   if (cached) return cached;
-  const schema = {
-    ...CHAT_MARKDOWN_SANITIZE_SCHEMA,
-    protocols: {
-      ...CHAT_MARKDOWN_SANITIZE_SCHEMA.protocols,
-      href: [...CHAT_MARKDOWN_SANITIZE_SCHEMA.protocols.href, ...extra],
-    },
-  } satisfies Parameters<typeof rehypeSanitize>[0];
   const plugins: PluggableList = [
     rehypePreserveBareAnchorPlaceholders,
     rehypeRaw,
     rehypePreserveImageSourceMeta,
-    [rehypeSanitize, schema],
+    [rehypeWrapResolvedLinks, new Set(schemes)],
+    [rehypeSanitize, CHAT_MARKDOWN_SANITIZE_SCHEMA],
   ];
-  rehypePluginsByProtocols.set(key, plugins);
+  rehypePluginsBySchemes.set(key, plugins);
   return plugins;
 }
 

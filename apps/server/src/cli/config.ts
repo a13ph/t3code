@@ -95,7 +95,15 @@ export const traceMaxFilesConfig = Config.Int("T3CODE_TRACE_MAX_FILES").pipe(
 
 // `{"<scheme>": ["<program>", "<arg>", ...]}`: each scheme's links resolve through its program.
 export const LinkResolversFromJson = Schema.fromJsonString(
-  Schema.Record(LinkResolverScheme, Schema.Array(Schema.String).check(Schema.isMinLength(1))),
+  Schema.Record(
+    LinkResolverScheme,
+    Schema.Array(Schema.String).check(
+      Schema.isMinLength(1),
+      Schema.makeFilter((argv: ReadonlyArray<string>) => (argv[0] ?? "").trim() !== "", {
+        expected: "a program name first",
+      }),
+    ),
+  ),
 );
 
 export const decodeLinkResolvers = Effect.fn("config.decodeLinkResolvers")(function* (
