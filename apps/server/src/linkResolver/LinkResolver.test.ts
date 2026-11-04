@@ -13,9 +13,17 @@ import {
   resolveLink,
 } from "./LinkResolver.ts";
 
-// A resolver program: answers each lookup line by its id. ASCII only, so argv encoding on any
-// host cannot change it; non-ASCII text is built from code points.
+// A resolver program: says it is ready as its start mode (last argv) says, then answers each
+// lookup line by its id. ASCII only, so argv encoding on any host cannot change it; non-ASCII
+// text is built from code points.
 const PROGRAM = String.raw`
+const mode = process.argv.at(-1);
+const out = (value) => process.stdout.write(Buffer.from(JSON.stringify(value) + "\n", "utf8"));
+if (mode === "ready") out({ ready: true });
+if (mode.startsWith("late:")) setTimeout(() => out({ ready: true }), Number(mode.slice(5)));
+if (mode === "other") out({ path: "/n/early.md", label: "early" });
+if (mode === "exit") process.exit(4);
+if (mode.startsWith("silent:")) setTimeout(() => process.exit(5), Number(mode.slice(7)));
 const rl = require("node:readline").createInterface({ input: process.stdin });
 const mark = String.fromCodePoint(0x25e7);
 let seen = 0;
@@ -23,7 +31,6 @@ let hung = false;
 rl.on("line", (raw) => {
   seen += 1;
   const { id } = JSON.parse(raw);
-  const out = (value) => process.stdout.write(Buffer.from(JSON.stringify(value) + "\n", "utf8"));
   if (id === "missing") return out(null);
   // Stops answering, as a stuck program does, and stays alive.
   if (hung) return;
@@ -45,16 +52,47 @@ rl.on("line", (raw) => {
 });
 `;
 
-function makeResolver(options: { answerTimeoutMs?: number } = {}) {
+interface MakeOptions {
+  readonly answerTimeoutMs?: number;
+  readonly answerCacheMs?: number;
+  readonly maxPending?: number;
+  /** Start modes of the program, one per start in order; "ready" after the list runs out. */
+  readonly modes?: ReadonlyArray<string>;
+  readonly now?: () => number;
+}
+
+/** A started program: settles on its first stdout chunk or its exit, and on its exit. */
+interface Started {
+  readonly spoke: Promise<void>;
+  readonly exited: Promise<void>;
+}
+
+const startsOf = new WeakMap<LinkResolverProcess, Started[]>();
+
+function makeResolver({ modes = [], now, ...options }: MakeOptions = {}) {
   const logs: string[] = [];
+  const starts: Started[] = [];
   let clock = 0;
   const resolver = new LinkResolverProcess("notes", [process.execPath, "-e", PROGRAM], {
     ...options,
     log: (message) => logs.push(message),
     // Each start is far from the last, so a restart is never held back in tests.
-    now: () => (clock += 60_000),
+    now: now ?? (() => (clock += 60_000)),
+    spawn: (command, args) => {
+      const child = NodeChildProcess.spawn(command, [...args, modes[starts.length] ?? "ready"]);
+      // Attached before the resolver's own listeners, which run in the same emit, so an awaiter
+      // of these sees the resolver's state after it read the line or saw the exit.
+      const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+      const spoke = new Promise<void>((resolve) => {
+        child.stdout.once("data", () => resolve());
+        void exited.then(resolve);
+      });
+      starts.push({ spoke, exited });
+      return child;
+    },
   });
-  return { resolver, logs };
+  startsOf.set(resolver, starts);
+  return { resolver, logs, starts };
 }
 
 /** The label of an answer, or the answer itself when it is null or unavailable. */
@@ -62,9 +100,24 @@ function labelOf(answer: LinkResolveResult) {
   return answer !== null && "label" in answer ? answer.label : answer;
 }
 
+/** Asks for `id`, and once more after the program's ready line if it was not ready yet. */
+async function resolveWhenReady(resolver: LinkResolverProcess, id: string) {
+  const answer = await resolver.resolve(id);
+  if (answer === null || !("unavailable" in answer)) return answer;
+  await startsOf.get(resolver)?.at(-1)?.spoke;
+  return resolver.resolve(id);
+}
+
+/** A resolver whose program has started and said it is ready. */
+async function readyResolver(options: MakeOptions = {}) {
+  const made = makeResolver(options);
+  expect(labelOf(await resolveWhenReady(made.resolver, "warmup"))).toBe("warmup");
+  return made;
+}
+
 describe("LinkResolverProcess", () => {
   it("answers lookups in order, one program for all of them", async () => {
-    const { resolver } = makeResolver();
+    const { resolver } = await readyResolver();
     try {
       const [first, missing, second] = await Promise.all([
         resolver.resolve("a1"),
@@ -86,7 +139,7 @@ describe("LinkResolverProcess", () => {
   });
 
   it("writes ASCII JSON and gets non-ASCII ids back intact", async () => {
-    const { resolver } = makeResolver();
+    const { resolver } = await readyResolver();
     try {
       const id = `echo:${String.fromCodePoint(0x436, 0x1f600)}`;
       const answer = await resolver.resolve(id);
@@ -104,7 +157,7 @@ describe("LinkResolverProcess", () => {
   });
 
   it("reads UTF-8 answers as UTF-8", async () => {
-    const { resolver } = makeResolver();
+    const { resolver } = await readyResolver();
     try {
       const answer = await resolver.resolve("utf8");
       expect(labelOf(answer)).toBe(String.fromCodePoint(0x437, 0x430, 0x43c, 0x20, 0x2713));
@@ -114,7 +167,7 @@ describe("LinkResolverProcess", () => {
   });
 
   it("answers unavailable for a line that is not UTF-8 or not JSON, and keeps going", async () => {
-    const { resolver, logs } = makeResolver();
+    const { resolver, logs } = await readyResolver();
     try {
       expect(await resolver.resolve("badutf8")).toEqual(LINK_RESOLVER_UNAVAILABLE);
       expect(await resolver.resolve("garbage")).toEqual(LINK_RESOLVER_UNAVAILABLE);
@@ -126,7 +179,7 @@ describe("LinkResolverProcess", () => {
   });
 
   it("joins an answer split across chunks and reads CRLF lines", async () => {
-    const { resolver } = makeResolver();
+    const { resolver } = await readyResolver();
     try {
       expect(labelOf(await resolver.resolve("split"))).toBe("split");
       expect(labelOf(await resolver.resolve("crlf"))).toBe("crlf");
@@ -137,61 +190,116 @@ describe("LinkResolverProcess", () => {
   });
 
   it("gives up on a silent program, answers every waiting lookup unavailable, then restarts", async () => {
-    const { resolver, logs } = makeResolver({ answerTimeoutMs: 300 });
+    const { resolver, logs } = await readyResolver({ answerTimeoutMs: 300 });
     try {
       const [hung, queued] = await Promise.all([resolver.resolve("hang"), resolver.resolve("a1")]);
       expect(hung).toEqual(LINK_RESOLVER_UNAVAILABLE);
       // Queued behind the stuck lookup on the same program, so it is dropped with it.
       expect(queued).toEqual(LINK_RESOLVER_UNAVAILABLE);
       expect(logs.some((line) => line.includes("no answer in 300 ms"))).toBe(true);
-      expect(labelOf(await resolver.resolve("a2"))).toBe("a2");
+      expect(labelOf(await resolveWhenReady(resolver, "a2"))).toBe("a2");
     } finally {
       resolver.close();
     }
   });
 
   it("restarts a program that exited", async () => {
-    const { resolver, logs } = makeResolver();
+    const { resolver, logs } = await readyResolver();
     try {
       expect(await resolver.resolve("die")).toEqual(LINK_RESOLVER_UNAVAILABLE);
       expect(logs.some((line) => line.includes("exited (code 3)"))).toBe(true);
-      expect(labelOf(await resolver.resolve("a1"))).toBe("a1");
+      expect(labelOf(await resolveWhenReady(resolver, "a1"))).toBe("a1");
     } finally {
       resolver.close();
     }
   });
 
-  it("waits longer before each restart while the program dies before answering", async () => {
+  it("waits longer before each restart while the program dies before it is ready", async () => {
     let clock = 0;
-    let starts = 0;
-    const resolver = new LinkResolverProcess("notes", [process.execPath, "-e", PROGRAM], {
-      log: () => {},
-      now: () => clock,
-      spawn: (command, args) => {
-        starts += 1;
-        return NodeChildProcess.spawn(command, [...args]);
-      },
-    });
-    const label = async (id: string) => labelOf(await resolver.resolve(id));
+    const { resolver, starts } = makeResolver({ modes: ["exit", "exit"], now: () => clock });
     try {
-      expect(await label("die")).toEqual(LINK_RESOLVER_UNAVAILABLE);
+      expect(await resolver.resolve("a1")).toEqual(LINK_RESOLVER_UNAVAILABLE);
+      await starts[0]?.exited;
       clock += 500;
-      expect(await label("die")).toEqual(LINK_RESOLVER_UNAVAILABLE);
-      expect(starts).toBe(1);
+      expect(await resolver.resolve("a1")).toEqual(LINK_RESOLVER_UNAVAILABLE);
+      expect(starts).toHaveLength(1);
       clock += 600;
       // Second start, a second after the first; it dies too, so the next waits two seconds.
-      expect(await label("die")).toEqual(LINK_RESOLVER_UNAVAILABLE);
-      expect(starts).toBe(2);
+      expect(await resolver.resolve("a1")).toEqual(LINK_RESOLVER_UNAVAILABLE);
+      expect(starts).toHaveLength(2);
+      await starts[1]?.exited;
       clock += 1_500;
-      expect(await label("a1")).toEqual(LINK_RESOLVER_UNAVAILABLE);
+      expect(await resolver.resolve("a1")).toEqual(LINK_RESOLVER_UNAVAILABLE);
+      expect(starts).toHaveLength(2);
       clock += 600;
-      expect(await label("a1")).toBe("a1");
-      expect(starts).toBe(3);
+      expect(labelOf(await resolveWhenReady(resolver, "a1"))).toBe("a1");
+      expect(starts).toHaveLength(3);
       // That run answered, so a death now is followed by the one-second pause again.
-      expect(await label("die")).toEqual(LINK_RESOLVER_UNAVAILABLE);
+      expect(await resolver.resolve("die")).toEqual(LINK_RESOLVER_UNAVAILABLE);
       clock += 1_100;
-      expect(await label("a2")).toBe("a2");
-      expect(starts).toBe(4);
+      expect(labelOf(await resolveWhenReady(resolver, "a2"))).toBe("a2");
+      expect(starts).toHaveLength(4);
+    } finally {
+      resolver.close();
+    }
+  });
+
+  it("sends nothing and answers unavailable at once until the program is ready, untimed", async () => {
+    // Ready only after 3 answer timeouts: a lookup sent or timed before that would stop it.
+    const { resolver, logs, starts } = makeResolver({ modes: ["late:300"], answerTimeoutMs: 100 });
+    try {
+      expect(await resolver.resolve("count1")).toEqual(LINK_RESOLVER_UNAVAILABLE);
+      expect(await resolver.resolve("count2")).toEqual(LINK_RESOLVER_UNAVAILABLE);
+      await starts[0]?.spoke;
+      // `count` answers with how many lookups the program has read: this is its first.
+      expect(labelOf(await resolver.resolve("count3"))).toBe("1");
+      expect(starts).toHaveLength(1);
+      expect(logs).toEqual([]);
+    } finally {
+      resolver.close();
+    }
+  });
+
+  it("never times a program that has not said it is ready, until it exits", async () => {
+    const { resolver, logs, starts } = makeResolver({
+      modes: ["silent:300"],
+      answerTimeoutMs: 100,
+    });
+    try {
+      expect(await resolver.resolve("a1")).toEqual(LINK_RESOLVER_UNAVAILABLE);
+      expect(await resolver.resolve("a2")).toEqual(LINK_RESOLVER_UNAVAILABLE);
+      await starts[0]?.exited;
+      // It ran its 300 ms and exited itself; the server never stopped it.
+      expect(logs).toEqual(["link resolver notes: exited (code 5)"]);
+      expect(starts).toHaveLength(1);
+    } finally {
+      resolver.close();
+    }
+  });
+
+  it("stops a program whose first line is not the ready line, as a failed run", async () => {
+    let clock = 0;
+    const { resolver, logs, starts } = makeResolver({
+      modes: ["other", "other"],
+      now: () => clock,
+    });
+    try {
+      expect(await resolver.resolve("a1")).toEqual(LINK_RESOLVER_UNAVAILABLE);
+      await starts[0]?.spoke;
+      expect(logs).toHaveLength(1);
+      expect(logs[0]).toContain('first line is not {"ready": true}');
+      expect(logs[0]).toContain("/n/early.md");
+      clock += 1_100;
+      expect(await resolver.resolve("a1")).toEqual(LINK_RESOLVER_UNAVAILABLE);
+      expect(starts).toHaveLength(2);
+      await starts[1]?.spoke;
+      // Two failed runs in a row, so the next start waits two seconds.
+      clock += 1_100;
+      expect(await resolver.resolve("a1")).toEqual(LINK_RESOLVER_UNAVAILABLE);
+      expect(starts).toHaveLength(2);
+      clock += 1_000;
+      expect(labelOf(await resolveWhenReady(resolver, "a1"))).toBe("a1");
+      expect(starts).toHaveLength(3);
     } finally {
       resolver.close();
     }
@@ -208,40 +316,34 @@ describe("LinkResolverProcess", () => {
     });
     expect(await empty.resolve("a1")).toEqual(LINK_RESOLVER_UNAVAILABLE);
     expect(starts).toBe(0);
-    const logs: string[] = [];
+    let logged: (message: string) => void = () => {};
+    const firstLog = new Promise<string>((resolve) => (logged = resolve));
     const missing = new LinkResolverProcess("notes", ["t3-no-such-program-for-tests"], {
-      log: (message) => logs.push(message),
+      log: (message) => logged(message),
     });
     expect(await missing.resolve("a1")).toEqual(LINK_RESOLVER_UNAVAILABLE);
-    expect(logs.length).toBeGreaterThan(0);
+    expect(await firstLog).toContain("t3-no-such-program-for-tests");
     missing.close();
   });
 
   it("keeps an answer for a few seconds and asks once for an id asked twice at once", async () => {
     let clock = 0;
-    const resolver = new LinkResolverProcess("notes", [process.execPath, "-e", PROGRAM], {
-      log: () => {},
-      now: () => clock,
-      answerCacheMs: 5_000,
-    });
+    const { resolver } = await readyResolver({ now: () => clock, answerCacheMs: 5_000 });
     const label = async (id: string) => labelOf(await resolver.resolve(id));
     try {
-      // `count` answers with how many lookups the program has read.
-      expect(await Promise.all([label("count"), label("count")])).toEqual(["1", "1"]);
+      // `count` answers with how many lookups the program has read, the warm-up one included.
+      expect(await Promise.all([label("count"), label("count")])).toEqual(["2", "2"]);
       clock += 4_000;
-      expect(await label("count")).toBe("1");
-      clock += 1_000;
       expect(await label("count")).toBe("2");
+      clock += 1_000;
+      expect(await label("count")).toBe("3");
     } finally {
       resolver.close();
     }
   });
 
   it("answers unavailable past the queue cap instead of queueing more", async () => {
-    const capped = new LinkResolverProcess("notes", [process.execPath, "-e", PROGRAM], {
-      log: () => {},
-      maxPending: 2,
-    });
+    const { resolver: capped } = await readyResolver({ maxPending: 2 });
     try {
       const answers = await Promise.all([
         capped.resolve("slow1"),
@@ -255,7 +357,7 @@ describe("LinkResolverProcess", () => {
   });
 
   it("answers null after close", async () => {
-    const { resolver } = makeResolver();
+    const { resolver } = await readyResolver();
     expect(labelOf(await resolver.resolve("a1"))).toBe("a1");
     resolver.close();
     expect(await resolver.resolve("a2")).toBeNull();

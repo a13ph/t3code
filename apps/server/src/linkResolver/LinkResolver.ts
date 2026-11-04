@@ -2,10 +2,9 @@
 // child shared by every connection, read as raw bytes and timed per answer; called from a plain
 // Promise handler, outside any Effect runtime.
 /**
- * Resolves chat links of a scheme through one long-running program: a JSON line `{"id"}` per
- * lookup on stdin, one answer line each on stdout in order, UTF-8 bytes both ways. A program that
- * fails or is silent `answerTimeoutMs` is stopped, since a late answer would match the next lookup;
- * until it runs again, lookups answer `LINK_RESOLVER_UNAVAILABLE`, which says nothing of the link.
+ * Resolves links of a scheme through one long-running program: it prints `{"ready": true}` once it
+ * can answer, then one line per `{"id"}` stdin line, in order, UTF-8. Until ready, and after it fails
+ * or is silent `answerTimeoutMs` on a lookup, lookups answer `LINK_RESOLVER_UNAVAILABLE` at once.
  */
 import * as NodeChildProcess from "node:child_process";
 
@@ -122,6 +121,8 @@ export class LinkResolverProcess {
   // Runs in a row that ended before answering anything; sets the pause before the next start.
   private failuresInARow = 0;
   private answeredSinceStart = false;
+  // Set by the program's ready line; until then it is sent nothing, so nothing is timed.
+  private ready = false;
   private stderrWindowStart = Number.NEGATIVE_INFINITY;
   private stderrLines = 0;
   private closed = false;
@@ -169,7 +170,7 @@ export class LinkResolverProcess {
   private ask(id: string): Promise<LinkResolveResult> {
     if (this.pending.length >= this.maxPending) return Promise.resolve(LINK_RESOLVER_UNAVAILABLE);
     const child = this.ensureChild();
-    if (child === null) return Promise.resolve(LINK_RESOLVER_UNAVAILABLE);
+    if (child === null || !this.ready) return Promise.resolve(LINK_RESOLVER_UNAVAILABLE);
     return new Promise((settle) => {
       const entry: Pending = { id, settle, timer: null };
       this.pending.push(entry);
@@ -198,6 +199,7 @@ export class LinkResolverProcess {
     if (now - this.lastStartAt < restartGapMs) return null;
     this.lastStartAt = now;
     this.answeredSinceStart = false;
+    this.ready = false;
     let child: NodeChildProcess.ChildProcessWithoutNullStreams;
     try {
       child = this.spawnChild(command, args);
@@ -258,6 +260,10 @@ export class LinkResolverProcess {
   private onLine(bytes: Buffer): void {
     // A CRLF writer ends its lines with \r\n.
     const line = bytes.at(-1) === 0x0d ? bytes.subarray(0, -1) : bytes;
+    if (!this.ready) {
+      this.onFirstLine(line);
+      return;
+    }
     const head = this.pending.shift();
     if (head === undefined) {
       this.log(`link resolver ${this.scheme}: answer with no question, ignored`);
@@ -277,6 +283,28 @@ export class LinkResolverProcess {
     }
     this.remember(head.id, answer);
     head.settle(answer);
+  }
+
+  private onFirstLine(line: Buffer): void {
+    let text = line.toString("latin1");
+    try {
+      text = utf8.decode(line).trim();
+      const parsed: unknown = JSON.parse(text);
+      if (
+        typeof parsed === "object" &&
+        parsed !== null &&
+        "ready" in parsed &&
+        parsed.ready === true
+      ) {
+        this.ready = true;
+        return;
+      }
+    } catch {
+      // Not UTF-8 or not JSON: a protocol error like any other first line.
+    }
+    if (this.child !== null) {
+      this.fail(this.child, `first line is not {"ready": true}: ${text.slice(0, 200)}`);
+    }
   }
 
   private remember(id: string, answer: Answer): void {
@@ -303,6 +331,7 @@ export class LinkResolverProcess {
   ): void {
     if (child !== this.child) return;
     this.child = null;
+    this.ready = false;
     this.buffered = [];
     this.bufferedBytes = 0;
     this.failuresInARow = this.answeredSinceStart ? 0 : this.failuresInARow + 1;
