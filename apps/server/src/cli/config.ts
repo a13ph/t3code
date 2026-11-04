@@ -6,7 +6,12 @@ import {
 } from "@t3tools/shared/observability";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import { parsePersistedServerObservabilitySettings } from "@t3tools/shared/serverSettings";
-import { DesktopBackendBootstrap, PortSchema } from "@t3tools/contracts";
+import {
+  DesktopBackendBootstrap,
+  isReservedLinkScheme,
+  LinkResolverScheme,
+  PortSchema,
+} from "@t3tools/contracts";
 import * as Config from "effect/Config";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -93,6 +98,47 @@ export const traceMaxFilesConfig = Config.Int("T3CODE_TRACE_MAX_FILES").pipe(
   Config.withDefault(10),
 );
 
+// `{"<scheme>": ["<program>", "<arg>", ...]}`: each scheme's links resolve through its program.
+// A record keyed by the scheme schema drops keys that fail it, so the keys are checked here: one
+// bad scheme refuses the whole value rather than vanishing from it.
+const isLinkResolverScheme = Schema.is(LinkResolverScheme);
+export const LinkResolversFromJson = Schema.fromJsonString(
+  Schema.Record(
+    Schema.String,
+    Schema.Array(Schema.String).check(
+      Schema.isMinLength(1),
+      Schema.makeFilter((argv: ReadonlyArray<string>) => (argv[0] ?? "").trim() !== "", {
+        expected: "a program name first",
+      }),
+    ),
+  ).check(
+    Schema.makeFilter(
+      (resolvers: Readonly<Record<string, unknown>>) => {
+        const schemes = Object.keys(resolvers);
+        return (
+          schemes.length > 0 &&
+          schemes.every((scheme) => isLinkResolverScheme(scheme) && !isReservedLinkScheme(scheme))
+        );
+      },
+      { expected: "one or more lower-case link schemes the app does not read itself" },
+    ),
+  ),
+);
+const decodeLinkResolversJson = Schema.decodeEffect(LinkResolversFromJson);
+
+export const decodeLinkResolvers = Effect.fn("config.decodeLinkResolvers")(function* (
+  raw: string | undefined,
+) {
+  if (raw === undefined || raw.trim() === "") return undefined;
+  return yield* decodeLinkResolversJson(raw).pipe(
+    Effect.catch((issue) =>
+      Effect.logWarning(`T3CODE_LINK_RESOLVERS ignored: ${String(issue)}`).pipe(
+        Effect.as(undefined),
+      ),
+    ),
+  );
+});
+
 const EnvServerConfig = Config.all({
   logLevel: Config.LogLevel("T3CODE_LOG_LEVEL").pipe(Config.withDefault("Info")),
   traceMinLevel: Config.LogLevel("T3CODE_TRACE_MIN_LEVEL").pipe(Config.withDefault("Info")),
@@ -161,6 +207,11 @@ const EnvServerConfig = Config.all({
     Config.map(Option.getOrUndefined),
   ),
   tailscaleServePort: Config.Port("T3CODE_TAILSCALE_SERVE_PORT").pipe(
+    Config.option,
+    Config.map(Option.getOrUndefined),
+  ),
+  // Decoded in resolveServerConfig: a bad value is logged and ignored, never a failed start.
+  linkResolversJson: Config.String("T3CODE_LINK_RESOLVERS").pipe(
     Config.option,
     Config.map(Option.getOrUndefined),
   ),
@@ -403,6 +454,7 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     ),
     () => 443,
   );
+  const linkResolvers = yield* decodeLinkResolvers(env.linkResolversJson);
   const staticDir = devUrl ? undefined : yield* ServerConfig.resolveStaticDir();
   const explicitHost = resolveOptionPrecedence(
     normalizedFlags.host,
@@ -505,6 +557,7 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     logWebSocketEvents,
     tailscaleServeEnabled,
     tailscaleServePort,
+    ...(linkResolvers === undefined ? {} : { linkResolvers }),
   };
 
   return config;

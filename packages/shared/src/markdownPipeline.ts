@@ -16,6 +16,20 @@ import {
 import { isWindowsDrivePathHref, normalizeMarkdownLinkDestination } from "./markdownLinks.ts";
 import { THREAD_LINK_PROTOCOL } from "./threadLinks.ts";
 
+/**
+ * Links of a scheme a connected server resolves are carried through the sanitizer under this
+ * protocol, as `t3-resolved:<scheme>://<id>`, so the sanitizer never allows a scheme a server
+ * names: a server could otherwise name an OS handler and make chat keep links to it.
+ */
+const RESOLVED_LINK_PROTOCOL = "t3-resolved";
+const RESOLVED_LINK_PREFIX = `${RESOLVED_LINK_PROTOCOL}:`;
+const SCHEME_OF_LINK = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//;
+
+/** The href a `t3-resolved:` link carries, as written, or null for any other href. */
+export function unwrapResolvedLinkHref(href: string): string | null {
+  return href.startsWith(RESOLVED_LINK_PREFIX) ? href.slice(RESOLVED_LINK_PREFIX.length) : null;
+}
+
 type MarkdownImageHastNode = {
   type?: string;
   value?: string;
@@ -160,6 +174,7 @@ const CHAT_MARKDOWN_SANITIZE_SCHEMA = {
       // REMOTE_FILE_LINK_PROTOCOL in apps/web/src/remoteFileLinks.ts. Without it the
       // sanitizer drops the href and the link renders as a dead anchor.
       "remote-file",
+      RESOLVED_LINK_PROTOCOL,
     ],
     src: [...(defaultSchema.protocols?.src ?? []), "file", "t3-context"],
   },
@@ -194,6 +209,51 @@ export const CHAT_MARKDOWN_REHYPE_PLUGINS: PluggableList = [
   rehypePreserveImageSourceMeta,
   [rehypeSanitize, CHAT_MARKDOWN_SANITIZE_SCHEMA],
 ];
+
+// A resolved link is `<scheme>://<id>`; a scheme's other forms, such as `x:/a`, stay plain links.
+function rehypeWrapResolvedLinks(schemes: ReadonlySet<string>) {
+  return (tree: MarkdownImageHastNode) => {
+    const visit = (node: MarkdownImageHastNode) => {
+      const href = node.properties?.href;
+      if (node.type === "element" && node.tagName === "a" && typeof href === "string") {
+        const written = href.trim();
+        const scheme = SCHEME_OF_LINK.exec(written)?.[1]?.toLowerCase();
+        if (scheme !== undefined && schemes.has(scheme)) {
+          node.properties = { ...node.properties, href: `${RESOLVED_LINK_PREFIX}${written}` };
+        }
+      }
+      node.children?.forEach(visit);
+    };
+    visit(tree);
+  };
+}
+
+const RESOLVED_SCHEME = /^[a-z][a-z0-9+.-]*$/;
+const rehypePluginsBySchemes = new Map<string, PluggableList>();
+
+/**
+ * The rehype plugins with links of `resolvedSchemes`, the schemes connected servers resolve,
+ * kept as `t3-resolved:` links; the sanitizer's own protocol list is unchanged. One list per set
+ * of schemes, so a caller that passes the same set gets the same array.
+ */
+export function chatMarkdownRehypePlugins(resolvedSchemes: Iterable<string>): PluggableList {
+  const schemes = [...new Set(resolvedSchemes)]
+    .filter((scheme) => RESOLVED_SCHEME.test(scheme))
+    .sort();
+  if (schemes.length === 0) return CHAT_MARKDOWN_REHYPE_PLUGINS;
+  const key = schemes.join(",");
+  const cached = rehypePluginsBySchemes.get(key);
+  if (cached) return cached;
+  const plugins: PluggableList = [
+    rehypePreserveBareAnchorPlaceholders,
+    rehypeRaw,
+    rehypePreserveImageSourceMeta,
+    [rehypeWrapResolvedLinks, new Set(schemes)],
+    [rehypeSanitize, CHAT_MARKDOWN_SANITIZE_SCHEMA],
+  ];
+  rehypePluginsBySchemes.set(key, plugins);
+  return plugins;
+}
 
 const isImageNode = (node: PhrasingContent | undefined): boolean =>
   node?.type === "image" ||
