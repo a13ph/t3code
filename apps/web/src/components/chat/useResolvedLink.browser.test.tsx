@@ -188,9 +188,32 @@ describe("useResolvedLink", () => {
 
     await advance(6_500);
     expect(servers.state.refreshed).toEqual([OWN]);
-    expect(last()).toBe("resolving");
+    // Asking again, still shown missing rather than flickering back to resolving.
+    const shownMissingAt = seen.findIndex((resolution) => resolution._tag === "missing");
+    expect(seen.slice(shownMissingAt).map((resolution) => resolution._tag)).not.toContain(
+      "resolving",
+    );
     await settle(() => servers.state.views.set(OWN, answer(TARGET)));
     expect(seen.at(-1)).toMatchObject({ _tag: "found", environmentId: OWN, target: TARGET });
+  });
+
+  it("stays shown missing while a server joins and is asked", async () => {
+    using _timers = fakeTimers();
+    using _servers = serving();
+    await using _screen = await render(<Probe />, { router: false });
+    await settle(() => servers.state.views.set(OWN, answer(null)));
+    await advance(6_500);
+    await settle(() => servers.state.views.set(OWN, answer(null)));
+    expect(last()).toBe("missing");
+    const shownMissingAt = seen.length;
+    await settle(() => {
+      servers.state.environments = [environment(OWN, "own"), environment(OTHER, "other")];
+    });
+    expect(seen.slice(shownMissingAt).map((resolution) => resolution._tag)).not.toContain(
+      "resolving",
+    );
+    await settle(() => servers.state.views.set(OTHER, answer(TARGET)));
+    expect(seen.at(-1)).toMatchObject({ _tag: "found", environmentId: OTHER, target: TARGET });
   });
 
   it("after the re-run also misses, stays missing and asks again each 15 s until the target exists", async () => {
