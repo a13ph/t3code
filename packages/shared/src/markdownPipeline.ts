@@ -157,6 +157,9 @@ const CHAT_MARKDOWN_SANITIZE_SCHEMA = {
       "t3-citation",
       "t3-context",
       THREAD_LINK_PROTOCOL,
+      // REMOTE_FILE_LINK_PROTOCOL in apps/web/src/remoteFileLinks.ts. Without it the
+      // sanitizer drops the href and the link renders as a dead anchor.
+      "remote-file",
     ],
     src: [...(defaultSchema.protocols?.src ?? []), "file", "t3-context"],
   },

@@ -38,6 +38,33 @@ it("preserves in-app thread links through the shared Markdown sanitizer", () => 
   expect(JSON.stringify(tree)).not.toContain("javascript:");
 });
 
+it("preserves remote-file links through the shared Markdown sanitizer", () => {
+  const processor = unified()
+    .use(remarkParse)
+    .use(CHAT_MARKDOWN_REMARK_PLUGINS)
+    .use(remarkRehype, { allowDangerousHtml: true })
+    .use(CHAT_MARKDOWN_REHYPE_PLUGINS);
+  const tree = processor.runSync(
+    processor.parse(
+      "[x.md](<remote-file://v1/env-1/home/user/a b/x.md>)\n\n[](<remote-file://v1/env-1/C:/user/y.md>)",
+    ),
+  );
+  expect(tree.children[0]).toMatchObject({
+    tagName: "p",
+    children: [
+      {
+        tagName: "a",
+        properties: { href: "remote-file://v1/env-1/home/user/a%20b/x.md" },
+        children: [{ type: "text", value: "x.md" }],
+      },
+    ],
+  });
+  expect(tree.children[2]).toMatchObject({
+    tagName: "p",
+    children: [{ tagName: "a", properties: { href: "remote-file://v1/env-1/C:/user/y.md" } }],
+  });
+});
+
 it("keeps backslashes that CommonMark would read as escapes in prose Windows paths", () => {
   const processor = unified()
     .use(remarkParse)
