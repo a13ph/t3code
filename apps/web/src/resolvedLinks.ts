@@ -1,4 +1,4 @@
-import { isResolvedLinkId } from "@t3tools/contracts";
+import { isReservedLinkScheme, isResolvedLinkId } from "@t3tools/contracts";
 import { unwrapResolvedLinkHref } from "@t3tools/shared/markdownPipeline";
 
 /**
@@ -39,24 +39,6 @@ export function parseResolvedLinkHref(
   return isResolvedLinkId(id) ? { scheme, id } : null;
 }
 
-// Schemes chat must never turn into resolved links, whatever a server announces: unsafe ones,
-// web ones, and the ones the app already reads itself.
-const NEVER_RESOLVED = new Set([
-  "javascript",
-  "vbscript",
-  "data",
-  "blob",
-  "about",
-  "file",
-  "http",
-  "https",
-  "mailto",
-  "remote-file",
-  "t3-citation",
-  "t3-context",
-  "t3-thread",
-]);
-
 /** Every link scheme the given servers resolve, sorted, deduplicated and lower case. */
 export function linkSchemesOf(
   configs: Iterable<{ readonly linkSchemes?: ReadonlyArray<string> | undefined } | undefined>,
@@ -65,7 +47,7 @@ export function linkSchemesOf(
   for (const config of configs) {
     for (const raw of config?.linkSchemes ?? []) {
       const scheme = raw.trim().toLowerCase();
-      if (RESOLVED_LINK_SCHEME.test(scheme) && !NEVER_RESOLVED.has(scheme)) schemes.add(scheme);
+      if (RESOLVED_LINK_SCHEME.test(scheme) && !isReservedLinkScheme(scheme)) schemes.add(scheme);
     }
   }
   return [...schemes].sort();

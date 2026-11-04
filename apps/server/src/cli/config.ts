@@ -6,7 +6,12 @@ import {
 } from "@t3tools/shared/observability";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import { parsePersistedServerObservabilitySettings } from "@t3tools/shared/serverSettings";
-import { DesktopBackendBootstrap, LinkResolverScheme, PortSchema } from "@t3tools/contracts";
+import {
+  DesktopBackendBootstrap,
+  isReservedLinkScheme,
+  LinkResolverScheme,
+  PortSchema,
+} from "@t3tools/contracts";
 import * as Config from "effect/Config";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -110,9 +115,12 @@ export const LinkResolversFromJson = Schema.fromJsonString(
     Schema.makeFilter(
       (resolvers: Readonly<Record<string, unknown>>) => {
         const schemes = Object.keys(resolvers);
-        return schemes.length > 0 && schemes.every((scheme) => isLinkResolverScheme(scheme));
+        return (
+          schemes.length > 0 &&
+          schemes.every((scheme) => isLinkResolverScheme(scheme) && !isReservedLinkScheme(scheme))
+        );
       },
-      { expected: "one or more lower-case link schemes" },
+      { expected: "one or more lower-case link schemes the app does not read itself" },
     ),
   ),
 );
