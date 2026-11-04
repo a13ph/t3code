@@ -2402,6 +2402,18 @@ export const ThreadFeed = memo(function ThreadFeed({
     }
 
     const presentation = resolveMarkdownLinkPresentation(href);
+    if (presentation.kind === "file" && presentation.environmentId) {
+      const slash = presentation.path.search(/[\\/][^\\/]*$/);
+      void Haptics.selectionAsync();
+      navigation.navigate("NewTaskFile", {
+        environmentId: presentation.environmentId,
+        cwd: slash > 0 ? presentation.path.slice(0, slash) : presentation.path.slice(0, 1),
+        projectName: presentation.label,
+        path: fileRoutePathSegments(presentation.path),
+        ...(presentation.line ? { line: String(presentation.line) } : {}),
+      });
+      return;
+    }
     if (presentation.kind === "file") {
       const path = resolveFileLinkPath(props.workspaceRoot, presentation.path);
       if (path === null) return;

@@ -339,6 +339,22 @@ describe("Windows paths in native Markdown", () => {
     expect(urls).toEqual([image, paren, link, image, amp, htmlAmp, image]);
     expect(markdownImageSources(markdown)).toEqual([image, paren, amp, htmlAmp]);
   });
+
+  it("gives empty link labels text for the native pill to replace", () => {
+    const markdown = [
+      "- one [](</home/user/project/AGENTS.md>)",
+      "- [](remote-file://v1/env-1/home/user/project/package.json:4)",
+      "- `[](AGENTS.md)` and [kept](AGENTS.md)",
+    ].join("\n");
+    const native = markdownForNativeRendering(markdown, ENRICHED_INLINE_FILE_LINK_REGEX);
+    expect(native).toBe(
+      [
+        "- one [AGENTS.md](</home/user/project/AGENTS.md>)",
+        "- [package.json](remote-file://v1/env-1/home/user/project/package.json:4)",
+        "- `[](AGENTS.md)` and [kept](AGENTS.md)",
+      ].join("\n"),
+    );
+  });
 });
 
 it("keeps backslashes in drive paths in mobile Markdown prose", () => {

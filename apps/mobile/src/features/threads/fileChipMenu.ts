@@ -15,6 +15,8 @@ import {
 export interface FileChipTarget {
   readonly fullPath?: string;
   readonly relativePath?: string;
+  /** On another environment, which this thread cannot read to share. */
+  readonly remote?: boolean;
 }
 
 export function fileChipClipboardPath(
@@ -31,6 +33,7 @@ export function resolveFileChipTarget(
 ): FileChipTarget | null {
   const presentation = resolveMarkdownLinkPresentation(href);
   if (presentation.kind !== "file") return null;
+  if (presentation.environmentId) return { fullPath: presentation.path, remote: true };
   const path = resolveFileLinkPath(workspaceRoot, presentation.path);
   if (path === null) return null;
   const relativePath = resolveWorkspaceRelativeFilePath(workspaceRoot, path);
@@ -74,7 +77,7 @@ export function fileChipMenu(target: FileChipTarget): MarkdownFileContextMenu {
       ...(target.fullPath ? [{ id: "copy-full-path", title: "Copy full path" }] : []),
       ...(target.relativePath ? [{ id: "copy-relative-path", title: "Copy relative path" }] : []),
       { id: "open-file", title: "Open in file viewer" },
-      ...(fileChipMetadata(target)
+      ...(!target.remote && fileChipMetadata(target)
         ? [
             {
               id: "save",

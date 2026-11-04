@@ -79,6 +79,30 @@ describe("resolveMarkdownLinkPresentation", () => {
     });
   });
 
+  it("reads remote-file links as files on the named environment", () => {
+    expect(
+      resolveMarkdownLinkPresentation("remote-file://v1/env-1/home/user/project/AGENTS.md:12"),
+    ).toEqual({
+      kind: "file",
+      href: "remote-file://v1/env-1/home/user/project/AGENTS.md:12",
+      icon: "agents",
+      label: "AGENTS.md · L12",
+      path: "/home/user/project/AGENTS.md",
+      environmentId: "env-1",
+      line: 12,
+    });
+    expect(
+      resolveMarkdownLinkPresentation("remote-file://v1/env-1/C:/Users/user/project/AGENTS.md"),
+    ).toMatchObject({
+      kind: "file",
+      path: "C:/Users/user/project/AGENTS.md",
+      environmentId: "env-1",
+    });
+    expect(resolveMarkdownLinkPresentation("remote-file://v1/env-1")).toMatchObject({
+      kind: "link",
+    });
+  });
+
   it("does not style app routes as file links", () => {
     expect(resolveMarkdownLinkPresentation("/chat/settings")).toEqual({
       kind: "link",

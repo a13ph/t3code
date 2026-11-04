@@ -431,9 +431,31 @@ function markdownWithWindowsPathDestinations(markdown: string): string {
   return applyMarkdownEdits(markdown, edits);
 }
 
+// Native link pills replace the link's own text, so `[](x)` would draw nothing to tap.
+export function markdownWithEmptyLinkLabels(markdown: string): string {
+  if (!markdown.includes("[](")) return markdown;
+  const edits: MarkdownEdit[] = [];
+  const visit = (node: MarkdownNode) => {
+    if (node.type === "link" && node.children.length === 0) {
+      const start = node.position?.start.offset;
+      if (start !== undefined && markdown.startsWith("[]", start)) {
+        const name = node.url.split(/[\\/]/).findLast((part) => part.length > 0) ?? "";
+        const label = name.replace(/:\d+(?::\d+)?$/, "") || node.url || "link";
+        edits.push({ start: start + 1, end: start + 1, content: escapeLinkLabel(label) });
+      }
+      return;
+    }
+    if ("children" in node) for (const child of node.children) visit(child);
+  };
+  visit(parser.parse(markdown));
+  return applyMarkdownEdits(markdown, edits);
+}
+
 // HTML wrappers can expose Markdown that wasn't in the first AST, so normalize them first.
 export function markdownForNativeParsing(markdown: string): string {
-  return markdownWithWindowsPathDestinations(markdownWithHtml(markdown));
+  return markdownWithEmptyLinkLabels(
+    markdownWithWindowsPathDestinations(markdownWithHtml(markdown)),
+  );
 }
 
 export function parseMarkdownDocument(markdown: string): Root {
