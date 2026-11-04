@@ -11,6 +11,7 @@ import {
   linkResolverEnv,
   normalizeResolvedLink,
   resolveLink,
+  startLinkResolvers,
 } from "./LinkResolver.ts";
 
 // A resolver program: says it is ready as its start mode (last argv) says, then answers each
@@ -116,6 +117,20 @@ async function readyResolver(options: MakeOptions = {}) {
 }
 
 describe("LinkResolverProcess", () => {
+  it("starts on start(), so the first lookup after ready is answered, not unavailable", async () => {
+    const { resolver, starts } = makeResolver();
+    try {
+      resolver.start();
+      expect(starts).toHaveLength(1);
+      await starts[0]?.spoke;
+      expect(labelOf(await resolver.resolve("a1"))).toBe("a1");
+      resolver.start();
+      expect(starts).toHaveLength(1);
+    } finally {
+      resolver.close();
+    }
+  });
+
   it("answers lookups in order, one program for all of them", async () => {
     const { resolver } = await readyResolver();
     try {
@@ -427,6 +442,19 @@ describe("resolveLink", () => {
     expect(asked).toEqual([]);
     expect(await resolveLink(resolvers, { scheme: "notes", id: "a" }, resolverFor)).toBeNull();
     expect(asked).toEqual(["notes"]);
+  });
+});
+
+describe("startLinkResolvers", () => {
+  it("starts each configured scheme's program, and nothing when unset", () => {
+    const started: string[] = [];
+    const resolverFor = ((scheme: string, argv: ReadonlyArray<string>) => ({
+      start: () => started.push(`${scheme}:${argv.join(" ")}`),
+    })) as unknown as Parameters<typeof startLinkResolvers>[1];
+    startLinkResolvers(undefined, resolverFor);
+    expect(started).toEqual([]);
+    startLinkResolvers({ notes: ["prog", "a"], wiki: ["w"] }, resolverFor);
+    expect(started).toEqual(["notes:prog a", "wiki:w"]);
   });
 });
 

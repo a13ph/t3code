@@ -160,6 +160,11 @@ export class LinkResolverProcess {
     return lookup;
   }
 
+  /** Starts the program now rather than on the first lookup. */
+  start(): void {
+    if (!this.closed) this.ensureChild();
+  }
+
   /** Stops the program; later lookups answer null. */
   close(): void {
     this.closed = true;
@@ -357,6 +362,14 @@ export function resolveLink(
     return Promise.resolve(null);
   }
   return resolverFor(input.scheme, resolvers[input.scheme]!).resolve(input.id);
+}
+
+/** Starts every configured scheme's program. */
+export function startLinkResolvers(
+  resolvers: Readonly<Record<string, ReadonlyArray<string>>> | undefined,
+  resolverFor: typeof linkResolverFor = linkResolverFor,
+): void {
+  for (const [scheme, argv] of Object.entries(resolvers ?? {})) resolverFor(scheme, argv).start();
 }
 
 const processes = new Map<string, LinkResolverProcess>();
