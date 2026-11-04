@@ -38,6 +38,7 @@ import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { LinkResolveInput, LinkResolveResult } from "./linkResolver.ts";
 import {
   ProviderAuthCancelInput,
   ProviderAuthCompleteInput,
@@ -413,6 +414,7 @@ export const WS_METHODS = {
 
   filesystemBrowse: "filesystem.browse",
   filesystemGetMetadata: "filesystem.getMetadata",
+  linksResolve: "links.resolve",
   agentSessionsScan: "agentSessions.scan",
   agentSessionsImport: "agentSessions.import",
   assetsCreateUrl: "assets.createUrl",
@@ -1333,6 +1335,12 @@ const WsFilesystemGetMetadataRpc = Rpc.make(WS_METHODS.filesystemGetMetadata, {
   error: EnvironmentAuthorizationError,
 });
 
+const WsLinksResolveRpc = Rpc.make(WS_METHODS.linksResolve, {
+  payload: LinkResolveInput,
+  success: LinkResolveResult,
+  error: EnvironmentAuthorizationError,
+});
+
 const WsFilesystemBrowseRpc = Rpc.make(WS_METHODS.filesystemBrowse, {
   payload: FilesystemBrowseInput,
   success: FilesystemBrowseResult,
@@ -2058,6 +2066,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsShellOpenInEditorRpc,
   WsFilesystemBrowseRpc,
   WsFilesystemGetMetadataRpc,
+  WsLinksResolveRpc,
   WsAgentSessionsScanRpc,
   WsAgentSessionsImportRpc,
   WsAssetsCreateUrlRpc,

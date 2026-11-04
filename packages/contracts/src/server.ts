@@ -616,6 +616,8 @@ export const ServerConfig = Schema.Struct({
   providers: ServerProviders,
   availableEditors: ForwardCompatibleArray(EditorId),
   remoteOpenTargets: Schema.optionalKey(ForwardCompatibleArray(RemoteOpenTarget)),
+  /** Link schemes this server resolves through `links.resolve`; chat renders them as chips. */
+  linkSchemes: Schema.optionalKey(ForwardCompatibleArray(TrimmedNonEmptyString)),
   /** Hints only; verify each address answers as this environment. */
   directEndpoints: Schema.optionalKey(ForwardCompatibleArray(ServerDirectEndpoint)),
   observability: ServerObservability,

@@ -192,6 +192,42 @@ export const CHAT_MARKDOWN_REHYPE_PLUGINS: PluggableList = [
   [rehypeSanitize, CHAT_MARKDOWN_SANITIZE_SCHEMA],
 ];
 
+const SAFE_EXTRA_PROTOCOL = /^[a-z][a-z0-9+.-]*$/;
+const UNSAFE_PROTOCOLS = new Set(["javascript", "vbscript", "data", "blob"]);
+const rehypePluginsByProtocols = new Map<string, PluggableList>();
+
+/**
+ * The rehype plugins with `extraHrefProtocols` also kept on links, such as the schemes connected
+ * servers resolve. Script and data schemes are never added. One list per set of protocols, so a
+ * caller that passes the same set gets the same array.
+ */
+export function chatMarkdownRehypePlugins(
+  extraHrefProtocols: Iterable<string>,
+): PluggableList {
+  const extra = [...new Set(extraHrefProtocols)]
+    .filter((protocol) => SAFE_EXTRA_PROTOCOL.test(protocol) && !UNSAFE_PROTOCOLS.has(protocol))
+    .sort();
+  if (extra.length === 0) return CHAT_MARKDOWN_REHYPE_PLUGINS;
+  const key = extra.join(",");
+  const cached = rehypePluginsByProtocols.get(key);
+  if (cached) return cached;
+  const schema = {
+    ...CHAT_MARKDOWN_SANITIZE_SCHEMA,
+    protocols: {
+      ...CHAT_MARKDOWN_SANITIZE_SCHEMA.protocols,
+      href: [...CHAT_MARKDOWN_SANITIZE_SCHEMA.protocols.href, ...extra],
+    },
+  } satisfies Parameters<typeof rehypeSanitize>[0];
+  const plugins: PluggableList = [
+    rehypePreserveBareAnchorPlaceholders,
+    rehypeRaw,
+    rehypePreserveImageSourceMeta,
+    [rehypeSanitize, schema],
+  ];
+  rehypePluginsByProtocols.set(key, plugins);
+  return plugins;
+}
+
 const isImageNode = (node: PhrasingContent | undefined): boolean =>
   node?.type === "image" ||
   node?.type === "imageReference" ||

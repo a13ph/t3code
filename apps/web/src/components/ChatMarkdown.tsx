@@ -8,7 +8,10 @@ import {
   resolveRemoteFileServer,
   type RemoteFileLink,
 } from "../remoteFileLinks";
+import { parseResolvedLinkHref, resolvedLinkHref, type ResolvedLinkRef } from "../resolvedLinks";
 import { useEnvironments } from "../state/environments";
+import { useLinkSchemes } from "../state/linkSchemes";
+import { MarkdownResolvedLink } from "./chat/MarkdownResolvedLink";
 import {
   isWindowsDrivePathHref,
   normalizeMarkdownLinkDestination,
@@ -27,6 +30,7 @@ import {
   CHAT_MARKDOWN_REMARK_PLUGINS,
   CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS,
   CHAT_MARKDOWN_REHYPE_PLUGINS,
+  chatMarkdownRehypePlugins,
 } from "@t3tools/shared/markdownPipeline";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -412,6 +416,25 @@ const CHAT_MARKDOWN_RENDER_REHYPE_PLUGINS = [
   rehypeTextDirection,
 ] satisfies NonNullable<ReactMarkdownOptions["rehypePlugins"]>;
 
+const renderRehypePluginsByBase = new WeakMap<
+  ReturnType<typeof chatMarkdownRehypePlugins>,
+  NonNullable<ReactMarkdownOptions["rehypePlugins"]>
+>();
+
+/** The render plugins with the connected servers' link schemes kept by the sanitizer. */
+function chatMarkdownRenderRehypePlugins(
+  linkSchemes: ReadonlySet<string>,
+): NonNullable<ReactMarkdownOptions["rehypePlugins"]> {
+  const base = chatMarkdownRehypePlugins(linkSchemes);
+  if (base === CHAT_MARKDOWN_REHYPE_PLUGINS) return CHAT_MARKDOWN_RENDER_REHYPE_PLUGINS;
+  let plugins = renderRehypePluginsByBase.get(base);
+  if (plugins === undefined) {
+    plugins = [...base, rehypeHeadingIds, rehypeTextDirection];
+    renderRehypePluginsByBase.set(base, plugins);
+  }
+  return plugins;
+}
+
 const CHAT_MARKDOWN_LITERAL_HTML_REHYPE_PLUGINS = [
   rehypeHeadingIds,
   rehypeTextDirection,
@@ -518,6 +541,10 @@ function MarkdownRemoteFileLink(props: {
       openInEditorMenuLabel=""
     />
   );
+}
+
+function resolvedLinkCopyMarkdown(link: ResolvedLinkRef, label: string): string {
+  return `[${label.replace(/[\\[\]]/g, "\\$&")}](<${resolvedLinkHref(link)}>)`;
 }
 
 function useChatMarkdownState({
@@ -737,6 +764,7 @@ function useChatMarkdownState({
     });
   };
   const diffThemeName = resolveDiffThemeName(resolvedTheme);
+  const linkSchemes = useLinkSchemes();
   const markdownFileLinkMetaByHref = (() => {
     const metaByHref = new Map<
       string,
@@ -745,6 +773,7 @@ function useChatMarkdownState({
     for (const href of extractMarkdownLinkHrefs(renderCodexInlineDirectivesAsMarkdown(text))) {
       if (parseComposerContextHref(href)) continue;
       if (parseRemoteFileHref(href)) continue;
+      if (parseResolvedLinkHref(href, linkSchemes)) continue;
       const normalizedHref = normalizeMarkdownLinkHrefKey(href);
       if (metaByHref.has(normalizedHref)) continue;
       const meta = resolveMarkdownFileLinkMeta(normalizedHref, cwd, imageBaseDir ?? cwd);
@@ -777,6 +806,7 @@ function useChatMarkdownState({
     if (parseComposerContextHref(href)) return href;
     if (parseThreadLinkHref(href)) return href;
     if (parseRemoteFileHref(href)) return href;
+    if (parseResolvedLinkHref(href, linkSchemes)) return href;
     if (isWindowsDrivePathHref(href)) return href;
     return rewriteMarkdownFileUriHref(href) ?? defaultUrlTransform(href);
   };
@@ -1034,6 +1064,7 @@ function useChatMarkdownState({
     mathEnabled,
     isStreaming,
     linkTargetPreference,
+    linkSchemes,
     markdownFileLinkMetaByHref,
     onTaskListChange,
     onUseArtifactTemplate,
@@ -1205,6 +1236,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
       updateThreadPullRequestLink,
       fileLinkChip,
       renderContextReference,
+      linkSchemes,
     } = use(ChatMarkdownRendererContext);
     const text = use(ChatMarkdownTextContext);
     const citation = href ? parseAssistantCitationHref(href) : null;
@@ -1227,6 +1259,22 @@ const CHAT_MARKDOWN_COMPONENTS = {
         renderContextReference({ ...contextReference, label })
       ) : (
         <span>{label}</span>
+      );
+    }
+    const resolvedLink = parseResolvedLinkHref(href, linkSchemes);
+    if (resolvedLink && href) {
+      const written = hastPlainTextDeep(node).trim();
+      // An autolink's text is its own URL, which is no label.
+      const label = parseResolvedLinkHref(written, linkSchemes) === null ? written : "";
+      return (
+        <MarkdownResolvedLink
+          link={resolvedLink}
+          {...(label ? { label } : {})}
+          copyMarkdown={resolvedLinkCopyMarkdown(resolvedLink, label)}
+          environmentId={environmentId}
+          threadRef={threadRef}
+          theme={resolvedTheme}
+        />
       );
     }
     const remoteFile = parseRemoteFileHref(href);
@@ -1476,9 +1524,11 @@ const CHAT_MARKDOWN_COMPONENTS = {
   code: function MarkdownCode({ node, children, className, ...props }) {
     const {
       cwd,
+      environmentId,
       imageBaseDir,
       inlineCodeFileLinkMetaByText,
       fileLinkChip,
+      linkSchemes,
       mathEnabled,
       inline,
       resolvedTheme,
@@ -1496,6 +1546,18 @@ const CHAT_MARKDOWN_COMPONENTS = {
     }
     if (node?.properties?.dataInlineCode != null) {
       const codeText = nodeToPlainText(children);
+      const resolvedLink = parseResolvedLinkHref(codeText, linkSchemes);
+      if (resolvedLink) {
+        return (
+          <MarkdownResolvedLink
+            link={resolvedLink}
+            copyMarkdown={`\`${codeText}\``}
+            environmentId={environmentId}
+            threadRef={threadRef}
+            theme={resolvedTheme}
+          />
+        );
+      }
       // `alpha:/home/user/x.md` names a file on another server; unknown names stay code.
       const remoteFile = parseRemoteFileHref(codeText);
       if (remoteFile) {
@@ -1856,7 +1918,7 @@ function ChatMarkdown({
             remarkPlugins={remarkPlugins}
             rehypePlugins={
               parseRawHtml
-                ? CHAT_MARKDOWN_RENDER_REHYPE_PLUGINS
+                ? chatMarkdownRenderRehypePlugins(componentState.linkSchemes)
                 : CHAT_MARKDOWN_LITERAL_HTML_REHYPE_PLUGINS
             }
             skipHtml={false}

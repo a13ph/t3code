@@ -106,6 +106,8 @@ export class ServerConfig extends Context.Service<
     readonly logWebSocketEvents: boolean;
     readonly tailscaleServeEnabled: boolean;
     readonly tailscaleServePort: number;
+    /** Link scheme to the argv of the program that resolves it (`T3CODE_LINK_RESOLVERS`). */
+    readonly linkResolvers?: Readonly<Record<string, ReadonlyArray<string>>> | undefined;
   }
 >()("t3/config/ServerConfig") {
   static readonly layerTest = (

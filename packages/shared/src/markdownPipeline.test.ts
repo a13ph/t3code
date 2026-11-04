@@ -2,7 +2,57 @@ import { expect, it } from "vite-plus/test";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkRehype from "remark-rehype";
-import { CHAT_MARKDOWN_REHYPE_PLUGINS, CHAT_MARKDOWN_REMARK_PLUGINS } from "./markdownPipeline.ts";
+import {
+  CHAT_MARKDOWN_REHYPE_PLUGINS,
+  CHAT_MARKDOWN_REMARK_PLUGINS,
+  chatMarkdownRehypePlugins,
+} from "./markdownPipeline.ts";
+
+const hrefsAfterSanitizing = (markdown: string, plugins: typeof CHAT_MARKDOWN_REHYPE_PLUGINS) => {
+  const processor = unified()
+    .use(remarkParse)
+    .use(CHAT_MARKDOWN_REMARK_PLUGINS)
+    .use(remarkRehype, { allowDangerousHtml: true })
+    .use(plugins);
+  const hrefs: unknown[] = [];
+  const visit = (node: {
+    tagName?: string;
+    properties?: { href?: unknown };
+    children?: unknown[];
+  }) => {
+    if (node.tagName === "a") hrefs.push(node.properties?.href);
+    for (const child of node.children ?? []) visit(child as typeof node);
+  };
+  visit(processor.runSync(processor.parse(markdown)) as never);
+  return hrefs;
+};
+
+it("keeps links of the extra protocols a caller passes, and only those", () => {
+  const markdown = "[a](notes://n1) <notes://n2> [b](wiki://w1) [c](javascript:alert(1))";
+  expect(hrefsAfterSanitizing(markdown, CHAT_MARKDOWN_REHYPE_PLUGINS)).toEqual([
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+  ]);
+  expect(hrefsAfterSanitizing(markdown, chatMarkdownRehypePlugins(["notes"]))).toEqual([
+    "notes://n1",
+    "notes://n2",
+    undefined,
+    undefined,
+  ]);
+  // Script and data schemes stay out even when a caller passes them.
+  expect(
+    hrefsAfterSanitizing(markdown, chatMarkdownRehypePlugins(["javascript", "data", "Bad Name"])),
+  ).toEqual([undefined, undefined, undefined, undefined]);
+});
+
+it("returns one plugin list per set of extra protocols", () => {
+  expect(chatMarkdownRehypePlugins([])).toBe(CHAT_MARKDOWN_REHYPE_PLUGINS);
+  expect(chatMarkdownRehypePlugins(["javascript"])).toBe(CHAT_MARKDOWN_REHYPE_PLUGINS);
+  expect(chatMarkdownRehypePlugins(["b", "a"])).toBe(chatMarkdownRehypePlugins(["a", "b", "a"]));
+  expect(chatMarkdownRehypePlugins(["a"])).not.toBe(chatMarkdownRehypePlugins(["b"]));
+});
 
 it("preserves in-app thread links through the shared Markdown sanitizer", () => {
   const processor = unified()
