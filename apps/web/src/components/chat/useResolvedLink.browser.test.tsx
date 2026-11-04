@@ -193,7 +193,7 @@ describe("useResolvedLink", () => {
     expect(seen.at(-1)).toMatchObject({ _tag: "found", environmentId: OWN, target: TARGET });
   });
 
-  it("stays missing after the one re-run also misses", async () => {
+  it("after the re-run also misses, stays missing and asks again each 15 s until the target exists", async () => {
     using _timers = fakeTimers();
     using _servers = serving();
     await using _screen = await render(<Probe />, { router: false });
@@ -201,9 +201,18 @@ describe("useResolvedLink", () => {
     await advance(6_500);
     await settle(() => servers.state.views.set(OWN, answer(null)));
     expect(last()).toBe("missing");
-    await advance(60_000);
+    await advance(14_000);
     expect(servers.state.refreshed).toEqual([OWN]);
+    await advance(1_000);
+    expect(servers.state.refreshed).toEqual([OWN, OWN]);
     expect(last()).toBe("missing");
+    await settle(() => servers.state.views.set(OWN, answer(null)));
+    expect(last()).toBe("missing");
+    await advance(15_000);
+    expect(servers.state.refreshed).toEqual([OWN, OWN, OWN]);
+    expect(last()).toBe("missing");
+    await settle(() => servers.state.views.set(OWN, answer(TARGET)));
+    expect(seen.at(-1)).toMatchObject({ _tag: "found", environmentId: OWN, target: TARGET });
   });
 
   it("gives up on a silent server even while the server list re-renders", async () => {
@@ -354,7 +363,7 @@ describe("useResolvedLink unavailable", () => {
     expect(found()).toMatchObject({ _tag: "found", environmentId: OWN, target: TARGET });
   });
 
-  it("is missing as before once a server says the link is not there, though another is unavailable", async () => {
+  it("is missing once a server says the link is not there, and finds it when the other's program comes back", async () => {
     using _timers = fakeTimers();
     using _servers = serving([environment(OWN, "own"), environment(OTHER, "other")]);
     await using _screen = await render(<Probe />, { router: false });
@@ -366,8 +375,10 @@ describe("useResolvedLink unavailable", () => {
     await advance(6_500);
     await oneMissOneUnavailable();
     expect(last()).toBe("missing");
-    await advance(60_000);
-    expect(servers.state.refreshed).toEqual([OWN, OTHER]);
+    await advance(15_000);
+    expect(servers.state.refreshed).toEqual([OWN, OTHER, OWN]);
     expect(last()).toBe("missing");
+    await settle(() => servers.state.views.set(OWN, answer(TARGET)));
+    expect(seen.at(-1)).toMatchObject({ _tag: "found", environmentId: OWN, target: TARGET });
   });
 });

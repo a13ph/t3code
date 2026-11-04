@@ -47,6 +47,8 @@ interface Walk {
   readonly kept: ResolvedLink | null;
   /** Every server passed this round answered that its program is unavailable, not a miss. */
   readonly allUnavailable: boolean;
+  /** A re-ask of a link already shown missing, which stays shown missing until a server knows it. */
+  readonly wasMissing: boolean;
 }
 
 interface WalkInput {
@@ -60,7 +62,13 @@ interface WalkInput {
   readonly deadlinePassed: boolean;
 }
 
-function startWalk(key: string, run: number, round: number, now: () => number): Walk {
+function startWalk(
+  key: string,
+  run: number,
+  round: number,
+  now: () => number,
+  wasMissing = false,
+): Walk {
   const startedAt = now();
   return {
     key,
@@ -72,6 +80,7 @@ function startWalk(key: string, run: number, round: number, now: () => number): 
     pendingSeen: false,
     kept: null,
     allUnavailable: true,
+    wasMissing,
   };
 }
 
@@ -152,8 +161,9 @@ function askingOrder(
 /**
  * Asks the chat's own server, then each other server announcing the scheme in label order; the
  * first that knows the link wins, and a failure or `SERVER_ANSWER_TIMEOUT_MS` of silence is a miss.
- * After a full miss it runs once more, and on each `resolvedLinkLiveRefresh` tick while every
- * server's program is unavailable; a found link stays live by that tick and losing it reruns.
+ * After a full miss it runs once more, then again on each `resolvedLinkLiveRefresh` tick, so a link
+ * written before its target exists shows once it does; a found link stays live by that tick and
+ * losing it reruns.
  */
 export function useResolvedLink(
   link: ResolvedLinkRef,
@@ -225,23 +235,23 @@ export function useResolvedLink(
     return subscribeResolvedLinkRefresh(liveKey, () => refreshQuery());
   }, [liveKey]);
 
+  const finished = walk.key === key && candidates.length > 0 && current === null;
   // Every server's program was unavailable, so nobody has said the link is missing yet.
-  const waiting =
-    walk.key === key && walk.allUnavailable && candidates.length > 0 && current === null;
+  const waiting = finished && walk.allUnavailable && !walk.wasMissing;
   const askAgain = useEffectEvent(() =>
     setWalk((latest) =>
-      latest.key === key && latest.allUnavailable && latest.index >= candidates.length
-        ? startWalk(key, latest.run + 1, 1, Date.now)
+      latest.key === key && latest.index >= candidates.length
+        ? startWalk(key, latest.run + 1, 1, Date.now, latest.wasMissing || !latest.allUnavailable)
         : latest,
     ),
   );
   const chipId = useId();
-  const waitKey = waiting && walk.round > 0 ? `waiting|${chipId}` : null;
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- runs the chain again on the live-refresh tick while every server's program is unavailable
+  const askAgainKey = finished && walk.round > 0 ? `ask-again|${chipId}` : null;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- runs the chain again on the live-refresh tick once it found nothing
   useEffect(() => {
-    if (waitKey === null) return;
-    return subscribeResolvedLinkRefresh(waitKey, () => askAgain());
-  }, [waitKey]);
+    if (askAgainKey === null) return;
+    return subscribeResolvedLinkRefresh(askAgainKey, () => askAgain());
+  }, [askAgainKey]);
 
   if (waiting) return { _tag: "resolving" };
   if (current === null) return { _tag: isReady ? "missing" : "resolving" };
@@ -253,5 +263,5 @@ export function useResolvedLink(
       target: hit,
     };
   }
-  return { _tag: "resolving" };
+  return { _tag: walk.wasMissing ? "missing" : "resolving" };
 }
