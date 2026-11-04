@@ -1,0 +1,46 @@
+name: Fork mobile tests
+
+# Typecheck of the mobile app and its tests for markdown links, on a ci/ branch.
+on:
+  push:
+    branches: ["ci/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-test-mobile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Mobile typecheck and link tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: ./.github/actions/setup-ci-deps
+
+      - name: Typecheck mobile
+        if: ${{ !cancelled() }}
+        run: vp run --filter @t3tools/mobile typecheck
+
+      - name: Mobile link tests
+        if: ${{ !cancelled() }}
+        working-directory: apps/mobile
+        run: |
+          vp test run --project unit --project react \
+            src/lib/markdownLinks.test.ts \
+            src/lib/markdownHtml.test.ts \
+            src/lib/markdownInlineFileLinks.test.ts \
+            src/features/threads
