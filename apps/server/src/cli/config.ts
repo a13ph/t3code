@@ -96,6 +96,7 @@ export const traceMaxFilesConfig = Config.Int("T3CODE_TRACE_MAX_FILES").pipe(
 // `{"<scheme>": ["<program>", "<arg>", ...]}`: each scheme's links resolve through its program.
 // A record keyed by the scheme schema drops keys that fail it, so the keys are checked here: one
 // bad scheme refuses the whole value rather than vanishing from it.
+const isLinkResolverScheme = Schema.is(LinkResolverScheme);
 export const LinkResolversFromJson = Schema.fromJsonString(
   Schema.Record(
     Schema.String,
@@ -109,18 +110,19 @@ export const LinkResolversFromJson = Schema.fromJsonString(
     Schema.makeFilter(
       (resolvers: Readonly<Record<string, unknown>>) => {
         const schemes = Object.keys(resolvers);
-        return schemes.length > 0 && schemes.every((scheme) => Schema.is(LinkResolverScheme)(scheme));
+        return schemes.length > 0 && schemes.every((scheme) => isLinkResolverScheme(scheme));
       },
       { expected: "one or more lower-case link schemes" },
     ),
   ),
 );
+const decodeLinkResolversJson = Schema.decodeEffect(LinkResolversFromJson);
 
 export const decodeLinkResolvers = Effect.fn("config.decodeLinkResolvers")(function* (
   raw: string | undefined,
 ) {
   if (raw === undefined || raw.trim() === "") return undefined;
-  return yield* Schema.decodeEffect(LinkResolversFromJson)(raw).pipe(
+  return yield* decodeLinkResolversJson(raw).pipe(
     Effect.catch((issue) =>
       Effect.logWarning(`T3CODE_LINK_RESOLVERS ignored: ${String(issue)}`).pipe(
         Effect.as(undefined),

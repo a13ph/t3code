@@ -14,7 +14,7 @@ export interface ResolvedLinkRef {
 }
 
 // The scheme grammar of RFC 3986, kept to what a setting can name.
-export const RESOLVED_LINK_SCHEME = /^[a-z][a-z0-9+.-]*$/;
+const RESOLVED_LINK_SCHEME = /^[a-z][a-z0-9+.-]*$/;
 // No whitespace, no angle brackets: the id ends where a markdown destination would.
 const LINK = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/([^\s<>/][^\s<>]*?)\/?$/;
 

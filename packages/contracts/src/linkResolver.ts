@@ -2,7 +2,7 @@ import * as Schema from "effect/Schema";
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 // A link scheme a server resolves through an external program: lower case, RFC 3986 grammar.
-export const LINK_RESOLVER_SCHEME_PATTERN = /^[a-z][a-z0-9+.-]*$/;
+const LINK_RESOLVER_SCHEME_PATTERN = /^[a-z][a-z0-9+.-]*$/;
 export const LinkResolverScheme = Schema.String.check(
   Schema.isPattern(LINK_RESOLVER_SCHEME_PATTERN),
   Schema.isMaxLength(64),
@@ -12,7 +12,7 @@ export type LinkResolverScheme = typeof LinkResolverScheme.Type;
 // No control characters or backslashes, and no `.` or `..` segment, so an id a program reads as
 // a path cannot climb out of where the program looks.
 const LINK_ID_FORBIDDEN = /[\u0000-\u001f\u007f\\]|(?:^|\/)\.{1,2}(?:\/|$)/;
-export const LINK_RESOLVER_ID_MAX_LENGTH = 2_048;
+const LINK_RESOLVER_ID_MAX_LENGTH = 2_048;
 
 /** Whether `id`, what follows `<scheme>://` in a link, may be sent to a link resolver. */
 export function isResolvedLinkId(id: string): boolean {

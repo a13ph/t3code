@@ -449,7 +449,7 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
       <TooltipPopup side="top" variant="code">
         <div className="overflow-x-auto whitespace-nowrap scrollbar-thumb-border/78 scrollbar-track-transparent [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border/78 [&::-webkit-scrollbar-track]:bg-transparent">
           {tooltipLines ? (
-            tooltipLines.map((tooltipLine, index) => <div key={index}>{tooltipLine}</div>)
+            keyedLines(tooltipLines).map((line) => <div key={line.key}>{line.text}</div>)
           ) : (
             <WorkspaceEntryTooltip
               path={iconPath}
@@ -462,6 +462,16 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
     </Tooltip>
   );
 }, areMarkdownFileLinkPropsEqual);
+
+// Keyed by text, with a count for a line that repeats.
+function keyedLines(lines: ReadonlyArray<string>): ReadonlyArray<{ key: string; text: string }> {
+  const seen = new Map<string, number>();
+  return lines.map((text) => {
+    const occurrence = seen.get(text) ?? 0;
+    seen.set(text, occurrence + 1);
+    return { key: `${occurrence}:${text}`, text };
+  });
+}
 
 function areMarkdownFileLinkPropsEqual(
   previous: Readonly<MarkdownFileLinkProps>,

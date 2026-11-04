@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- runs real resolver programs as child processes.
-import { spawn } from "node:child_process";
+import * as NodeChildProcess from "node:child_process";
 
 import type { LinkResolveResult } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
@@ -92,8 +92,12 @@ describe("LinkResolverProcess", () => {
       const answer = await resolver.resolve(id);
       expect(labelOf(answer)).toBe(id.slice(5));
       // The line the program read had no byte outside ASCII.
-      expect(answer !== null && "tooltip" in answer ? answer.tooltip : "").toMatch(/^[\x20-\x7e]+$/);
-      expect(answer !== null && "tooltip" in answer ? answer.tooltip : "").not.toContain(id.slice(5));
+      expect(answer !== null && "tooltip" in answer ? answer.tooltip : "").toMatch(
+        /^[\x20-\x7e]+$/,
+      );
+      expect(answer !== null && "tooltip" in answer ? answer.tooltip : "").not.toContain(
+        id.slice(5),
+      );
     } finally {
       resolver.close();
     }
@@ -165,7 +169,7 @@ describe("LinkResolverProcess", () => {
       now: () => clock,
       spawn: (command, args) => {
         starts += 1;
-        return spawn(command, [...args]);
+        return NodeChildProcess.spawn(command, [...args]);
       },
     });
     const label = async (id: string) => labelOf(await resolver.resolve(id));
@@ -199,7 +203,7 @@ describe("LinkResolverProcess", () => {
       log: () => {},
       spawn: (command, args) => {
         starts += 1;
-        return spawn(command, [...args]);
+        return NodeChildProcess.spawn(command, [...args]);
       },
     });
     expect(await empty.resolve("a1")).toEqual(LINK_RESOLVER_UNAVAILABLE);
@@ -244,11 +248,7 @@ describe("LinkResolverProcess", () => {
         capped.resolve("slow2"),
         capped.resolve("slow3"),
       ]);
-      expect(answers.map(labelOf)).toEqual([
-        "slow1",
-        "slow2",
-        LINK_RESOLVER_UNAVAILABLE,
-      ]);
+      expect(answers.map(labelOf)).toEqual(["slow1", "slow2", LINK_RESOLVER_UNAVAILABLE]);
     } finally {
       capped.close();
     }
@@ -319,7 +319,9 @@ describe("resolveLink", () => {
     const resolvers = { notes: ["prog"] };
     expect(await resolveLink(undefined, { scheme: "notes", id: "a" }, resolverFor)).toBeNull();
     expect(await resolveLink(resolvers, { scheme: "wiki", id: "a" }, resolverFor)).toBeNull();
-    expect(await resolveLink(resolvers, { scheme: "constructor", id: "a" }, resolverFor)).toBeNull();
+    expect(
+      await resolveLink(resolvers, { scheme: "constructor", id: "a" }, resolverFor),
+    ).toBeNull();
     expect(asked).toEqual([]);
     expect(await resolveLink(resolvers, { scheme: "notes", id: "a" }, resolverFor)).toBeNull();
     expect(asked).toEqual(["notes"]);
