@@ -423,6 +423,55 @@ describe("buildThreadFeed", () => {
     },
   );
 
+  it("marks replaced replies inside an opened fold", () => {
+    const reply = (id: string, text: string, ordinal: number) =>
+      projected(
+        {
+          ...assistantMessage(`2026-06-20T00:00:0${ordinal}.000Z`),
+          ...base(id, `2026-06-20T00:00:0${ordinal}.000Z`, ordinal),
+          type: "assistant_message",
+          messageId: MessageId.make(`message-${id}`),
+          text,
+          streaming: false,
+        },
+        ordinal,
+      );
+    const feed = buildThreadFeed([
+      projected(userMessage("2026-06-20T00:00:00.000Z"), 0),
+      reply("report", "Brief. A or B?", 1),
+      projected(
+        {
+          ...base("ask", "2026-06-20T00:00:02.000Z", 2),
+          status: "failed",
+          type: "dynamic_tool",
+          toolName: "AskUserQuestion",
+          input: {},
+          output: { text: "Refused by hook" },
+        },
+        2,
+      ),
+      reply("resent", "TL;DR: done\nfirst", 3),
+      projected(command("2026-06-20T00:00:04.000Z"), 4),
+      reply("kept", "Unrelated", 5),
+      reply("final", "TL;DR: done\nsecond", 6),
+    ]);
+    const replaced = (expandedWorkGroupIds: ReadonlySet<string>) =>
+      deriveThreadFeedPresentation(feed, null, new Set([runId]), expandedWorkGroupIds).flatMap(
+        (entry) =>
+          entry.type === "message" && entry.replacedReply
+            ? [[entry.message.text, entry.replacedReply.expanded]]
+            : [],
+      );
+    expect(replaced(new Set())).toEqual([
+      ["Brief. A or B?", false],
+      ["TL;DR: done\nfirst", false],
+    ]);
+    const groupId = deriveThreadFeedPresentation(feed, null, new Set([runId])).find(
+      (entry) => entry.replacedReply,
+    )?.replacedReply?.groupId;
+    expect(replaced(new Set([groupId!]))[0]).toEqual(["Brief. A or B?", true]);
+  });
+
   it.each([false, true])(
     "carries a late checkpoint to only the final answer without changing cached messages (cache: %s)",
     (cached) => {

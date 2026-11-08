@@ -1141,6 +1141,47 @@ describe("deriveMessagesTimelineRows", () => {
       expect(ids).toEqual(["user-entry", "turn-fold:turn-1", "assistant-final-entry"]);
     });
 
+    it("marks replaced replies inside an opened fold", () => {
+      const replacedRows = (expandedWorkGroupIds: ReadonlySet<string>) =>
+        deriveMessagesTimelineRows({
+          timelineEntries: [
+            user,
+            message("assistant-report", "Brief. A or B?", "2026-01-01T00:00:01Z"),
+            work("think", "2026-01-01T00:00:02Z", { itemType: "reasoning", tone: "thinking" }),
+            work("ask-tool", "2026-01-01T00:00:03Z", {
+              toolLifecycleStatus: "failed",
+              projectedItem: { item: { type: "dynamic_tool", toolName: "AskUserQuestion" } },
+            }),
+            message("assistant-resent", "TL;DR: done\nfirst", "2026-01-01T00:00:04Z"),
+            work("hook", "2026-01-01T00:00:05Z"),
+            message("assistant-kept", "Unrelated", "2026-01-01T00:00:06Z"),
+            message("assistant-final", "TL;DR: done\nsecond", "2026-01-01T00:00:07Z"),
+          ],
+          isWorking: false,
+          activeTurnStartedAt: null,
+          turnDiffSummaries: [],
+          supportsConversationRollback: false,
+          expandedRunIds: new Set([RunId.make("turn-1")]),
+          expandedWorkGroupIds,
+        }).flatMap((row) =>
+          row.kind === "message" && row.replacedReply ? [[row.id, row.replacedReply]] : [],
+        );
+      expect(replacedRows(new Set())).toEqual([
+        [
+          "assistant-report-entry",
+          { groupId: "replaced-reply:assistant-report-entry", expanded: false },
+        ],
+        [
+          "assistant-resent-entry",
+          { groupId: "replaced-reply:assistant-resent-entry", expanded: false },
+        ],
+      ]);
+      expect(replacedRows(new Set(["replaced-reply:assistant-report-entry"]))[0]).toEqual([
+        "assistant-report-entry",
+        { groupId: "replaced-reply:assistant-report-entry", expanded: true },
+      ]);
+    });
+
     it("folds text that a tool call, not a question, follows", () => {
       const ids = visibleEntryIds([
         user,

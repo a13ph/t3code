@@ -90,6 +90,7 @@ import IconMenu2 from "@tabler/icons-react-native/IconMenu2";
 import IconMessageCircleQuestion from "@tabler/icons-react-native/IconMessageCircleQuestion";
 import IconMessage from "@tabler/icons-react-native/IconMessage";
 import IconMessagePlus from "@tabler/icons-react-native/IconMessagePlus";
+import IconMessageX from "@tabler/icons-react-native/IconMessageX";
 import IconMinus from "@tabler/icons-react-native/IconMinus";
 import IconMoon from "@tabler/icons-react-native/IconMoon";
 import IconNetwork from "@tabler/icons-react-native/IconNetwork";
@@ -273,6 +274,7 @@ const ANDROID_ICON_BY_SF_SYMBOL = {
   "bubble.left": IconMessage,
   sparkles: IconSparkles,
   "plus.bubble": IconMessagePlus,
+  "exclamationmark.bubble": IconMessageX,
   "text.word.spacing": IconLetterSpacing,
   "textformat.size": IconTypography,
   "textformat.size.larger": IconTextIncrease,
