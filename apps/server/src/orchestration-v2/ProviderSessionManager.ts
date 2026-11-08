@@ -56,6 +56,21 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_MAX_IDLE_PIN_MS = 4 * 60 * 60 * 1000;
 const RELEASE_SCOPE_CLOSE_TIMEOUT_MS = 30 * 1000;
+const IDLE_TIMEOUT_ENV = "T3_PROVIDER_IDLE_TIMEOUT_MS";
+
+/**
+ * How long a provider session with no attached turn stays open, from
+ * T3_PROVIDER_IDLE_TIMEOUT_MS in milliseconds. Unset, empty or not a
+ * positive whole number gives undefined, and the 30 min default applies.
+ */
+export function idleTimeoutMsFromEnv(
+  env: Readonly<Record<string, string | undefined>>,
+): number | undefined {
+  const raw = env[IDLE_TIMEOUT_ENV]?.trim();
+  if (!raw || !/^\d+$/.test(raw)) return undefined;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
 
 const busyTurnPrefix = (providerThreadId: ProviderThreadId) => `${providerThreadId}#`;
 const busyTurnKey = (providerThreadId: ProviderThreadId, runOrdinal: number) =>
@@ -383,7 +398,10 @@ export const layerWithOptions = (
         readonly providerSessionId: ProviderSessionId;
         readonly threadId: ThreadId;
       }) => `${input.providerSessionId}\u0000${input.threadId}`;
-      const idleTimeoutMs = Math.max(1, options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS);
+      const idleTimeoutMs = Math.max(
+        1,
+        options.idleTimeoutMs ?? idleTimeoutMsFromEnv(process.env) ?? DEFAULT_IDLE_TIMEOUT_MS,
+      );
       const maxIdlePinMs = Math.max(0, options.maxIdlePinMs ?? DEFAULT_MAX_IDLE_PIN_MS);
       interface PreparedMcpCredential {
         readonly mcpCredentialId: string | undefined;
