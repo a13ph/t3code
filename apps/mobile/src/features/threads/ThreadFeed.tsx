@@ -82,6 +82,7 @@ import {
   markdownImageSourceFragment,
 } from "@t3tools/client-runtime/markdown-images";
 import { resolveViewedImageAsset } from "@t3tools/client-runtime/work-log/presentation";
+import { firstLine } from "@t3tools/client-runtime/work-log/replaced-replies";
 import {
   renderCodexInlineDirectivesAsMarkdown,
   splitCodexArtifactTemplateMarkdown,
@@ -1072,11 +1073,11 @@ function ReplacedReplyHeader(props: {
   readonly onToggle: () => void;
   readonly iconSubtleColor: ColorValue;
 }) {
-  const firstLine = props.text.split("\n").find((line) => line.trim() !== "")?.trim() ?? "";
+  const summary = firstLine(props.text) ?? "";
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`Replaced reply: ${firstLine}`}
+      accessibilityLabel={`Replaced reply: ${summary}`}
       accessibilityHint={`Double tap to ${props.expanded ? "hide" : "show"} the reply.`}
       accessibilityState={{ expanded: props.expanded }}
       hitSlop={4}
@@ -1097,7 +1098,7 @@ function ReplacedReplyHeader(props: {
         Replaced reply
       </Text>
       <Text numberOfLines={1} className="min-w-0 shrink text-sm text-foreground-muted">
-        {firstLine}
+        {summary}
       </Text>
     </Pressable>
   );

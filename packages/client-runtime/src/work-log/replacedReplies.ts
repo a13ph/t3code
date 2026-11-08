@@ -26,7 +26,7 @@ export function workEntryReplyStep(
   return { kind: "other" };
 }
 
-function firstLine(text: string): string | null {
+export function firstLine(text: string): string | null {
   for (const line of text.split("\n")) {
     const trimmed = line.trim();
     if (trimmed !== "") return trimmed;
