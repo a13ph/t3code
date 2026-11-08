@@ -13,7 +13,7 @@ import type {
 } from "@t3tools/contracts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { isNetworkPath } from "@t3tools/shared/path";
+import { isHostPath, isNetworkPath } from "@t3tools/shared/path";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -120,7 +120,7 @@ export class WorkspaceFileSystem extends Context.Service<
       ProjectReadFileResult,
       WorkspaceFileSystemError | WorkspacePaths.WorkspacePathOutsideRootError
     >;
-    /** Writes inside a known workspace only. */
+    /** Writes inside a known workspace, or to an existing host file by absolute or `~/` path. */
     readonly writeFile: (
       input: ProjectWriteFileInput,
     ) => Effect.Effect<
@@ -525,33 +525,104 @@ export const make = Effect.gen(function* () {
     return { relativePath: target.relativePath, realTargetPath };
   });
 
+  /**
+   * A host path edits a file that already exists, such as one a chat links to, and
+   * creates nothing. Git's folders stay refused, as inside a workspace.
+   */
+  const resolveHostWriteTarget = Effect.fn("WorkspaceFileSystem.resolveHostWriteTarget")(function* (
+    input: ProjectWriteFileInput,
+  ) {
+    const hostPath = input.relativePath.startsWith("~/")
+      ? expandHomePath(input.relativePath, yield* HostProcess.HomeDirectory)
+      : input.relativePath;
+    if (!path.isAbsolute(hostPath) || isNetworkPath(hostPath)) {
+      return yield* new WorkspacePaths.WorkspacePathOutsideRootError({
+        workspaceRoot: input.cwd,
+        relativePath: input.relativePath,
+      });
+    }
+    const operationError = (operation: "realpath-target" | "stat", cause: unknown) =>
+      new WorkspaceFileSystemOperationError({
+        workspaceRoot: input.cwd,
+        relativePath: input.relativePath,
+        resolvedPath: hostPath,
+        operationPath: hostPath,
+        operation,
+        cause,
+      });
+    const realTargetPath = yield* Effect.tryPromise({
+      try: () => NodeFSP.realpath(hostPath),
+      catch: (cause) => operationError("realpath-target", cause),
+    });
+    // A Windows junction can resolve to a share, which signs in with the user's NTLM credentials.
+    if (isNetworkPath(realTargetPath)) {
+      return yield* new WorkspacePaths.WorkspacePathOutsideRootError({
+        workspaceRoot: input.cwd,
+        relativePath: input.relativePath,
+      });
+    }
+    // Opening a FIFO to write blocks until a reader comes.
+    const stat = yield* Effect.tryPromise({
+      try: () => NodeFSP.stat(realTargetPath),
+      catch: (cause) => operationError("stat", cause),
+    });
+    if (!stat.isFile()) {
+      return yield* new WorkspacePathNotFileError({
+        workspaceRoot: input.cwd,
+        relativePath: input.relativePath,
+        resolvedPath: realTargetPath,
+      });
+    }
+    for (const checkedPath of [realTargetPath, path.resolve(hostPath)]) {
+      const inGitFolder = yield* Effect.tryPromise({
+        try: () => isInGitFolder(checkedPath),
+        catch: (cause) => operationError("stat", cause),
+      });
+      if (inGitFolder) {
+        return yield* new WorkspaceFilePathEscapeError({
+          workspaceRoot: input.cwd,
+          relativePath: input.relativePath,
+          resolvedWorkspaceRoot: path.dirname(realTargetPath),
+          resolvedPath: realTargetPath,
+        });
+      }
+    }
+    return { relativePath: input.relativePath, realTargetPath };
+  });
+
   const writeFile: WorkspaceFileSystem["Service"]["writeFile"] = Effect.fn(
     "WorkspaceFileSystem.writeFile",
   )(function* (input) {
-    yield* knownWorkspaces.assertContains(input.cwd);
-    const target = yield* resolveWriteTarget(input);
+    const hostFile = isHostPath(input.relativePath);
+    if (!hostFile) yield* knownWorkspaces.assertContains(input.cwd);
+    const target = hostFile
+      ? yield* resolveHostWriteTarget(input)
+      : yield* resolveWriteTarget(input);
     const realTargetPath = target.realTargetPath;
 
-    yield* fileSystem.makeDirectory(path.dirname(realTargetPath), { recursive: true }).pipe(
-      Effect.mapError(
-        (cause) =>
-          new WorkspaceFileSystemOperationError({
-            workspaceRoot: input.cwd,
-            relativePath: input.relativePath,
-            resolvedPath: realTargetPath,
-            operationPath: path.dirname(realTargetPath),
-            operation: "make-directory",
-            cause,
-          }),
-      ),
-    );
+    if (!hostFile) {
+      yield* fileSystem.makeDirectory(path.dirname(realTargetPath), { recursive: true }).pipe(
+        Effect.mapError(
+          (cause) =>
+            new WorkspaceFileSystemOperationError({
+              workspaceRoot: input.cwd,
+              relativePath: input.relativePath,
+              resolvedPath: realTargetPath,
+              operationPath: path.dirname(realTargetPath),
+              operation: "make-directory",
+              cause,
+            }),
+        ),
+      );
+    }
     yield* Effect.tryPromise({
       // A symlink swapped in after the check is not followed. Windows lacks O_NOFOLLOW.
+      // A host FIFO swapped in fails with ENXIO instead of blocking a pool thread.
       try: () =>
         NodeFSP.writeFile(realTargetPath, input.contents, {
           flag:
             NodeFS.constants.O_WRONLY |
-            NodeFS.constants.O_CREAT |
+            (hostFile ? (NodeFS.constants.O_NONBLOCK ?? 0) : NodeFS.constants.O_CREAT) |
             NodeFS.constants.O_TRUNC |
             (NodeFS.constants.O_NOFOLLOW ?? 0),
         }),

@@ -1,5 +1,10 @@
-import { AuthFilesystemWriteScope, type EnvironmentId } from "@t3tools/contracts";
+import {
+  AuthFilesystemWriteScope,
+  AuthTerminalOperateScope,
+  type EnvironmentId,
+} from "@t3tools/contracts";
 import { type AtomCommandResult, runAtomCommand } from "@t3tools/client-runtime/state/runtime";
+import { isHostPath } from "@t3tools/shared/path";
 import { useEffect } from "react";
 
 import { appAtomRegistry } from "~/rpc/atomRegistry";
@@ -136,15 +141,24 @@ function fileSaveKey({ environmentId, cwd, relativePath }: FileSaveTarget): stri
   return `${environmentId}\u0000${cwd}\u0000${relativePath}`;
 }
 
+/** The server asks shell access to write a host file, as it can be any file its user owns. */
+function fileWriteScopes(relativePath: string) {
+  return isHostPath(relativePath)
+    ? [AuthFilesystemWriteScope, AuthTerminalOperateScope]
+    : [AuthFilesystemWriteScope];
+}
+
 const fileSaveSessions = createFileSaveSessions({
   debounceMs: 500,
-  canPersist: ({ environmentId }) => readEnvironmentScope(environmentId, AuthFilesystemWriteScope),
-  subscribeWritable: ({ environmentId }, onWritable) => {
-    let writable = readEnvironmentScope(environmentId, AuthFilesystemWriteScope);
+  canPersist: ({ environmentId, relativePath }) =>
+    fileWriteScopes(relativePath).every((scope) => readEnvironmentScope(environmentId, scope)),
+  subscribeWritable: ({ environmentId, relativePath }, onWritable) => {
+    const scopes = fileWriteScopes(relativePath);
+    let writable = scopes.every((scope) => readEnvironmentScope(environmentId, scope));
     return appAtomRegistry.subscribe(
       environmentSession.sessionStateAtom(environmentId),
       (state) => {
-        const next = sessionHasScope(state, AuthFilesystemWriteScope);
+        const next = scopes.every((scope) => sessionHasScope(state, scope));
         if (next && !writable) onWritable();
         writable = next;
       },

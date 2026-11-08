@@ -2,6 +2,7 @@ import {
   AuthEnvironmentMaintainScope,
   AuthDiagnosticsReadScope,
   AuthFilesystemReadScope,
+  AuthFilesystemWriteScope,
   AuthProvidersManageScope,
   AuthSettingsWriteScope,
   DEFAULT_SERVER_SETTINGS,
@@ -330,6 +331,58 @@ it.effect("separates host file URLs from readable attachment URLs", () =>
       });
     }
     expect(handled).toBe(1);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("needs shell permission to write a host file but not a workspace file", () =>
+  Effect.gen(function* () {
+    const group = WsRpcGroup.omit(
+      ...[...WsRpcGroup.requests.keys()].filter(
+        (
+          tag,
+        ): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, typeof WS_METHODS.projectsWriteFile> =>
+          tag !== WS_METHODS.projectsWriteFile,
+      ),
+    );
+    const handled: string[] = [];
+    const handler = group.toLayerHandler(WS_METHODS.projectsWriteFile, ({ relativePath }) =>
+      Effect.sync(() => {
+        handled.push(relativePath);
+        return { relativePath };
+      }),
+    );
+    const writer = yield* RpcTest.makeClient(group).pipe(
+      Effect.provide(Layer.merge(handler, RpcAuthorization.layer([AuthFilesystemWriteScope]))),
+    );
+    yield* writer[WS_METHODS.projectsWriteFile]({
+      cwd: "/repo",
+      relativePath: "a.md",
+      contents: "",
+    });
+    for (const relativePath of ["/home/user/a.md", "~/a.md", "C:\\Users\\user\\a.md"]) {
+      expect(
+        yield* writer[WS_METHODS.projectsWriteFile]({
+          cwd: "/repo",
+          relativePath,
+          contents: "",
+        }).pipe(Effect.flip),
+      ).toMatchObject({ requiredPermission: AuthTerminalOperateScope });
+    }
+    expect(handled).toEqual(["a.md"]);
+    const shell = yield* RpcTest.makeClient(group).pipe(
+      Effect.provide(
+        Layer.merge(
+          handler,
+          RpcAuthorization.layer([AuthFilesystemWriteScope, AuthTerminalOperateScope]),
+        ),
+      ),
+    );
+    yield* shell[WS_METHODS.projectsWriteFile]({
+      cwd: "/repo",
+      relativePath: "~/a.md",
+      contents: "",
+    });
+    expect(handled).toEqual(["a.md", "~/a.md"]);
   }).pipe(Effect.scoped),
 );
 

@@ -386,19 +386,94 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceFileSystemLive", (i
       }),
     );
 
-    it.effect("rejects writes by absolute path", () =>
+    // A chat link to another server's file sends this client's workspace as cwd,
+    // which that server need not know, so a host write never checks it.
+    it.effect("writes an existing host file in place by absolute or ~/ path", () =>
       Effect.gen(function* () {
         const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: UNKNOWN_WORKSPACE_PREFIX,
+        });
+        const outsideDir = yield* makeTempDir;
+        const home = yield* makeTempDir;
+        yield* writeTextFile(outsideDir, "a.md", "# Report\n");
+        yield* writeTextFile(home, "b.md", "# Notes\n");
+        const absolutePath = path.join(outsideDir, "a.md");
+
+        expect(
+          yield* workspaceFileSystem.writeFile({
+            cwd,
+            relativePath: absolutePath,
+            contents: "# Edited\n",
+          }),
+        ).toEqual({ relativePath: absolutePath });
+        expect(
+          yield* workspaceFileSystem
+            .writeFile({ cwd, relativePath: "~/b.md", contents: "# Home\n" })
+            .pipe(Effect.provideService(HostProcess.HomeDirectory, home)),
+        ).toEqual({ relativePath: "~/b.md" });
+
+        expect(yield* fileSystem.readFileString(absolutePath)).toBe("# Edited\n");
+        expect(yield* fileSystem.readFileString(path.join(home, "b.md"))).toBe("# Home\n");
+        expect(yield* fileSystem.readDirectory(cwd)).toEqual([]);
+      }),
+    );
+
+    it.effect("refuses to create a host file that does not exist", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+        const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const cwd = yield* makeTempDir;
         const outsideDir = yield* makeTempDir;
-        const absolutePath = path.join(outsideDir, "cleanup-report.md");
 
         const error = yield* workspaceFileSystem
-          .writeFile({ cwd, relativePath: absolutePath, contents: "# Edited\n" })
+          .writeFile({
+            cwd,
+            relativePath: path.join(outsideDir, "c/d.md"),
+            contents: "# New\n",
+          })
           .pipe(Effect.flip);
 
-        expect(error).toBeInstanceOf(WorkspacePaths.WorkspacePathOutsideRootError);
+        expect(error).toMatchObject({ operation: "realpath-target" });
+        expect(yield* fileSystem.readDirectory(outsideDir)).toEqual([]);
+      }),
+    );
+
+    it.effect("refuses host writes into git's folders and to network paths", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir;
+        const outsideDir = yield* makeTempDir;
+        yield* writeTextFile(outsideDir, "repo/.git/config", "[core]\n");
+        if (symlinksSupported) {
+          yield* fileSystem.symlink(
+            path.join(outsideDir, "repo/.git/config"),
+            path.join(outsideDir, "config-link"),
+          );
+        }
+
+        for (const relativePath of [
+          path.join(outsideDir, "repo/.git/config"),
+          ...(symlinksSupported ? [path.join(outsideDir, "config-link")] : []),
+        ]) {
+          const error = yield* workspaceFileSystem
+            .writeFile({ cwd, relativePath, contents: "[core]\n\tfsmonitor = x\n" })
+            .pipe(Effect.flip);
+          expect(error).toBeInstanceOf(WorkspaceFileSystem.WorkspaceFilePathEscapeError);
+        }
+        const networkError = yield* workspaceFileSystem
+          .writeFile({ cwd, relativePath: "//attacker.test/s/a.md", contents: "x\n" })
+          .pipe(Effect.flip);
+        expect(networkError).toBeInstanceOf(WorkspacePaths.WorkspacePathOutsideRootError);
+
+        expect(yield* fileSystem.readFileString(path.join(outsideDir, "repo/.git/config"))).toBe(
+          "[core]\n",
+        );
       }),
     );
 

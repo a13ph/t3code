@@ -10,6 +10,7 @@ import {
   requiredScopesForServerSettingsPatch,
   requiredScopesForProjectMutation,
   ProjectMutation,
+  ProjectWriteFileInput,
   AuthSettingsWriteScope,
   AuthProvidersManageScope,
   AuthEnvironmentMaintainScope,
@@ -30,6 +31,7 @@ import {
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
+import { isHostPath } from "@t3tools/shared/path";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
@@ -241,6 +243,7 @@ const requiredScopesForSettingsUpdate = (payload: unknown) => {
 
 const decodeProjectMutation = Schema.decodeUnknownSync(ProjectMutation);
 const decodeAssetCreateUrlInput = Schema.decodeUnknownSync(AssetCreateUrlInput);
+const decodeProjectWriteFileInput = Schema.decodeUnknownSync(ProjectWriteFileInput);
 
 const requiredScopesForRpcCall = (
   method: string,
@@ -258,6 +261,13 @@ const requiredScopesForRpcCall = (
         ? AuthFilesystemReadScope
         : AuthOrchestrationReadScope,
     ];
+  }
+  // A host file can be any file the server's user owns; only a shell already reaches those.
+  if (
+    method === WS_METHODS.projectsWriteFile &&
+    isHostPath(decodeProjectWriteFileInput(payload).relativePath)
+  ) {
+    return [AuthFilesystemWriteScope, AuthTerminalOperateScope];
   }
   if (method === WS_METHODS.serverUpdateSettings) return requiredScopesForSettingsUpdate(payload);
   if (method === WS_METHODS.projectsMutate) {
