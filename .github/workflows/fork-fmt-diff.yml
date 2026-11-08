@@ -1,0 +1,25 @@
+name: Fork format diff
+
+# Prints the formatter's change to the replaced-reply mobile files, on a ci/ branch.
+on:
+  push:
+    branches: ["ci/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  fmt:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
+          sparse-checkout-cone-mode: false
+      - uses: ./.github/actions/setup-ci-deps
+      - run: vp fmt apps/mobile/src/features/threads/ThreadFeed.tsx
+      - run: git diff
