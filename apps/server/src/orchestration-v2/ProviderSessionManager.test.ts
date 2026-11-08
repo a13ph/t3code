@@ -3659,3 +3659,14 @@ it.effect("ProviderSessionManagerV2 gives a delegated child its project's device
     assert.isTrue(child?.capabilities?.has("device"));
   }),
 );
+
+it("ProviderSessionManagerV2 reads the idle timeout from T3_PROVIDER_IDLE_TIMEOUT_MS", () => {
+  const read = (value: string | undefined) =>
+    ProviderSessionManager.idleTimeoutMsFromEnv({ T3_PROVIDER_IDLE_TIMEOUT_MS: value });
+  assert.strictEqual(read("300000"), 300_000);
+  assert.strictEqual(read(" 300000 "), 300_000);
+  assert.strictEqual(ProviderSessionManager.idleTimeoutMsFromEnv({}), undefined);
+  for (const bad of ["", "0", "-5", "5m", "1.5", "1e6", "99999999999999999999"]) {
+    assert.strictEqual(read(bad), undefined, bad);
+  }
+});
