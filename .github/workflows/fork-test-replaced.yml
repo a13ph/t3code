@@ -1,0 +1,57 @@
+name: Fork replaced-reply tests
+
+# Fast checks of the changed files against the release base, then the
+# replaced-reply tests on web, mobile and the shared detection, on a ci/ branch.
+on:
+  push:
+    branches: ["ci/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-test-replaced-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Replaced-reply checks and tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          sparse-checkout: |
+            /*
+            !/.repos/
+            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: ./.github/actions/setup-ci-deps
+
+      - name: Shared detection tests
+        if: ${{ !cancelled() }}
+        working-directory: packages/client-runtime
+        run: vp test run src/work-log/replacedReplies.test.ts
+
+      - name: Web timeline logic tests
+        if: ${{ !cancelled() }}
+        working-directory: apps/web
+        run: vp test run src/components/chat/MessagesTimeline.logic.test.ts
+
+      - name: Mobile thread activity tests
+        if: ${{ !cancelled() }}
+        working-directory: apps/mobile
+        run: vp test run --project unit src/lib/threadActivity.test.ts
+
+      - name: Typecheck mobile
+        if: ${{ !cancelled() }}
+        run: vp run --filter @t3tools/mobile typecheck
+
+      - name: Checks of changed files
+        if: ${{ !cancelled() }}
+        run: vp run check:changed fc82efae3f
