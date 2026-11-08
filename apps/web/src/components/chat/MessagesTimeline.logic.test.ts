@@ -1128,6 +1128,19 @@ describe("deriveMessagesTimelineRows", () => {
       ]);
     });
 
+    it("folds the report when Claude's question call was refused", () => {
+      const ids = visibleEntryIds([
+        user,
+        message("assistant-report", "Brief. A or B?", "2026-01-01T00:00:01Z"),
+        work("ask-tool", "2026-01-01T00:00:02Z", {
+          toolLifecycleStatus: "failed",
+          projectedItem: { item: { type: "dynamic_tool", toolName: "AskUserQuestion" } },
+        }),
+        message("assistant-final", "Brief, corrected. A or B?", "2026-01-01T00:00:03Z"),
+      ]);
+      expect(ids).toEqual(["user-entry", "turn-fold:turn-1", "assistant-final-entry"]);
+    });
+
     it("folds text that a tool call, not a question, follows", () => {
       const ids = visibleEntryIds([
         user,

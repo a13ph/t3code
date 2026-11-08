@@ -1060,8 +1060,13 @@ function questionContextEntryIds(entries: ReadonlyArray<TimelineEntry>): Readonl
       continue;
     }
     if (entry.kind === "work" && entry.entry.itemType === "reasoning") continue;
-    if (entry.kind === "work" && workEntryIsAskUserQuestionCall(entry.entry)) {
+    if (
+      entry.kind === "work" &&
+      workEntryIsAskUserQuestionCall(entry.entry) &&
+      !workEntryDisplayIndicatesToolFailure(entry.entry)
+    ) {
       // The call itself folds; its lead-in stays even if no request follows.
+      // A refused call asked nothing, so its lead-in folds like other work's.
       for (const text of leadIn) kept.add(text.id);
       inQuestion = inQuestion || leadIn.length > 0;
       leadIn = [];
