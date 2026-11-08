@@ -1066,6 +1066,43 @@ function AgentMessageFoldHeader(props: {
   );
 }
 
+function ReplacedReplyHeader(props: {
+  readonly text: string;
+  readonly expanded: boolean;
+  readonly onToggle: () => void;
+  readonly iconSubtleColor: ColorValue;
+}) {
+  const firstLine = props.text.split("\n").find((line) => line.trim() !== "")?.trim() ?? "";
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Replaced reply: ${firstLine}`}
+      accessibilityHint={`Double tap to ${props.expanded ? "hide" : "show"} the reply.`}
+      accessibilityState={{ expanded: props.expanded }}
+      hitSlop={4}
+      className="min-h-9 flex-row items-center gap-1.5 py-1.5"
+      onPress={() => {
+        void Haptics.selectionAsync();
+        props.onToggle();
+      }}
+    >
+      <SymbolView
+        name="exclamationmark.bubble"
+        size={14}
+        weight="medium"
+        tintColor={props.iconSubtleColor}
+        type="monochrome"
+      />
+      <Text numberOfLines={1} className="shrink-0 font-t3-medium text-sm text-foreground-muted">
+        Replaced reply
+      </Text>
+      <Text numberOfLines={1} className="min-w-0 shrink text-sm text-foreground-muted">
+        {firstLine}
+      </Text>
+    </Pressable>
+  );
+}
+
 function OpenSenderThreadButton(props: {
   readonly environmentId: EnvironmentId;
   readonly senderThreadId: ThreadId;
@@ -1804,6 +1841,19 @@ function renderFeedEntry(
       return null;
     }
 
+    const replacedReply = entry.replacedReply;
+    const replacedReplyHeader = replacedReply ? (
+      <ReplacedReplyHeader
+        text={message.text}
+        expanded={replacedReply.expanded}
+        iconSubtleColor={iconSubtleColor}
+        onToggle={() => props.onToggleWorkGroup(replacedReply.groupId, entry.id)}
+      />
+    ) : null;
+    if (replacedReply && !replacedReply.expanded) {
+      return <View className="mb-1 px-1">{replacedReplyHeader}</View>;
+    }
+
     const enterAnimated = isFreshTimestamp(message.createdAt);
     return (
       <Animated.View
@@ -1815,6 +1865,7 @@ function renderFeedEntry(
         )}
         {...(enterAnimated ? { entering: FadeIn.duration(220) } : {})}
       >
+        {replacedReplyHeader}
         {renderedText.trim().length > 0 ? (
           <MarkdownImageAvailableWidthContext value={props.markdownContentWidth}>
             <AssistantMarkdownContent

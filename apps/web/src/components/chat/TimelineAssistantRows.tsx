@@ -4,7 +4,7 @@ import { canForkProjectedAssistantItem } from "@t3tools/client-runtime/state/thr
 import { memo, use, useState } from "react";
 import { type ChatMessage, type TurnDiffSummary } from "../../types";
 import ChatMarkdown from "../ChatMarkdown";
-import { GitForkIcon } from "lucide-react";
+import { GitForkIcon, MessageSquareXIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import { HtmlRenderFrame } from "./HtmlRenderFrame";
@@ -23,12 +23,41 @@ import { useV2ItemSupport } from "../../state/v2ItemSupport";
 import { TimelineRowCtx, TimelineRowActivityCtx, type TimelineRow } from "./timelineRowContext";
 import { MESSAGE_HEADING_LEVEL, MessageAuthorHeading } from "./TimelineRowParts";
 
+function ReplacedReplyToggle({
+  row,
+  replacedReply,
+}: {
+  row: Extract<TimelineRow, { kind: "message" }>;
+  replacedReply: NonNullable<Extract<TimelineRow, { kind: "message" }>["replacedReply"]>;
+}) {
+  const ctx = use(TimelineRowCtx);
+  const firstLine = row.message.text.split("\n").find((line) => line.trim() !== "") ?? "";
+  return (
+    <button
+      type="button"
+      aria-expanded={replacedReply.expanded}
+      data-scroll-anchor-ignore
+      onClick={() => ctx.onToggleWorkGroup(replacedReply.groupId, row.id)}
+      className="flex w-full min-w-0 cursor-pointer select-none items-center gap-2 rounded-md px-1 py-1 text-left text-xs transition-colors hover:bg-muted/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
+    >
+      <MessageSquareXIcon className="size-3.5 shrink-0 text-muted-foreground" />
+      <span className="shrink-0 font-medium text-foreground/80">Replaced reply</span>
+      <span className="min-w-0 truncate text-muted-foreground">{firstLine.trim()}</span>
+    </button>
+  );
+}
+
 export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
+  const replacedReply = row.replacedReply;
+  if (replacedReply && !replacedReply.expanded) {
+    return <ReplacedReplyToggle row={row} replacedReply={replacedReply} />;
+  }
 
   return (
     <>
+      {replacedReply ? <ReplacedReplyToggle row={row} replacedReply={replacedReply} /> : null}
       <div className="relative min-w-0 px-1 py-0.5">
         <MessageAuthorHeading>T3 Code</MessageAuthorHeading>
         <div data-thread-find-text="true">
