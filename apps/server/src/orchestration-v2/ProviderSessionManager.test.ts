@@ -3923,7 +3923,11 @@ it.effect("ProviderSessionManagerV2 tells delivery what a thread's live process 
         layerTest({
           state,
           idleTimeoutMs: 60_000,
-          wakeThreads: wakeTestThreads,
+          // The runtime also reports a thread the session is not attached to.
+          wakeThreads: Effect.succeed([
+            wakeTestThread,
+            { ...wakeTestThread, threadId: ThreadId.make("thread-other") },
+          ]),
           wakeParkingLayer: fake.layer,
         }),
       ),

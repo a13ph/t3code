@@ -252,12 +252,14 @@ export function makeClaudeWakeTracker(): ClaudeWakeTracker {
         pending = pending.filter((wake) => wake.kind !== "wakeup");
         return;
       }
+      // The call replaced the earlier wakeup even when its result cannot be read.
+      lastWakeupCallAtMs = nowMs;
+      pending = pending.filter((wake) => wake.kind !== "wakeup");
       const delaySeconds = parseScheduleWakeupDelaySeconds(text);
       const prompt = use.input.prompt;
       if (delaySeconds === null || typeof prompt !== "string") return;
-      lastWakeupCallAtMs = nowMs;
       pending = [
-        ...pending.filter((wake) => wake.kind !== "wakeup"),
+        ...pending,
         { kind: "wakeup", toolUseId, dueAtMs: nowMs + delaySeconds * 1_000, prompt },
       ];
       return;
@@ -296,6 +298,13 @@ export function makeClaudeWakeTracker(): ClaudeWakeTracker {
   // not parked and sent again. The frame does not say which job fired:
   // Claude Code 2.1.319 marks a recurring job's turn "schedule_wakeup" too.
   const dropFired = (nowMs: number) => {
+    // A recurring job due now may be the one that fired; then nothing is dropped.
+    const recurringDueNow = pending.some((wake) => {
+      if (wake.kind !== "cron" || !wake.recurring) return false;
+      const match = nextCronMatch(wake.cron, nowMs - WAKE_MATCH_WINDOW_MS);
+      return match !== null && match <= nowMs + WAKE_MATCH_WINDOW_MS;
+    });
+    if (recurringDueNow) return;
     const limit = nowMs + WAKE_MATCH_WINDOW_MS;
     let firedIndex = -1;
     let firedDue = Number.POSITIVE_INFINITY;
@@ -423,7 +432,12 @@ export type ParkPlan =
   | { readonly type: "none" }
   | { readonly type: "park"; readonly rows: ReadonlyArray<ParkedWake> }
   /** A wakeup this code cannot schedule; keep the process instead of losing it. */
-  | { readonly type: "unparkable"; readonly reason: string };
+  | {
+      readonly type: "unparkable";
+      readonly reason: string;
+      /** What can be parked when the process cannot be kept any longer. */
+      readonly rows: ReadonlyArray<ParkedWake>;
+    };
 
 function recurringExpired(createdAtMs: number, dueAtMs: number): boolean {
   return dueAtMs > createdAtMs + RECURRING_JOB_MAX_AGE_MS;
@@ -440,6 +454,7 @@ export function planPark(input: {
 }): ParkPlan {
   const { nowMs } = input;
   const rows: Array<ParkedWake> = [];
+  let unreadable: string | null = null;
   for (const thread of input.threads) {
     const base = {
       threadId: String(thread.threadId),
@@ -465,7 +480,8 @@ export function planPark(input: {
       }
       const due = wake.recurring ? nextCronMatch(wake.cron, nowMs) : wake.dueAtMs;
       if (due === null) {
-        return { type: "unparkable", reason: `cannot read the schedule of job ${wake.jobId}` };
+        unreadable ??= `cannot read the schedule of job ${wake.jobId}`;
+        continue;
       }
       if (!wake.recurring && due <= nowMs) continue;
       if (wake.recurring && recurringExpired(wake.createdAtMs, due)) continue;
@@ -482,6 +498,7 @@ export function planPark(input: {
       });
     }
   }
+  if (unreadable !== null) return { type: "unparkable", reason: unreadable, rows };
   return rows.length === 0 ? { type: "none" } : { type: "park", rows };
 }
 

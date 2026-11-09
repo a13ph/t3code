@@ -157,7 +157,10 @@ describe("wake tracker", () => {
   it("ignores a failed call, and stop:true clears every wakeup but no job", () => {
     const tracker = makeClaudeWakeTracker();
     tracker.observe(toolUse("toolu_e", "ScheduleWakeup", { prompt: "p", delaySeconds: 60 }), NOW);
-    tracker.observe(toolResult("toolu_e", "refused", true), NOW);
+    tracker.observe(
+      toolResult("toolu_e", "Next wakeup scheduled for 10:01:00 (in 60s).", true),
+      NOW,
+    );
     expect(tracker.wakes()).toEqual([]);
     expect(tracker.lastWakeupCallAtMs()).toBeNull();
     scheduleWakeup(tracker, "toolu_1", 60, NOW);
@@ -169,6 +172,15 @@ describe("wake tracker", () => {
     tracker.observe(toolUse("toolu_2", "ScheduleWakeup", { stop: true }), NOW + MINUTE);
     tracker.observe(toolResult("toolu_2", [{ type: "text", text: "Loop stopped." }]), NOW + MINUTE);
     expect(tracker.wakes().map((wake) => wake.kind)).toEqual(["cron"]);
+    expect(tracker.lastWakeupCallAtMs()).toBe(NOW + MINUTE);
+  });
+
+  it("drops the replaced wakeup when a new ScheduleWakeup result cannot be read", () => {
+    const tracker = makeClaudeWakeTracker();
+    scheduleWakeup(tracker, "toolu_1", 600, NOW);
+    tracker.observe(toolUse("toolu_2", "ScheduleWakeup", { delaySeconds: 60, prompt: "p" }), NOW);
+    tracker.observe(toolResult("toolu_2", "Wakeup set."), NOW + MINUTE);
+    expect(tracker.wakes()).toEqual([]);
     expect(tracker.lastWakeupCallAtMs()).toBe(NOW + MINUTE);
   });
 
@@ -254,6 +266,24 @@ describe("wake tracker", () => {
     expect(tracker.wakes()).toHaveLength(1);
   });
 
+  it("drops no wakeup when a wake turn starts while a recurring job is due", () => {
+    const tracker = makeClaudeWakeTracker();
+    tracker.observe(
+      toolUse("toolu_c", "CronCreate", { cron: "*/15 * * * *", prompt: "poll" }),
+      NOW,
+    );
+    tracker.observe(
+      toolResult("toolu_c", "Scheduled recurring job 0a1b2c3d (every 15 minutes)."),
+      NOW,
+    );
+    scheduleWakeup(tracker, "toolu_1", 15 * 60 + 60, NOW);
+    tracker.observe(
+      lifecycle("started", { command_uuid: "c1", wakeup_source: "schedule_wakeup" }),
+      NOW + 15 * MINUTE,
+    );
+    expect(tracker.wakes().map((wake) => wake.kind)).toEqual(["cron", "wakeup"]);
+  });
+
   it("adopts restored jobs once, and never a ScheduleWakeup", () => {
     const tracker = makeClaudeWakeTracker();
     const job = {
@@ -302,6 +332,7 @@ describe("cron matching", () => {
 
   it("returns null for expressions it cannot read or that never match", () => {
     expect(nextCronMatch("61 * * * *", 0)).toBeNull();
+    expect(nextCronMatch("0-61 * * * *", 0)).toBeNull();
     expect(nextCronMatch("* * * *", 0)).toBeNull();
     expect(nextCronMatch("@hourly", 0)).toBeNull();
     expect(nextCronMatch("0 0 30 2 *", local(2026, 1, 1, 0, 0))).toBeNull();
@@ -361,9 +392,14 @@ describe("parking", () => {
       ["session-a:cron:a1", local(2026, 6, 15, 10, 15)],
     ]);
     expect(rows.every((row) => row.parkedAtMs === NOW)).toBe(true);
+    const due = planPark({
+      nowMs: NOW,
+      threads: [thread([{ kind: "wakeup", toolUseId: "toolu_2", dueAtMs: NOW, prompt: "p" }])],
+    });
+    expect(due.type).toBe("none");
   });
 
-  it("refuses a schedule it cannot read, and skips an expired recurring job", () => {
+  it("refuses a schedule it cannot read but keeps the rest, and skips an expired recurring job", () => {
     const unreadable = planPark({
       nowMs: NOW,
       threads: [
@@ -377,10 +413,14 @@ describe("parking", () => {
             createdAtMs: NOW,
             dueAtMs: null,
           },
+          { kind: "wakeup", toolUseId: "toolu_1", dueAtMs: NOW + 30 * MINUTE, prompt: "loop" },
         ]),
       ],
     });
     expect(unreadable.type).toBe("unparkable");
+    expect(
+      unreadable.type === "unparkable" ? unreadable.rows.map((row) => row.wakeId) : [],
+    ).toEqual(["session-a:wakeup:toolu_1"]);
     const expired = planPark({
       nowMs: NOW,
       threads: [
@@ -423,6 +463,18 @@ describe("delivery", () => {
 
   it("removes a one-shot and moves a recurring job on to its next match", () => {
     expect(planDelivery(parked({}), NOW + 30 * MINUTE)).toEqual({ send: true, nextDueAtMs: null });
+    const oneShotJob = parked({
+      wakeId: "session-a:cron:b2",
+      kind: "cron",
+      jobId: "b2",
+      cron: "*/15 * * * *",
+      recurring: false,
+      dueAtMs: local(2026, 6, 15, 10, 15),
+    });
+    expect(planDelivery(oneShotJob, local(2026, 6, 15, 10, 15))).toEqual({
+      send: true,
+      nextDueAtMs: null,
+    });
     const job = parked({
       kind: "cron",
       jobId: "a1",
