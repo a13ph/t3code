@@ -1,0 +1,46 @@
+name: Fork notice-markdown checks
+
+# Fast checks of the files the notice-markdown merge changed, against the
+# release base, plus the mobile typecheck, on a ci/ branch.
+on:
+  push:
+    branches: ["ci/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-test-notice-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Notice-markdown checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          sparse-checkout: |
+            /*
+            !/.repos/
+            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: ./.github/actions/setup-ci-deps
+
+      - name: Typecheck web
+        if: ${{ !cancelled() }}
+        run: vp run --filter @t3tools/web typecheck
+
+      - name: Typecheck mobile
+        if: ${{ !cancelled() }}
+        run: vp run --filter @t3tools/mobile typecheck
+
+      - name: Checks of changed files
+        if: ${{ !cancelled() }}
+        run: vp run check:changed 40f6b2659cad5a1f1e336af5dcf24d58ed9982da
