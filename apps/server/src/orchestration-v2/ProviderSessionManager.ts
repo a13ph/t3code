@@ -2158,7 +2158,19 @@ export const layerWithOptions = (
         const continuesInKeeper = [...entry.attachedThreadIds].some(
           (threadId) => (detached.get(threadId)?.adapterState ?? null) !== null,
         );
-        if (continuesInKeeper) return Effect.void;
+        if (continuesInKeeper) {
+          // The next server reattaches it with no memory of its wakeup calls, so a
+          // parked wakeup it replaced is dropped now, or it would be sent as well.
+          const wakeThreads = entry.runtime.wakeThreads;
+          if (Option.isNone(wakeParking) || wakeThreads === undefined) return Effect.void;
+          const parking = wakeParking.value;
+          return wakeThreads.pipe(
+            Effect.flatMap((threads) => parking.dropSuperseded(threads)),
+            Effect.timeoutOption(SHUTDOWN_WAKE_PARK_TIMEOUT_MS),
+            Effect.catchCause(() => Effect.void),
+            Effect.asVoid,
+          );
+        }
         return parkWakes(entry.runtime, entry.runtime.providerSessionId, null).pipe(
           Effect.timeoutOption(SHUTDOWN_WAKE_PARK_TIMEOUT_MS),
           Effect.asVoid,

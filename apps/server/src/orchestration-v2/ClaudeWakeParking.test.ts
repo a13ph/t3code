@@ -163,6 +163,13 @@ describe("wake tracker", () => {
     expect(tracker.lastWakeupCallAtMs()).toBe(NOW + MINUTE);
   });
 
+  it("counts a stop that comes back as an error, so a parked loop is not sent", () => {
+    const tracker = makeClaudeWakeTracker();
+    tracker.observe(toolUse("toolu_s", "ScheduleWakeup", { stop: true }), NOW);
+    tracker.observe(toolResult("toolu_s", "No wakeup is scheduled.", true), NOW);
+    expect(tracker.lastWakeupCallAtMs()).toBe(NOW);
+  });
+
   it("records session CronCreate jobs, drops them on CronDelete, and leaves durable jobs alone", () => {
     const tracker = makeClaudeWakeTracker();
     tracker.observe(

@@ -20,6 +20,7 @@
 import { ProviderDriverKind, ProviderThreadId, ThreadId } from "@t3tools/contracts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
@@ -69,6 +70,13 @@ export interface ClaudeWakeParkingShape {
   }) => Effect.Effect<ClaudeWakeParkOutcome>;
   /** The release did not happen after all: the process still holds these. */
   readonly undoPark: (rows: ReadonlyArray<Parking.ParkedWake>) => Effect.Effect<void>;
+  /**
+   * The process lives on past a server restart (kept mid-turn): park nothing,
+   * but drop parked wakeups it replaced, since the next server cannot see that.
+   */
+  readonly dropSuperseded: (
+    threads: ReadonlyArray<ProviderAdapter.ProviderAdapterV2WakeThread>,
+  ) => Effect.Effect<void>;
   /**
    * A session opened for the thread, so its next process resumes the Claude
    * session and restores the scheduled jobs itself. Returns those jobs, which
@@ -193,10 +201,22 @@ export const layer = Layer.effect(
             SELECT * FROM claude_parked_wakes WHERE thread_id IN ${sql.in(threadIds)}
           `.pipe(Effect.mapError(sqlError("read parked wakeups")), Effect.flatMap(decodeRows));
 
+    // A due row this build cannot read is removed: left in place, it would stay
+    // the earliest due time and keep the delivery loop from sleeping.
     const dueRows = (nowMs: number) =>
       sql<Parking.ParkedWakeRow>`
         SELECT * FROM claude_parked_wakes WHERE due_at_ms <= ${nowMs} ORDER BY due_at_ms ASC
-      `.pipe(Effect.mapError(sqlError("read due wakeups")), Effect.flatMap(decodeRows));
+      `.pipe(
+        Effect.mapError(sqlError("read due wakeups")),
+        Effect.flatMap((rows) =>
+          decodeRows(rows).pipe(
+            Effect.tap((decoded) => {
+              const readable = new Set(decoded.map((row) => row.wakeId));
+              return deleteRows(rows.flatMap((row) => (readable.has(row.wake_id) ? [] : [row.wake_id])));
+            }),
+          ),
+        ),
+      );
 
     const earliestDue = sql<{ readonly due: number | null }>`
       SELECT MIN(due_at_ms) AS due FROM claude_parked_wakes
@@ -277,11 +297,13 @@ export const layer = Layer.effect(
           ),
         ),
       ),
-      Effect.catch((error) =>
-        Effect.logWarning("orchestration-v2.claude-wake.delivery-failed", {
-          detail: error.detail,
-          cause: error.cause,
-        }).pipe(Effect.as(DELIVERY_RETRY_MS)),
+      // Any failure but an interrupt, a defect included, retries later: the loop must not end.
+      Effect.catchCause((cause) =>
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.failCause(cause)
+          : Effect.logWarning("orchestration-v2.claude-wake.delivery-failed", { cause }).pipe(
+              Effect.as(DELIVERY_RETRY_MS),
+            ),
       ),
     );
 
@@ -297,6 +319,41 @@ export const layer = Layer.effect(
     }
 
     const pin = (reason: string): ClaudeWakeParkOutcome => ({ type: "pin", reason });
+
+    /**
+     * A wakeup parked from an earlier process of these threads that a live
+     * process replaced or stopped goes now, sent or not. Under the lock.
+     */
+    const deleteSupersededLocked = (
+      threads: ReadonlyArray<ProviderAdapter.ProviderAdapterV2WakeThread>,
+    ) =>
+      rowsForThreads(threads.map((thread) => String(thread.threadId))).pipe(
+        Effect.map((existing) =>
+          threads.flatMap((thread) =>
+            Parking.supersededWakeups(
+              existing.filter((row) => row.threadId === String(thread.threadId)),
+              thread.lastWakeupCallAtMs,
+            ),
+          ),
+        ),
+        Effect.flatMap((superseded) => deleteRows(superseded.map((row) => row.wakeId))),
+      );
+
+    const dropSuperseded = Effect.fn("ClaudeWakeParking.dropSuperseded")(
+      function* (threads: ReadonlyArray<ProviderAdapter.ProviderAdapterV2WakeThread>) {
+        if (!tableReady || threads.length === 0) return;
+        yield* lock.withPermits(1)(deleteSupersededLocked(threads));
+      },
+      (effect) =>
+        effect.pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("orchestration-v2.claude-wake.drop-superseded-failed", {
+              detail: error.detail,
+              cause: error.cause,
+            }),
+          ),
+        ),
+    );
 
     const parkLocked = Effect.fn("ClaudeWakeParking.parkLocked")(function* (input: {
       readonly threads: ReadonlyArray<ProviderAdapter.ProviderAdapterV2WakeThread>;
@@ -318,16 +375,7 @@ export const layer = Layer.effect(
       ) {
         return pin("a wakeup is due soon");
       }
-      // A wakeup parked from an earlier process of these threads that this
-      // process replaced or stopped goes now, sent or not.
-      const existing = yield* rowsForThreads(input.threads.map((thread) => String(thread.threadId)));
-      const superseded = input.threads.flatMap((thread) =>
-        Parking.supersededWakeups(
-          existing.filter((row) => row.threadId === String(thread.threadId)),
-          thread.lastWakeupCallAtMs,
-        ),
-      );
-      yield* deleteRows(superseded.map((row) => row.wakeId));
+      yield* deleteSupersededLocked(input.threads);
       if (rows.length === 0) return { type: "none" };
       yield* insertRows(rows);
       return { type: "parked", rows };
@@ -335,7 +383,12 @@ export const layer = Layer.effect(
 
     const parkBeforeRelease = Effect.fn("ClaudeWakeParking.parkBeforeRelease")(
       function* (input: Parameters<ClaudeWakeParkingShape["parkBeforeRelease"]>[0]) {
-        if (!tableReady) return pin("the parked-wakeups table is missing");
+        if (!tableReady) {
+          // Without the table nothing can be parked: keep only a process that holds a wakeup.
+          const now = yield* Clock.currentTimeMillis;
+          const plan = Parking.planPark({ threads: input.threads, nowMs: now });
+          return plan.type === "none" ? { type: "none" as const } : pin("the parked-wakeups table is missing");
+        }
         const outcome = yield* lock.withPermits(1)(parkLocked(input));
         if (outcome.type === "parked") {
           yield* Effect.logInfo("orchestration-v2.claude-wake.parked", {
@@ -405,6 +458,12 @@ export const layer = Layer.effect(
 
     const setLiveWakeProbe = (probe: LiveWakeProbe) => Ref.set(liveProbe, probe);
 
-    return ClaudeWakeParking.of({ parkBeforeRelease, undoPark, threadOpened, setLiveWakeProbe });
+    return ClaudeWakeParking.of({
+      parkBeforeRelease,
+      undoPark,
+      dropSuperseded,
+      threadOpened,
+      setLiveWakeProbe,
+    });
   }),
 );

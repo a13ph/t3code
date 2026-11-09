@@ -3784,6 +3784,7 @@ const makeWakeParkingFake = Effect.fnUntraced(function* () {
           { idleTimeoutMs: input.idleTimeoutMs, threadCount: input.threads.length },
         ]).pipe(Effect.andThen(Ref.get(outcome))),
       undoPark: () => Ref.update(undone, (count) => count + 1),
+      dropSuperseded: () => Effect.void,
       threadOpened: (threadId) =>
         Ref.update(openedThreads, (ids) => [...ids, threadId]).pipe(Effect.as([parkedJob])),
       setLiveWakeProbe: (next) => Ref.set(probe, next),
