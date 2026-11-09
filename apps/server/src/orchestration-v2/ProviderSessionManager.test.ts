@@ -3962,29 +3962,34 @@ it.effect("ProviderSessionManagerV2 tells delivery what a thread's live process 
 );
 
 it.effect(
-  "ProviderSessionManagerV2 parks the wakeups of a detach the thread goes on from, not of a plain one",
+  "ProviderSessionManagerV2 parks the wakeups of a session a detach, a close or an error ends",
   () =>
     Effect.gen(function* () {
       const state = yield* Ref.make(emptyState);
       const fake = yield* makeWakeParkingFake();
       const effect = Effect.gen(function* () {
-        const kept = yield* openWakeTestSession(wakeTestThreadId);
-        yield* kept.manager.detach({
-          providerSessionId: kept.providerSessionId,
+        const detached = yield* openWakeTestSession(wakeTestThreadId);
+        yield* detached.manager.detach({
+          providerSessionId: detached.providerSessionId,
           threadId: wakeTestThreadId,
-          keepWakes: true,
+          detail: "Provider or model selection changed.",
         });
-        assert.isFalse(yield* kept.manager.isLive(kept.providerSessionId));
+        assert.isFalse(yield* detached.manager.isLive(detached.providerSessionId));
         // null: the process ends regardless, so nothing is pinned for being due soon.
         assert.deepEqual(yield* Ref.get(fake.parkCalls), [{ idleTimeoutMs: null, threadCount: 1 }]);
-        const plainThreadId = ThreadId.make("thread-provider-session-manager-wake-archived");
-        const plain = yield* openWakeTestSession(plainThreadId);
-        yield* plain.manager.detach({
-          providerSessionId: plain.providerSessionId,
-          threadId: plainThreadId,
+        const closedThreadId = ThreadId.make("thread-provider-session-manager-wake-closed");
+        const closed = yield* openWakeTestSession(closedThreadId);
+        yield* closed.manager.close(closed.providerSessionId);
+        assert.isFalse(yield* closed.manager.isLive(closed.providerSessionId));
+        assert.equal((yield* Ref.get(fake.parkCalls)).length, 2);
+        const failedThreadId = ThreadId.make("thread-provider-session-manager-wake-failed");
+        const failed = yield* openWakeTestSession(failedThreadId);
+        yield* failed.manager.release({
+          providerSessionId: failed.providerSessionId,
+          reason: "runtime_error",
         });
-        assert.isFalse(yield* plain.manager.isLive(plain.providerSessionId));
-        assert.equal((yield* Ref.get(fake.parkCalls)).length, 1);
+        assert.isFalse(yield* failed.manager.isLive(failed.providerSessionId));
+        assert.equal((yield* Ref.get(fake.parkCalls)).length, 3);
       });
 
       yield* effect.pipe(

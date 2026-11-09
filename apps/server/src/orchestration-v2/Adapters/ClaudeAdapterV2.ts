@@ -5057,8 +5057,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         >();
         // The session manager's handlers for a CLI starting or ending outside a release.
         let wakeEvents: ProviderAdapter.ProviderAdapterV2WakeEvents | null = null;
-        // Set once the session closes: the release that closes it parks its wakeups.
-        let sessionClosing = false;
         // ScheduleWakeup calls no live CLI holds: a resumed CLI does not restore them.
         const handOverWakeups = (
           route: ProviderAdapter.ProviderAdapterV2WakeRoute,
@@ -10520,14 +10518,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 }
                 const tracker = wakeTrackers.get(context.nativeThreadId);
                 if (tracker === undefined) return;
-                // A closing session is released, and the release parks what the CLI held.
-                const released =
-                  sessionClosing || (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause));
+                // Only a closing session scope interrupts this fiber, and the release
+                // that closes it parks what the CLI held.
+                const released = Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause);
                 // Any other end (a Stop, a crash, a restart for new settings) leaves
                 // its ScheduleWakeup calls with no process; a cut wake turn's wakeup too.
                 const orphans = released
                   ? []
-                  : tracker.takeWakeups({ includeFiring: !context.stoppedByUser });
+                  : tracker.takeWakeups({
+                      includeFiring: !context.stoppedByUser && !context.stopping,
+                    });
                 tracker.processEnded();
                 yield* handOverWakeups(
                   {
@@ -11178,7 +11178,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         );
 
         const closeSession = Effect.fnUntraced(function* () {
-          sessionClosing = true;
           const existing = yield* Ref.get(queryContext);
           if (existing !== null) {
             yield* existing.query.close.pipe(Effect.ignore);

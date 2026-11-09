@@ -3927,10 +3927,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                           : "Provider or model selection changed.",
                 // Terminal detaches revoke MCP credentials; reattachments need other detach reasons to preserve them.
                 ...(command.type === "thread.archive" ? { revokeMcpCredential: true } : {}),
-                // An archived or settled thread is done; any other goes on in its next session.
-                ...(command.type === "thread.archive" || command.type === "thread.settle"
-                  ? {}
-                  : { keepWakes: true }),
               },
             } satisfies PendingOrchestrationEffectV2;
             yield* Ref.update(effects, (existing) => [...existing, pendingEffect]);

@@ -127,9 +127,6 @@ export const layerExecutor: Layer.Layer<
                 ...(effect.request.revokeMcpCredential === undefined
                   ? {}
                   : { revokeMcpCredential: effect.request.revokeMcpCredential }),
-                ...(effect.request.keepWakes === undefined
-                  ? {}
-                  : { keepWakes: effect.request.keepWakes }),
               })
               .pipe(
                 Effect.mapError(
@@ -366,14 +363,12 @@ export const layerExecutor: Layer.Layer<
                         providerSessionId: effect.request.providerSessionId,
                         threadId: effect.threadId,
                         detail: "Selection change requires a provider session restart.",
-                        keepWakes: true,
                       })
                     : effect.request.sessionTransition?.type === "detach"
                       ? providerSessions.detach({
                           providerSessionId: effect.request.providerSessionId,
                           threadId: effect.threadId,
                           detail: "Provider thread handoff replaced this session binding.",
-                          keepWakes: true,
                         })
                       : Effect.void,
                 ),
