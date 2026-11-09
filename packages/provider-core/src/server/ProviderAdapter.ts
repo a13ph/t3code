@@ -556,7 +556,86 @@ export type ProviderAdapterV2SubagentOutcome = {
   readonly result: OrchestrationV2Subagent["result"];
 };
 
+/**
+ * A wakeup the agent scheduled inside its own process. It lives only as long
+ * as that process, so the session manager hands it to the server before a
+ * release, and the server sends its prompt as a message when it is due.
+ */
+export type ProviderAdapterV2PendingWake =
+  | {
+      readonly kind: "wakeup";
+      /** The tool call that scheduled it. */
+      readonly toolUseId: string;
+      readonly dueAtMs: number;
+      readonly prompt: string;
+      /** Its turn runs now; it is gone once that turn ends. */
+      readonly firing?: true;
+    }
+  | {
+      readonly kind: "cron";
+      /** The job id the agent's scheduler gave it. */
+      readonly jobId: string;
+      /** Five-field cron expression in the server's local time. */
+      readonly cron: string;
+      readonly prompt: string;
+      readonly recurring: boolean;
+      readonly createdAtMs: number;
+      /** The one fire time of a one-shot job; null for a recurring one. */
+      readonly dueAtMs: number | null;
+      /** A one-shot whose turn runs now; it is gone once that turn ends. */
+      readonly firing?: true;
+    };
+
+/** Where a provider process runs: the thread it serves and its native session. */
+export interface ProviderAdapterV2WakeRoute {
+  readonly threadId: ThreadId;
+  readonly providerThreadId: ProviderThreadId;
+  readonly nativeSessionId: string;
+}
+
+/** What the session manager does when a process starts or ends outside a release. */
+export interface ProviderAdapterV2WakeEvents {
+  /**
+   * A process ended while its session stays open (an interrupt, a restart for
+   * new settings): no process holds these wakeups any more.
+   */
+  readonly orphaned: (thread: ProviderAdapterV2WakeThread) => Effect.Effect<void>;
+  /** A process started and resumes the native session, restoring its scheduled jobs. */
+  readonly processStarted: (route: ProviderAdapterV2WakeRoute) => Effect.Effect<void>;
+}
+
+/** One provider thread of a live session, with the wakeups its process holds. */
+export interface ProviderAdapterV2WakeThread {
+  readonly threadId: ThreadId;
+  readonly providerThreadId: ProviderThreadId;
+  /** The provider's own session id, which a resumed process keeps. */
+  readonly nativeSessionId: string;
+  readonly wakes: ReadonlyArray<ProviderAdapterV2PendingWake>;
+  /** When this process last scheduled or stopped a wakeup; null if it never did. */
+  readonly lastWakeupCallAtMs: number | null;
+}
+
 export interface ProviderAdapterV2SessionRuntime {
+  /**
+   * Threads this session ran a process for, with the wakeups each process
+   * holds. Absent for providers whose wakeups do not end with their process.
+   */
+  readonly wakeThreads?: Effect.Effect<ReadonlyArray<ProviderAdapterV2WakeThread>>;
+  /**
+   * Wakeups a resumed process restores by itself (its scheduled jobs), handed
+   * back so that the next release accounts for them again.
+   */
+  readonly adoptWakes?: (
+    nativeSessionId: string,
+    wakes: ReadonlyArray<ProviderAdapterV2PendingWake>,
+  ) => Effect.Effect<void>;
+  /** Hands the runtime the handlers for its processes' wakeup events. */
+  readonly setWakeEvents?: (events: ProviderAdapterV2WakeEvents) => Effect.Effect<void>;
+  /**
+   * True while the provider runs a turn it started on its own (a scheduled
+   * wakeup firing). Such a turn counts as busy for the idle release.
+   */
+  readonly hasActiveSelfStartedTurn?: Effect.Effect<boolean>;
   readonly instanceId: ProviderInstanceId;
   readonly driver: ProviderDriverKind;
   readonly providerSessionId: ProviderSessionId;

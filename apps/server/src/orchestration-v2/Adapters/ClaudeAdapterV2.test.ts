@@ -9176,6 +9176,314 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
+  // What the session manager hears about a CLI's wakeups outside a release.
+  const recordWakeEvents = Effect.fnUntraced(function* (
+    runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime,
+  ) {
+    const orphaned: Array<ProviderAdapter.ProviderAdapterV2WakeThread> = [];
+    const started: Array<ProviderAdapter.ProviderAdapterV2WakeRoute> = [];
+    const orphanSeen = yield* Deferred.make<void>();
+    const setWakeEvents = runtime.setWakeEvents;
+    assert.isDefined(setWakeEvents);
+    if (setWakeEvents !== undefined) {
+      yield* setWakeEvents({
+        orphaned: (thread) =>
+          Effect.sync(() => orphaned.push(thread)).pipe(
+            Effect.andThen(Deferred.succeed(orphanSeen, undefined)),
+            Effect.asVoid,
+          ),
+        processStarted: (route) => Effect.sync(() => started.push(route)),
+      });
+    }
+    return { orphaned, started, orphanSeen };
+  });
+  const scheduleWakeupFrames = (toolUseId: string, delaySeconds: number) => [
+    claudeSdkFrame({
+      type: "assistant",
+      message: {
+        model: "claude-sonnet-4-6",
+        id: `msg_${toolUseId}`,
+        type: "message",
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: toolUseId,
+            name: "ScheduleWakeup",
+            input: { delaySeconds, prompt: "<<autonomous-loop-dynamic>>", reason: "poll" },
+          },
+        ],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
+      },
+      parent_tool_use_id: null,
+      uuid: `00000000-0000-4000-8000-${toolUseId.slice(-12).padStart(12, "0")}`,
+      session_id: WAKE_NATIVE_SESSION,
+    }),
+    claudeSdkFrame({
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: toolUseId,
+            content: `Next wakeup scheduled for 10:10:00 (in ${delaySeconds}s).`,
+          },
+        ],
+      },
+      parent_tool_use_id: null,
+      uuid: `00000000-0000-4000-8001-${toolUseId.slice(-12).padStart(12, "0")}`,
+      session_id: WAKE_NATIVE_SESSION,
+    }),
+  ];
+  const wakeTurnStartedFrame = claudeSdkFrame({
+    type: "command_lifecycle",
+    command_uuid: "00000000-0000-4000-8000-000000026001",
+    state: "started",
+    wakeup_source: "schedule_wakeup",
+    uuid: "00000000-0000-4000-8000-000000026002",
+    session_id: WAKE_NATIVE_SESSION,
+  });
+
+  it.effect("hands over the pending ScheduleWakeup when Stop ends the CLI", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarnessWithOptions({
+          close: (sdkMessages) => Queue.shutdown(sdkMessages),
+        });
+        const recorded = yield* recordWakeEvents(harness.runtime);
+        const now = yield* DateTime.now;
+        const input = makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now,
+          attemptId: RunAttemptId.make("attempt-claude-stop-with-wakeup"),
+          text: "/loop check the deploy",
+          attachments: [],
+        });
+        yield* harness.runtime.startTurn(input);
+        for (const frame of scheduleWakeupFrames("toolu_stop_000000000001", 600)) {
+          yield* harness.offerAndWait(frame);
+        }
+        yield* harness.runtime.interruptTurn({
+          providerThread: harness.providerThread,
+          providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+            driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+            nativeTurnId: `turn:${input.attemptId}`,
+          }),
+        });
+        assert.deepEqual(
+          recorded.orphaned.map((thread) => [
+            thread.threadId,
+            thread.nativeSessionId,
+            thread.wakes.map((wake) => (wake.kind === "wakeup" ? wake.toolUseId : wake.jobId)),
+          ]),
+          [[harness.threadId, WAKE_NATIVE_SESSION, ["toolu_stop_000000000001"]]],
+        );
+        const wakeThreads = harness.runtime.wakeThreads;
+        assert.isDefined(wakeThreads);
+        if (wakeThreads === undefined) return;
+        assert.deepEqual(
+          (yield* wakeThreads).flatMap((thread) => thread.wakes),
+          [],
+        );
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("keeps the wakeup a Stopped wake turn fired from being handed over", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarnessWithOptions({
+          close: (sdkMessages) => Queue.shutdown(sdkMessages),
+        });
+        const recorded = yield* recordWakeEvents(harness.runtime);
+        const now = yield* DateTime.now;
+        const input = makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now,
+          attemptId: RunAttemptId.make("attempt-claude-stop-wake-turn"),
+          text: "/loop check the deploy",
+          attachments: [],
+        });
+        yield* harness.runtime.startTurn(input);
+        for (const frame of scheduleWakeupFrames("toolu_stop_000000000002", 60)) {
+          yield* harness.offerAndWait(frame);
+        }
+        yield* harness.offerAndWait(wakeTurnStartedFrame);
+        yield* harness.runtime.interruptTurn({
+          providerThread: harness.providerThread,
+          providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+            driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+            nativeTurnId: `turn:${input.attemptId}`,
+          }),
+        });
+        assert.deepEqual(recorded.orphaned, []);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
+  it.effect(
+    "keeps the wakeup a wake turn fired from being handed over when Stop restarts the CLI",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarnessWithOptions({
+            close: (sdkMessages) => Queue.shutdown(sdkMessages),
+          });
+          const recorded = yield* recordWakeEvents(harness.runtime);
+          const now = yield* DateTime.now;
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make("attempt-claude-restart-wake-turn"),
+              text: "/loop check the deploy",
+              attachments: [],
+            }),
+          );
+          for (const frame of scheduleWakeupFrames("toolu_restart_000000001", 60)) {
+            yield* harness.offerAndWait(frame);
+          }
+          yield* harness.offerAndWait(
+            makeResultFrame({
+              uuid: "00000000-0000-4000-8000-000000026101",
+              result: "Looping.",
+            }),
+          );
+          const terminal = yield* Queue.take(harness.terminalReceipts);
+          yield* harness.offerAndWait(wakeTurnStartedFrame);
+          yield* harness.runtime.interruptTurn({
+            providerThread: harness.providerThread,
+            providerTurnId: terminal.providerTurnId,
+            requestRuntimeRestart: true,
+          });
+          assert.deepEqual(
+            recorded.orphaned.flatMap((thread) => thread.wakes),
+            [],
+          );
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
+  );
+
+  it.effect("hands over the wakeup a crash cut short, and reports the resumed CLI", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarnessWithOptions({ freshQueueOnReopen: true });
+        const recorded = yield* recordWakeEvents(harness.runtime);
+        const now = yield* DateTime.now;
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make("attempt-claude-crash-wake-turn"),
+            text: "/loop check the deploy",
+            attachments: [],
+          }),
+        );
+        assert.deepEqual(recorded.started, []);
+        for (const frame of scheduleWakeupFrames("toolu_crash_00000000001", 60)) {
+          yield* harness.offerAndWait(frame);
+        }
+        yield* harness.offerAndWait(wakeTurnStartedFrame);
+        yield* Queue.shutdown(harness.sdkMessages);
+        yield* harness.awaitTerminal(1);
+        yield* Deferred.await(recorded.orphanSeen);
+        assert.deepEqual(
+          recorded.orphaned.flatMap((thread) =>
+            thread.wakes.map((wake) => [wake.kind, wake.firing === true]),
+          ),
+          [["wakeup", true]],
+        );
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make("attempt-claude-after-crash"),
+            text: "Go on.",
+            attachments: [],
+            providerTurnOrdinal: 2,
+            nativeThreadHasTurns: true,
+          }),
+        );
+        assert.deepEqual(recorded.started, [
+          {
+            threadId: harness.threadId,
+            providerThreadId: harness.providerThread.id,
+            nativeSessionId: WAKE_NATIVE_SESSION,
+          },
+        ]);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("hands nothing over when the session closes, since its release parks it", () =>
+    Effect.gen(function* () {
+      let recordedOutside: ReadonlyArray<ProviderAdapter.ProviderAdapterV2WakeThread> = [];
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          // A close that ends the stream, as a real CLI's does.
+          const harness = yield* makeWakeHarnessWithOptions({
+            close: (sdkMessages) => Queue.shutdown(sdkMessages),
+          });
+          const recorded = yield* recordWakeEvents(harness.runtime);
+          // The same array, read after the session scope has closed.
+          recordedOutside = recorded.orphaned;
+          const now = yield* DateTime.now;
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make("attempt-claude-release-with-wakeup"),
+              text: "/loop check the deploy",
+              attachments: [],
+            }),
+          );
+          for (const frame of scheduleWakeupFrames("toolu_release_000000001", 600)) {
+            yield* harness.offerAndWait(frame);
+          }
+          const wakeThreads = harness.runtime.wakeThreads;
+          assert.isDefined(wakeThreads);
+          if (wakeThreads === undefined) return;
+          assert.equal((yield* wakeThreads).flatMap((thread) => thread.wakes).length, 1);
+        }),
+      );
+      assert.deepEqual(recordedOutside, []);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+
   it.effect("buffers wake output and requests a single continuation run", () =>
     Effect.scoped(
       Effect.gen(function* () {

@@ -53,10 +53,14 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import { keeperDetachedThreads } from "./Adapters/ClaudeKeeperSpawn.ts";
+import * as ClaudeWakeParkingService from "./ClaudeWakeParkingService.ts";
+import { adoptedWake, type ParkedWake } from "./ClaudeWakeParking.ts";
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_MAX_IDLE_PIN_MS = 4 * 60 * 60 * 1000;
 const RELEASE_SCOPE_CLOSE_TIMEOUT_MS = 30 * 1000;
+/** Parking at shutdown shares the launcher's 5 s deadline with the releases. */
+const SHUTDOWN_WAKE_PARK_TIMEOUT_MS = 1_500;
 const IDLE_TIMEOUT_ENV = "T3_PROVIDER_IDLE_TIMEOUT_MS";
 
 /**
@@ -338,6 +342,8 @@ export const layerWithOptions = (
       /** Unreadable settings must preserve explicit browser-access opt-outs. */
       const serverSettings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
       const projectService = yield* Effect.serviceOption(ProjectService.ProjectService);
+      // Absent in tests that do not wire it: wakeups then end with their process, as before.
+      const wakeParking = yield* Effect.serviceOption(ClaudeWakeParkingService.ClaudeWakeParking);
       const eventSink = yield* EventSink.EventSinkV2;
       const commandOutput = yield* CommandOutputHub.CommandOutputHub;
       const idAllocator = yield* IdAllocator.IdAllocatorV2;
@@ -1029,6 +1035,14 @@ export const layerWithOptions = (
                       input.detail ?? `Provider session released: ${input.reason}.`,
                     );
                   }
+                  // The process ends here, and its wakeups with it. An idle or a
+                  // shutdown release parked them already; an archived or deleted
+                  // thread's rows are dropped at delivery.
+                  if (input.reason === "manual_shutdown" || input.reason === "runtime_error") {
+                    yield* parkWakes(entry.runtime, input.providerSessionId, null).pipe(
+                      Effect.timeoutOption(SHUTDOWN_WAKE_PARK_TIMEOUT_MS),
+                    );
+                  }
                   const closeExit = yield* closeScopeWithin(entry.scope, {
                     providerSessionId: input.providerSessionId,
                     reason: input.reason,
@@ -1106,6 +1120,111 @@ export const layerWithOptions = (
           ),
         );
 
+      /**
+       * Parks the wakeups a runtime's processes hold (ClaudeWakeParkingService).
+       * `idleTimeoutMs` null: the process ends regardless, so nothing is pinned for being due soon.
+       */
+      const parkWakes = (
+        runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime,
+        providerSessionId: ProviderSessionId,
+        idleTimeoutMs: number | null,
+      ): Effect.Effect<ClaudeWakeParkingService.ClaudeWakeParkOutcome> => {
+        if (Option.isNone(wakeParking) || runtime.wakeThreads === undefined) {
+          return Effect.succeed({ type: "none" });
+        }
+        const parking = wakeParking.value;
+        return runtime.wakeThreads.pipe(
+          Effect.flatMap((threads) =>
+            threads.length === 0
+              ? Effect.succeed<ClaudeWakeParkingService.ClaudeWakeParkOutcome>({ type: "none" })
+              : parking.parkBeforeRelease({ threads, idleTimeoutMs }),
+          ),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("orchestration-v2.driver-session.wake-probe-failed", {
+              providerSessionId,
+              cause,
+            }).pipe(
+              Effect.as<ClaudeWakeParkingService.ClaudeWakeParkOutcome>({
+                type: "pin",
+                reason: "the wakeup probe failed",
+              }),
+            ),
+          ),
+        );
+      };
+
+      /**
+       * A process started and resumed its provider session, which restores its
+       * scheduled jobs by itself: they leave the parked table and go back to
+       * the runtime, so the next release parks them again.
+       */
+      const adoptParkedWakes = (
+        runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime,
+        route: ProviderAdapter.ProviderAdapterV2WakeRoute,
+      ): Effect.Effect<void> => {
+        const adopt = runtime.adoptWakes;
+        const threadId = route.threadId;
+        if (Option.isNone(wakeParking) || adopt === undefined) return Effect.void;
+        return wakeParking.value.processStarted(route).pipe(
+          Effect.flatMap((rows) => {
+            const bySession = new Map<
+              string,
+              Array<ProviderAdapter.ProviderAdapterV2PendingWake>
+            >();
+            for (const row of rows) {
+              const wake = adoptedWake(row);
+              if (wake === null) continue;
+              bySession.set(row.nativeSessionId, [
+                ...(bySession.get(row.nativeSessionId) ?? []),
+                wake,
+              ]);
+            }
+            return Effect.forEach(
+              bySession,
+              ([nativeSessionId, wakes]) => adopt(nativeSessionId, wakes),
+              {
+                discard: true,
+              },
+            );
+          }),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("orchestration-v2.driver-session.wake-adopt-failed", {
+              threadId,
+              cause,
+            }),
+          ),
+        );
+      };
+
+      /** Parks what an ended process held and hands a started one its jobs. */
+      const wireWakeEvents = (
+        runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime,
+      ): Effect.Effect<void> => {
+        const setWakeEvents = runtime.setWakeEvents;
+        if (Option.isNone(wakeParking) || setWakeEvents === undefined) return Effect.void;
+        const parking = wakeParking.value;
+        return setWakeEvents({
+          orphaned: (thread) => parking.parkOrphaned(thread),
+          processStarted: (route) => adoptParkedWakes(runtime, route),
+        });
+      };
+
+      // What a thread's live process holds now, for the parked-wakeup delivery.
+      if (Option.isSome(wakeParking)) {
+        yield* wakeParking.value.setLiveWakeProbe((threadId) =>
+          Effect.gen(function* () {
+            for (const entry of (yield* Ref.get(sessions)).values()) {
+              if (entry.runtime.wakeThreads === undefined) continue;
+              if (![...entry.attachedThreadIds].some((id) => String(id) === threadId)) continue;
+              const threads = yield* entry.runtime.wakeThreads;
+              const live = threads.find((thread) => String(thread.threadId) === threadId);
+              if (live !== undefined) return live;
+            }
+            return null;
+          }),
+        );
+      }
+
       const releaseIfStillIdle = Effect.fn("ProviderSessionManager.releaseIfStillIdle")(
         function* (input: {
           readonly providerSessionId: ProviderSessionId;
@@ -1123,13 +1242,32 @@ export const layerWithOptions = (
           }
           // Capture runtime identity before yielding; replacements can reuse the session id.
           const probedRuntime = entry.runtime;
+          // A turn the provider started on its own (a wakeup firing) keeps the
+          // process like background work does, within the same pin budget: its
+          // end can go unseen, and a stuck flag must not hold the process forever.
+          const selfStartedTurn =
+            probedRuntime.hasActiveSelfStartedTurn === undefined
+              ? false
+              : yield* probedRuntime.hasActiveSelfStartedTurn.pipe(
+                  Effect.catchCause(() => Effect.succeed(false)),
+                );
           const hasPendingWork =
-            probedRuntime.hasPendingBackgroundWork === undefined
+            selfStartedTurn ||
+            (probedRuntime.hasPendingBackgroundWork === undefined
               ? false
               : yield* probedRuntime.hasPendingBackgroundWork.pipe(
                   Effect.catchCause(() => Effect.succeed(false)),
-                );
-          if (hasPendingWork) {
+                ));
+          // Wakeups the process holds: parked in T3 before the release, or the
+          // process is kept (pinned) when one is due soon or parking failed.
+          let parkedWakes: ReadonlyArray<ParkedWake> = [];
+          let wakePin: string | null = null;
+          if (!hasPendingWork) {
+            const parked = yield* parkWakes(probedRuntime, input.providerSessionId, idleTimeoutMs);
+            if (parked.type === "pin") wakePin = parked.reason;
+            if (parked.type === "parked") parkedWakes = parked.rows;
+          }
+          if (hasPendingWork || wakePin !== null) {
             const now = yield* Clock.currentTimeMillis;
             const pinnedSinceMs = entry.pinnedSinceMs ?? now;
             if (now - pinnedSinceMs < maxIdlePinMs) {
@@ -1153,6 +1291,7 @@ export const layerWithOptions = (
               yield* Effect.logInfo("orchestration-v2.driver-session.idle-release-deferred", {
                 providerSessionId: input.providerSessionId,
                 pinnedForMs: now - pinnedSinceMs,
+                ...(wakePin === null ? {} : { wakePin }),
               });
               // Recheck on this fiber; scheduleIdleReleaseInternal would interrupt it and self-deadlock.
               yield* Effect.sleep(Duration.millis(idleTimeoutMs));
@@ -1162,6 +1301,9 @@ export const layerWithOptions = (
               providerSessionId: input.providerSessionId,
               pinnedForMs: now - pinnedSinceMs,
             });
+            // The process ends either way now: park whatever can be parked.
+            const forced = yield* parkWakes(probedRuntime, input.providerSessionId, null);
+            if (forced.type === "parked") parkedWakes = forced.rows;
           }
           // Adapter probes yield; guard busyTurns and idleGeneration atomically when removing the entry.
           yield* releaseEntry({
@@ -1177,6 +1319,15 @@ export const layerWithOptions = (
               }),
             ),
           );
+          // A turn arrived between parking and the release, so the process lives
+          // on and still holds its wakeups: give back what was parked for it.
+          if (
+            parkedWakes.length > 0 &&
+            Option.isSome(wakeParking) &&
+            (yield* Ref.get(sessions)).get(key)?.runtime === probedRuntime
+          ) {
+            yield* wakeParking.value.undoPark(parkedWakes);
+          }
         },
       );
 
@@ -2032,6 +2183,32 @@ export const layerWithOptions = (
         );
       };
 
+      // A CLI that t3-keeper keeps mid-turn is taken up again by the next server,
+      // wakeups and all; every other one ends, so its wakeups are parked first.
+      const parkWakesAtShutdown = (entry: LiveSessionEntry) => {
+        const detached = keeperDetachedThreads();
+        const continuesInKeeper = [...entry.attachedThreadIds].some(
+          (threadId) => (detached.get(threadId)?.adapterState ?? null) !== null,
+        );
+        if (continuesInKeeper) {
+          // The next server reattaches it with no memory of its wakeup calls, so a
+          // parked wakeup it replaced is dropped now, or it would be sent as well.
+          const wakeThreads = entry.runtime.wakeThreads;
+          if (Option.isNone(wakeParking) || wakeThreads === undefined) return Effect.void;
+          const parking = wakeParking.value;
+          return wakeThreads.pipe(
+            Effect.flatMap((threads) => parking.dropSuperseded(threads)),
+            Effect.timeoutOption(SHUTDOWN_WAKE_PARK_TIMEOUT_MS),
+            Effect.catchCause(() => Effect.void),
+            Effect.asVoid,
+          );
+        }
+        return parkWakes(entry.runtime, entry.runtime.providerSessionId, null).pipe(
+          Effect.timeoutOption(SHUTDOWN_WAKE_PARK_TIMEOUT_MS),
+          Effect.asVoid,
+        );
+      };
+
       // Shutdown must fit the launcher's 5 s deadline with up to 15 sessions.
       const sessionScopes = yield* Scope.make("parallel");
       const shutdown = Effect.gen(function* () {
@@ -2039,10 +2216,13 @@ export const layerWithOptions = (
         yield* Effect.forEach(
           activeSessions,
           (entry) =>
-            releaseEntry({
-              providerSessionId: entry.runtime.providerSessionId,
-              reason: "server_shutdown",
-            }).pipe(
+            parkWakesAtShutdown(entry).pipe(
+              Effect.andThen(
+                releaseEntry({
+                  providerSessionId: entry.runtime.providerSessionId,
+                  reason: "server_shutdown",
+                }),
+              ),
               Effect.catchCause((cause) =>
                 Effect.logWarning("orchestration-v2.driver-session.shutdown-release-failed", {
                   providerSessionId: entry.runtime.providerSessionId,
@@ -2232,6 +2412,7 @@ export const layerWithOptions = (
               );
               yield* startEventPump(entry);
               yield* scheduleIdleRelease(input.providerSessionId);
+              yield* wireWakeEvents(runtime);
               return exposedRuntime;
             }),
           ),
