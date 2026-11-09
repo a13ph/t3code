@@ -10,7 +10,6 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { TestClock } from "effect/testing";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
-import { LATE_DELIVERY_LIMIT_MS } from "./ClaudeWakeParking.ts";
 import * as ClaudeWakeParkingService from "./ClaudeWakeParkingService.ts";
 
 const MINUTE = 60_000;
@@ -41,6 +40,22 @@ const thread = (
   nativeSessionId: "session-a",
   wakes,
   lastWakeupCallAtMs,
+});
+
+const route = (nativeSessionId: string) => ({
+  threadId: ThreadId.make("thread-wake-service"),
+  providerThreadId: ProviderThreadId.make("provider-thread-wake-service"),
+  nativeSessionId,
+});
+
+const cronJob = (jobId: string, cron: string, recurring: boolean, dueAtMs: number | null) => ({
+  kind: "cron" as const,
+  jobId,
+  cron,
+  prompt: `job ${jobId}`,
+  recurring,
+  createdAtMs: NOW - MINUTE,
+  dueAtMs,
 });
 
 const loopWakeup = (dueAtMs: number, toolUseId = "toolu_1") => ({
@@ -184,7 +199,7 @@ it.effect("hands a resumed session its scheduled jobs and still sends its Schedu
           idleTimeoutMs: IDLE,
         });
         assert.equal(yield* parkedRowCount, 2);
-        const adopted = yield* service.threadOpened("thread-wake-service");
+        const adopted = yield* service.processStarted(route("session-a"));
         assert.deepEqual(
           adopted.map((row) => row.jobId),
           ["f851d733"],
@@ -369,7 +384,7 @@ it.effect("gives nothing back when the release did not happen", () =>
   }).pipe(Effect.scoped, Effect.provide(SqlitePersistence.layerMemory)),
 );
 
-it.effect("keeps parked wakeups across a restart, and drops one found long overdue", () =>
+it.effect("keeps parked wakeups across a restart, and sends one found overdue at once", () =>
   Effect.gen(function* () {
     yield* TestClock.setTime(NOW);
     yield* withService(({ service }) =>
@@ -377,24 +392,137 @@ it.effect("keeps parked wakeups across a restart, and drops one found long overd
         threads: [
           thread([loopWakeup(NOW + 30 * MINUTE)]),
           {
-            ...thread([loopWakeup(NOW + 120 * MINUTE, "toolu_y")]),
+            ...thread([loopWakeup(NOW + 300 * MINUTE, "toolu_y")]),
             threadId: ThreadId.make("thread-later"),
           },
         ],
         idleTimeoutMs: IDLE,
       }),
     );
-    // The server is down past the first wakeup's due time by more than the late limit.
-    yield* TestClock.setTime(NOW + 30 * MINUTE + LATE_DELIVERY_LIMIT_MS + MINUTE);
+    // The server is down for hours past the first wakeup's due time.
+    yield* TestClock.setTime(NOW + 240 * MINUTE);
     yield* withService(({ offers }) =>
       Effect.gen(function* () {
-        assert.deepEqual(yield* Ref.get(offers), []);
-        assert.equal(yield* parkedRowCount, 1);
-        yield* advance(120 * MINUTE);
         assert.deepEqual(
           (yield* Ref.get(offers)).map((offer) => offer.threadId),
-          ["thread-later"],
+          ["thread-wake-service"],
         );
+        assert.equal(yield* parkedRowCount, 1);
+        yield* advance(60 * MINUTE);
+        assert.deepEqual(
+          (yield* Ref.get(offers)).map((offer) => offer.threadId),
+          ["thread-wake-service", "thread-later"],
+        );
+      }),
+    );
+  }).pipe(Effect.scoped, Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("sends a recurring job that missed several matches once, then at its next match", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(NOW);
+    yield* withService(({ service }) =>
+      service.parkBeforeRelease({
+        threads: [thread([cronJob("0a1b2c3d", "*/15 * * * *", true, null)])],
+        idleTimeoutMs: IDLE,
+      }),
+    );
+    yield* TestClock.setTime(NOW + 127 * MINUTE);
+    yield* withService(({ offers }) =>
+      Effect.gen(function* () {
+        assert.equal((yield* Ref.get(offers)).length, 1);
+        yield* advance(7 * MINUTE);
+        assert.equal((yield* Ref.get(offers)).length, 1);
+        yield* advance(MINUTE);
+        assert.equal((yield* Ref.get(offers)).length, 2);
+      }),
+    );
+  }).pipe(Effect.scoped, Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("drops a parked row the thread's live process still holds, wakeup or job", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(NOW);
+    yield* withService(({ service, offers }) =>
+      Effect.gen(function* () {
+        const held = [
+          loopWakeup(NOW + 30 * MINUTE),
+          cronJob("0a1b2c3d", "*/15 * * * *", true, null),
+        ];
+        yield* service.parkBeforeRelease({ threads: [thread(held)], idleTimeoutMs: IDLE });
+        assert.equal(yield* parkedRowCount, 2);
+        // The park was not undone, and the live process scheduled nothing since.
+        yield* service.setLiveWakeProbe(() => Effect.succeed(thread(held, NOW - MINUTE)));
+        yield* advance(30 * MINUTE);
+        assert.deepEqual(yield* Ref.get(offers), []);
+        assert.equal(yield* parkedRowCount, 0);
+      }),
+    );
+  }).pipe(Effect.scoped, Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("parks the wakeups of a process ended in a live session, an overdue one due now", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(NOW);
+    yield* withService(({ service, offers }) =>
+      Effect.gen(function* () {
+        yield* service.parkOrphaned(thread([loopWakeup(NOW - MINUTE)]));
+        yield* settle;
+        assert.deepEqual(
+          (yield* Ref.get(offers)).map((offer) => offer.detail),
+          ["/loop"],
+        );
+        yield* service.parkOrphaned(thread([loopWakeup(NOW + 2 * MINUTE, "toolu_2")]));
+        assert.equal(yield* parkedRowCount, 1);
+        yield* advance(2 * MINUTE);
+        assert.equal((yield* Ref.get(offers)).length, 2);
+        assert.equal(yield* parkedRowCount, 0);
+      }),
+    );
+  }).pipe(Effect.scoped, Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("adopts only the started session's jobs, and sends what its resume skips", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(NOW);
+    yield* withService(({ service, offers }) =>
+      Effect.gen(function* () {
+        // Rows written behind the delivery loop's back: due, and not yet sent.
+        const sql = yield* SqlClient.SqlClient;
+        const insert = (wakeId: string, session: string, jobId: string, recurring: number) => sql`
+          INSERT INTO claude_parked_wakes (
+            wake_id, thread_id, provider_thread_id, native_session_id, kind,
+            job_id, cron, prompt, recurring, created_at_ms, due_at_ms, parked_at_ms
+          ) VALUES (
+            ${wakeId}, 'thread-wake-service', 'provider-thread-wake-service', ${session},
+            'cron', ${jobId}, '*/15 * * * *', ${`job ${jobId}`}, ${recurring},
+            ${NOW - 30 * MINUTE}, ${NOW - MINUTE}, ${NOW - 30 * MINUTE}
+          )
+        `;
+        yield* insert("session-a:cron:recur", "session-a", "recur", 1).pipe(Effect.orDie);
+        yield* insert("session-a:cron:once", "session-a", "once", 0).pipe(Effect.orDie);
+        yield* insert("session-b:cron:other", "session-b", "other", 1).pipe(Effect.orDie);
+        // A fresh process of another session takes none of them.
+        assert.deepEqual(yield* service.processStarted(route("session-c")), []);
+        assert.deepEqual(yield* Ref.get(offers), []);
+        const adopted = yield* service.processStarted(route("session-a"));
+        assert.deepEqual(
+          adopted.map((row) => row.jobId),
+          ["recur"],
+        );
+        // The recurring match passed with no process: sent once by the adopt.
+        assert.deepEqual(
+          (yield* Ref.get(offers)).map((offer) => offer.detail),
+          ["job recur"],
+        );
+        // The due one-shot, which a resume drops, stays parked and is sent.
+        yield* settle;
+        assert.deepEqual((yield* Ref.get(offers)).map((offer) => offer.detail).sort(), [
+          "job once",
+          "job other",
+          "job recur",
+        ]);
+        assert.equal(yield* parkedRowCount, 1);
       }),
     );
   }).pipe(Effect.scoped, Effect.provide(SqlitePersistence.layerMemory)),

@@ -568,6 +568,8 @@ export type ProviderAdapterV2PendingWake =
       readonly toolUseId: string;
       readonly dueAtMs: number;
       readonly prompt: string;
+      /** Its turn runs now; it is gone once that turn ends. */
+      readonly firing?: true;
     }
   | {
       readonly kind: "cron";
@@ -580,7 +582,27 @@ export type ProviderAdapterV2PendingWake =
       readonly createdAtMs: number;
       /** The one fire time of a one-shot job; null for a recurring one. */
       readonly dueAtMs: number | null;
+      /** A one-shot whose turn runs now; it is gone once that turn ends. */
+      readonly firing?: true;
     };
+
+/** Where a provider process runs: the thread it serves and its native session. */
+export interface ProviderAdapterV2WakeRoute {
+  readonly threadId: ThreadId;
+  readonly providerThreadId: ProviderThreadId;
+  readonly nativeSessionId: string;
+}
+
+/** What the session manager does when a process starts or ends outside a release. */
+export interface ProviderAdapterV2WakeEvents {
+  /**
+   * A process ended while its session stays open (an interrupt, a restart for
+   * new settings): no process holds these wakeups any more.
+   */
+  readonly orphaned: (thread: ProviderAdapterV2WakeThread) => Effect.Effect<void>;
+  /** A process started and resumes the native session, restoring its scheduled jobs. */
+  readonly processStarted: (route: ProviderAdapterV2WakeRoute) => Effect.Effect<void>;
+}
 
 /** One provider thread of a live session, with the wakeups its process holds. */
 export interface ProviderAdapterV2WakeThread {
@@ -607,6 +629,8 @@ export interface ProviderAdapterV2SessionRuntime {
     nativeSessionId: string,
     wakes: ReadonlyArray<ProviderAdapterV2PendingWake>,
   ) => Effect.Effect<void>;
+  /** Hands the runtime the handlers for its processes' wakeup events. */
+  readonly setWakeEvents?: (events: ProviderAdapterV2WakeEvents) => Effect.Effect<void>;
   /**
    * True while the provider runs a turn it started on its own (a scheduled
    * wakeup firing). Such a turn counts as busy for the idle release.

@@ -64,12 +64,22 @@ export interface ClaudeWakeParkingShape {
     threads: ReadonlyArray<ProviderAdapter.ProviderAdapterV2WakeThread>,
   ) => Effect.Effect<void>;
   /**
-   * A session opened for the thread, so its next process resumes the Claude
-   * session and restores the scheduled jobs itself. Returns those jobs, which
-   * leave the table; parked ScheduleWakeup calls stay.
+   * A process ended while its session stays open: park its wakeups now, an
+   * overdue one due now, since no process will fire them.
    */
-  readonly threadOpened: (threadId: string) => Effect.Effect<ReadonlyArray<Parking.ParkedWake>>;
-  /** Lets delivery skip a parked wakeup a live process has replaced. */
+  readonly parkOrphaned: (
+    thread: ProviderAdapter.ProviderAdapterV2WakeThread,
+  ) => Effect.Effect<void>;
+  /**
+   * A process started and resumes this native session, which restores its
+   * scheduled jobs itself. Returns those jobs, which leave the table. Parked
+   * ScheduleWakeup calls stay, and so does a one-shot already due, which the
+   * resume drops.
+   */
+  readonly processStarted: (
+    route: ProviderAdapter.ProviderAdapterV2WakeRoute,
+  ) => Effect.Effect<ReadonlyArray<Parking.ParkedWake>>;
+  /** Lets delivery skip a parked wakeup a live process replaced or still holds. */
   readonly setLiveWakeProbe: (probe: LiveWakeProbe) => Effect.Effect<void>;
 }
 
@@ -234,44 +244,37 @@ export const layer = Layer.effect(
         },
       });
 
-    const isSuperseded = (row: Parking.ParkedWake) =>
-      row.kind !== "wakeup"
-        ? Effect.succeed(false)
-        : Ref.get(liveProbe).pipe(
-            Effect.flatMap((probe) => probe(row.threadId)),
-            Effect.map(
-              (live) =>
-                live !== null &&
-                Parking.supersededWakeups([row], live.lastWakeupCallAtMs).length > 0,
-            ),
-            Effect.catchCause(() => Effect.succeed(false)),
-          );
+    /** Not T3's to send: a live process replaced it, or still holds it and fires it itself. */
+    const notOurs = (row: Parking.ParkedWake) =>
+      Ref.get(liveProbe).pipe(
+        Effect.flatMap((probe) => probe(row.threadId)),
+        Effect.map(
+          (live) =>
+            live !== null &&
+            (Parking.supersededWakeups([row], live.lastWakeupCallAtMs).length > 0 ||
+              Parking.heldByLiveProcess(row, live)),
+        ),
+        Effect.catchCause(() => Effect.succeed(false)),
+      );
 
     /** Sends every due row once and moves or removes it. Under the lock. */
     const deliverDue = Effect.fn("ClaudeWakeParking.deliverDue")(function* () {
       const now = yield* Clock.currentTimeMillis;
       for (const row of yield* dueRows(now)) {
-        const plan = Parking.planDelivery(row, now);
-        // Move or remove first: a crash after the send must not send it again.
-        if (plan.nextDueAtMs === null) {
+        if (yield* notOurs(row)) {
           yield* deleteRows([row.wakeId]);
-        } else {
-          yield* moveRow(row.wakeId, plan.nextDueAtMs);
-        }
-        if (yield* isSuperseded(row)) {
           yield* Effect.logInfo("orchestration-v2.claude-wake.superseded", {
             threadId: row.threadId,
             wakeId: row.wakeId,
           });
           continue;
         }
-        if (!plan.send) {
-          yield* Effect.logWarning("orchestration-v2.claude-wake.too-late", {
-            threadId: row.threadId,
-            wakeId: row.wakeId,
-            dueAtMs: row.dueAtMs,
-          });
-          continue;
+        const nextDueAtMs = Parking.nextDueAfterDelivery(row, now);
+        // Move or remove first: a crash after the send must not send it again.
+        if (nextDueAtMs === null) {
+          yield* deleteRows([row.wakeId]);
+        } else {
+          yield* moveRow(row.wakeId, nextDueAtMs);
         }
         yield* offerMessage(row);
         yield* Effect.logInfo("orchestration-v2.claude-wake.delivered", {
@@ -427,29 +430,69 @@ export const layer = Layer.effect(
         ),
     );
 
-    const threadOpened = Effect.fn("ClaudeWakeParking.threadOpened")(
-      function* (threadId: string) {
+    const parkOrphaned = Effect.fn("ClaudeWakeParking.parkOrphaned")(
+      function* (thread: ProviderAdapter.ProviderAdapterV2WakeThread) {
+        if (!tableReady) return;
+        const now = yield* Clock.currentTimeMillis;
+        const plan = Parking.planPark({ threads: [thread], nowMs: now, sendOverdue: true });
+        if (plan.type === "none" || plan.rows.length === 0) return;
+        yield* lock.withPermits(1)(insertRows(plan.rows));
+        yield* Effect.logInfo("orchestration-v2.claude-wake.parked-orphans", {
+          threadId: String(thread.threadId),
+          count: plan.rows.length,
+        });
+        yield* signal;
+      },
+      (effect) =>
+        effect.pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("orchestration-v2.claude-wake.park-orphans-failed", {
+              detail: error.detail,
+              cause: error.cause,
+            }),
+          ),
+        ),
+    );
+
+    const processStarted = Effect.fn("ClaudeWakeParking.processStarted")(
+      function* (route: ProviderAdapter.ProviderAdapterV2WakeRoute) {
         if (!tableReady) return [] as ReadonlyArray<Parking.ParkedWake>;
+        const now = yield* Clock.currentTimeMillis;
         const adopted = yield* lock.withPermits(1)(
-          rowsForThreads([threadId]).pipe(
-            Effect.map((rows) => rows.filter((row) => row.kind === "cron")),
+          rowsForThreads([String(route.threadId)]).pipe(
+            Effect.map((rows) =>
+              rows.filter(
+                (row) =>
+                  row.kind === "cron" &&
+                  row.nativeSessionId === route.nativeSessionId &&
+                  (row.recurring || row.dueAtMs > now),
+              ),
+            ),
             Effect.tap((jobs) => deleteRows(jobs.map((row) => row.wakeId))),
+            // The resume skips a recurring match that passed while no process ran.
+            Effect.tap((jobs) =>
+              Effect.forEach(
+                jobs.filter((row) => row.dueAtMs <= now),
+                (row) => offerMessage(row),
+                { discard: true },
+              ),
+            ),
           ),
         );
         if (adopted.length > 0) {
           yield* Effect.logInfo("orchestration-v2.claude-wake.adopted", {
-            threadId,
+            threadId: String(route.threadId),
             count: adopted.length,
           });
           yield* signal;
         }
         return adopted;
       },
-      (effect, threadId) =>
+      (effect, route) =>
         effect.pipe(
           Effect.catch((error) =>
             Effect.logWarning("orchestration-v2.claude-wake.adopt-failed", {
-              threadId,
+              threadId: String(route.threadId),
               detail: error.detail,
               cause: error.cause,
             }).pipe(Effect.as([] as ReadonlyArray<Parking.ParkedWake>)),
@@ -463,7 +506,8 @@ export const layer = Layer.effect(
       parkBeforeRelease,
       undoPark,
       dropSuperseded,
-      threadOpened,
+      parkOrphaned,
+      processStarted,
       setLiveWakeProbe,
     });
   }),
