@@ -36,7 +36,9 @@ const toolResult = (id: string, content: unknown, isError = false) => ({
   type: "user",
   parent_tool_use_id: null,
   message: {
-    content: [{ type: "tool_result", tool_use_id: id, content, ...(isError ? { is_error: true } : {}) }],
+    content: [
+      { type: "tool_result", tool_use_id: id, content, ...(isError ? { is_error: true } : {}) },
+    ],
   },
 });
 const lifecycle = (state: string, extra: Record<string, unknown> = {}) => ({
@@ -53,10 +55,7 @@ const scheduleWakeup = (
   prompt = "<<autonomous-loop-dynamic>>",
 ) => {
   tracker.observe(toolUse(id, "ScheduleWakeup", { delaySeconds, prompt, reason: "poll" }), at);
-  tracker.observe(
-    toolResult(id, `Next wakeup scheduled for 10:10:00 (in ${delaySeconds}s).`),
-    at,
-  );
+  tracker.observe(toolResult(id, `Next wakeup scheduled for 10:10:00 (in ${delaySeconds}s).`), at);
 };
 
 const thread = (
@@ -98,10 +97,14 @@ describe("tool result parsing", () => {
 
   it("reads the job id of one-shot and recurring CronCreate results", () => {
     expect(
-      parseCronCreateJobId("Scheduled one-shot task f851d733 (at 23:59 on 31 Dec). Next run: soon."),
+      parseCronCreateJobId(
+        "Scheduled one-shot task f851d733 (at 23:59 on 31 Dec). Next run: soon.",
+      ),
     ).toBe("f851d733");
     expect(
-      parseCronCreateJobId("Scheduled recurring job 0a1b2c3d (every 5 minutes). Auto-expires after 7 days."),
+      parseCronCreateJobId(
+        "Scheduled recurring job 0a1b2c3d (every 5 minutes). Auto-expires after 7 days.",
+      ),
     ).toBe("0a1b2c3d");
     expect(parseCronCreateJobId("Something else")).toBeNull();
   });
@@ -115,7 +118,10 @@ describe("wake tracker", () => {
   it("records a ScheduleWakeup due relative to the result's arrival, once", () => {
     const tracker = makeClaudeWakeTracker();
     tracker.observe(
-      toolUse("toolu_1", "ScheduleWakeup", { delaySeconds: 600, prompt: "<<autonomous-loop-dynamic>>" }),
+      toolUse("toolu_1", "ScheduleWakeup", {
+        delaySeconds: 600,
+        prompt: "<<autonomous-loop-dynamic>>",
+      }),
       NOW - 5_000,
     );
     const result = toolResult("toolu_1", "Next wakeup scheduled for 10:10:00 (in 600s).");
@@ -156,7 +162,10 @@ describe("wake tracker", () => {
     expect(tracker.lastWakeupCallAtMs()).toBeNull();
     scheduleWakeup(tracker, "toolu_1", 60, NOW);
     tracker.observe(toolUse("toolu_c", "CronCreate", { cron: "*/5 * * * *", prompt: "poll" }), NOW);
-    tracker.observe(toolResult("toolu_c", "Scheduled recurring job 0a1b2c3d (every 5 minutes)."), NOW);
+    tracker.observe(
+      toolResult("toolu_c", "Scheduled recurring job 0a1b2c3d (every 5 minutes)."),
+      NOW,
+    );
     tracker.observe(toolUse("toolu_2", "ScheduleWakeup", { stop: true }), NOW + MINUTE);
     tracker.observe(toolResult("toolu_2", [{ type: "text", text: "Loop stopped." }]), NOW + MINUTE);
     expect(tracker.wakes().map((wake) => wake.kind)).toEqual(["cron"]);
@@ -173,18 +182,27 @@ describe("wake tracker", () => {
   it("records session CronCreate jobs, drops them on CronDelete, and leaves durable jobs alone", () => {
     const tracker = makeClaudeWakeTracker();
     tracker.observe(
-      toolUse("toolu_c1", "CronCreate", { cron: "59 23 31 12 *", prompt: "say PING", recurring: false }),
+      toolUse("toolu_c1", "CronCreate", {
+        cron: "59 23 31 12 *",
+        prompt: "say PING",
+        recurring: false,
+      }),
       NOW,
     );
     tracker.observe(
-      toolResult("toolu_c1", [{ type: "text", text: "Scheduled one-shot task f851d733 (at 23:59 on 31 Dec)." }]),
+      toolResult("toolu_c1", [
+        { type: "text", text: "Scheduled one-shot task f851d733 (at 23:59 on 31 Dec)." },
+      ]),
       NOW,
     );
     tracker.observe(
       toolUse("toolu_c2", "CronCreate", { cron: "*/5 * * * *", prompt: "poll", durable: true }),
       NOW,
     );
-    tracker.observe(toolResult("toolu_c2", "Scheduled recurring job 0a1b2c3d (every 5 minutes)."), NOW);
+    tracker.observe(
+      toolResult("toolu_c2", "Scheduled recurring job 0a1b2c3d (every 5 minutes)."),
+      NOW,
+    );
     expect(tracker.wakes()).toEqual([
       {
         kind: "cron",
@@ -216,7 +234,10 @@ describe("wake tracker", () => {
 
   it("ends a wake turn on its result frame when no completed frame comes", () => {
     const tracker = makeClaudeWakeTracker();
-    tracker.observe(lifecycle("started", { command_uuid: "c1", wakeup_source: "schedule_wakeup" }), NOW);
+    tracker.observe(
+      lifecycle("started", { command_uuid: "c1", wakeup_source: "schedule_wakeup" }),
+      NOW,
+    );
     expect(tracker.wakeTurnActive()).toBe(true);
     tracker.observe({ type: "result", subtype: "success" }, NOW + MINUTE);
     expect(tracker.wakeTurnActive()).toBe(false);
@@ -255,9 +276,15 @@ describe("wake tracker", () => {
 
 describe("cron matching", () => {
   it("finds the next local minute matching each field", () => {
-    expect(nextCronMatch("59 23 31 12 *", local(2026, 6, 15, 10, 7))).toBe(local(2026, 12, 31, 23, 59));
-    expect(nextCronMatch("*/15 * * * *", local(2026, 6, 15, 10, 7))).toBe(local(2026, 6, 15, 10, 15));
-    expect(nextCronMatch("0 9-17/4 * * *", local(2026, 6, 15, 10, 7))).toBe(local(2026, 6, 15, 13, 0));
+    expect(nextCronMatch("59 23 31 12 *", local(2026, 6, 15, 10, 7))).toBe(
+      local(2026, 12, 31, 23, 59),
+    );
+    expect(nextCronMatch("*/15 * * * *", local(2026, 6, 15, 10, 7))).toBe(
+      local(2026, 6, 15, 10, 15),
+    );
+    expect(nextCronMatch("0 9-17/4 * * *", local(2026, 6, 15, 10, 7))).toBe(
+      local(2026, 6, 15, 13, 0),
+    );
     expect(nextCronMatch("30 8 * 1,7 *", local(2026, 6, 15, 10, 7))).toBe(local(2026, 7, 1, 8, 30));
   });
 
@@ -285,10 +312,18 @@ describe("parking", () => {
   it("pins when the earliest wakeup is due before the next idle check plus the lead time", () => {
     const idleTimeoutMs = 5 * MINUTE;
     expect(
-      decideIdleRelease({ earliestDueMs: NOW + idleTimeoutMs + WAKE_LEAD_MS, nowMs: NOW, idleTimeoutMs }),
+      decideIdleRelease({
+        earliestDueMs: NOW + idleTimeoutMs + WAKE_LEAD_MS,
+        nowMs: NOW,
+        idleTimeoutMs,
+      }),
     ).toBe("pin");
     expect(
-      decideIdleRelease({ earliestDueMs: NOW + idleTimeoutMs + WAKE_LEAD_MS + 1, nowMs: NOW, idleTimeoutMs }),
+      decideIdleRelease({
+        earliestDueMs: NOW + idleTimeoutMs + WAKE_LEAD_MS + 1,
+        nowMs: NOW,
+        idleTimeoutMs,
+      }),
     ).toBe("park");
   });
 
@@ -367,7 +402,12 @@ describe("parking", () => {
 
   it("finds a parked wakeup that a later process replaced or stopped", () => {
     const row = parked({ parkedAtMs: NOW });
-    const job = parked({ wakeId: "session-a:cron:a1", kind: "cron", jobId: "a1", cron: "*/5 * * * *" });
+    const job = parked({
+      wakeId: "session-a:cron:a1",
+      kind: "cron",
+      jobId: "a1",
+      cron: "*/5 * * * *",
+    });
     expect(supersededWakeups([row, job], null)).toEqual([]);
     expect(supersededWakeups([row, job], NOW - 1)).toEqual([]);
     expect(supersededWakeups([row, job], NOW + MINUTE)).toEqual([row]);
@@ -410,7 +450,12 @@ describe("delivery", () => {
     expect(adoptedWake(parked({}))).toBeNull();
     expect(
       adoptedWake(
-        parked({ kind: "cron", jobId: "b2", cron: "59 23 31 12 *", dueAtMs: local(2026, 12, 31, 23, 59) }),
+        parked({
+          kind: "cron",
+          jobId: "b2",
+          cron: "59 23 31 12 *",
+          dueAtMs: local(2026, 12, 31, 23, 59),
+        }),
       ),
     ).toEqual({
       kind: "cron",

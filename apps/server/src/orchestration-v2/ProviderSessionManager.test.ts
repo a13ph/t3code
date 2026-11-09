@@ -339,7 +339,9 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
     readonly hasPendingBackgroundWorkForThread?: Effect.Effect<boolean>;
     readonly hasActiveSelfStartedTurn?: Effect.Effect<boolean>;
-    readonly wakeThreads?: Effect.Effect<ReadonlyArray<ProviderAdapter.ProviderAdapterV2WakeThread>>;
+    readonly wakeThreads?: Effect.Effect<
+      ReadonlyArray<ProviderAdapter.ProviderAdapterV2WakeThread>
+    >;
     readonly adoptWakes?: ProviderAdapter.ProviderAdapterV2SessionRuntime["adoptWakes"];
     readonly backgroundTasksEndWithProcess?: boolean;
     readonly hangSessionScopeClose?: boolean;
@@ -3828,7 +3830,9 @@ it.effect(
 
         yield* TestClock.adjust("1 second");
         yield* settleFibers;
-        assert.deepEqual(yield* Ref.get(fake.parkCalls), [{ idleTimeoutMs: 1_000, threadCount: 1 }]);
+        assert.deepEqual(yield* Ref.get(fake.parkCalls), [
+          { idleTimeoutMs: 1_000, threadCount: 1 },
+        ]);
         assert.isTrue(yield* manager.isLive(providerSessionId));
         assert.equal((yield* Ref.get(state)).closeCount, 0);
 

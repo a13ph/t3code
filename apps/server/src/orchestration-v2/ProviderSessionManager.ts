@@ -1158,15 +1158,25 @@ export const layerWithOptions = (
         if (Option.isNone(wakeParking) || adopt === undefined) return Effect.void;
         return wakeParking.value.threadOpened(String(threadId)).pipe(
           Effect.flatMap((rows) => {
-            const bySession = new Map<string, Array<ProviderAdapter.ProviderAdapterV2PendingWake>>();
+            const bySession = new Map<
+              string,
+              Array<ProviderAdapter.ProviderAdapterV2PendingWake>
+            >();
             for (const row of rows) {
               const wake = adoptedWake(row);
               if (wake === null) continue;
-              bySession.set(row.nativeSessionId, [...(bySession.get(row.nativeSessionId) ?? []), wake]);
+              bySession.set(row.nativeSessionId, [
+                ...(bySession.get(row.nativeSessionId) ?? []),
+                wake,
+              ]);
             }
-            return Effect.forEach(bySession, ([nativeSessionId, wakes]) => adopt(nativeSessionId, wakes), {
-              discard: true,
-            });
+            return Effect.forEach(
+              bySession,
+              ([nativeSessionId, wakes]) => adopt(nativeSessionId, wakes),
+              {
+                discard: true,
+              },
+            );
           }),
           Effect.catchCause((cause) =>
             Effect.logWarning("orchestration-v2.driver-session.wake-adopt-failed", {

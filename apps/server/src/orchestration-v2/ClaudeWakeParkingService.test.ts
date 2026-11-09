@@ -59,10 +59,13 @@ const withService = <A, E>(
 ) =>
   Effect.gen(function* () {
     const offers = yield* Ref.make<ReadonlyArray<Offer>>([]);
-    const continuationLayer = Layer.succeed(ProviderContinuationRequests.ProviderContinuationRequests, {
-      offer: (request) => Ref.update(offers, (seen) => [...seen, request]),
-      take: Effect.never,
-    });
+    const continuationLayer = Layer.succeed(
+      ProviderContinuationRequests.ProviderContinuationRequests,
+      {
+        offer: (request) => Ref.update(offers, (seen) => [...seen, request]),
+        take: Effect.never,
+      },
+    );
     return yield* Effect.gen(function* () {
       const service = yield* ClaudeWakeParkingService.ClaudeWakeParking;
       yield* settle;
@@ -241,7 +244,9 @@ it.effect("drops a parked wakeup that a process kept across a restart replaced",
         });
         yield* advance(MINUTE);
         // Shutdown with the new process mid-turn: it keeps its own wakeup, nothing is parked.
-        yield* service.dropSuperseded([thread([loopWakeup(NOW + 50 * MINUTE, "toolu_2")], NOW + MINUTE)]);
+        yield* service.dropSuperseded([
+          thread([loopWakeup(NOW + 50 * MINUTE, "toolu_2")], NOW + MINUTE),
+        ]);
         assert.equal(yield* parkedRowCount, 0);
         yield* advance(60 * MINUTE);
         assert.deepEqual(yield* Ref.get(offers), []);
