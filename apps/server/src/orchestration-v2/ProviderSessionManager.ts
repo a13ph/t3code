@@ -199,6 +199,8 @@ export interface ProviderSessionManagerV2Shape {
     readonly threadId: ThreadId;
     readonly detail?: string;
     readonly revokeMcpCredential?: boolean;
+    /** The thread goes on in another session: park the wakeups its process holds. */
+    readonly keepWakes?: boolean;
   }) => Effect.Effect<void, ProviderSessionManagerV2Error>;
 }
 
@@ -1007,6 +1009,7 @@ export const layerWithOptions = (
         readonly cancelIdleFiber?: boolean;
         readonly onlyIfIdleGeneration?: number;
         readonly gracefulSubscribers?: boolean;
+        readonly parkWakes?: boolean;
       }) =>
         Effect.acquireUseRelease(
           removeLiveEntry(input),
@@ -1033,6 +1036,12 @@ export const layerWithOptions = (
                     yield* failSubscribers(
                       entry,
                       input.detail ?? `Provider session released: ${input.reason}.`,
+                    );
+                  }
+                  if (input.parkWakes === true) {
+                    // The thread goes on in another session; its process ends here.
+                    yield* parkWakes(entry.runtime, input.providerSessionId, null).pipe(
+                      Effect.timeoutOption(SHUTDOWN_WAKE_PARK_TIMEOUT_MS),
                     );
                   }
                   const closeExit = yield* closeScopeWithin(entry.scope, {
@@ -2587,6 +2596,7 @@ export const layerWithOptions = (
                 reason: "manual_shutdown",
                 ...(input.detail === undefined ? {} : { detail: input.detail }),
                 detachedThreadId: input.threadId,
+                ...(input.keepWakes === true ? { parkWakes: true } : {}),
               });
               return;
             }

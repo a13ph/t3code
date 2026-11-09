@@ -4019,9 +4019,9 @@ interface ClaudeLiveQueryContext {
   receivedInit: boolean;
   permissionMode: PermissionMode;
   stopping: boolean;
-  // Set when the CLI is ended inside a live session (a Stop, a restart for new
-  // settings): its ScheduleWakeup calls are parked as it exits.
-  orphanWakesOnExit: boolean;
+  // A Stop ended this CLI: the wake turn it ran was meant to end, so its
+  // wakeup is not handed over to be sent again.
+  stoppedByUser: boolean;
   readonly subagentsFromEarlierProcesses: ReadonlySet<ActiveClaudeSubagent>;
 }
 
@@ -5057,6 +5057,21 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         >();
         // The session manager's handlers for a CLI starting or ending outside a release.
         let wakeEvents: ProviderAdapter.ProviderAdapterV2WakeEvents | null = null;
+        // Set once the session closes: the release that closes it parks its wakeups.
+        let sessionClosing = false;
+        // ScheduleWakeup calls no live CLI holds: a resumed CLI does not restore them.
+        const handOverWakeups = (
+          route: ProviderAdapter.ProviderAdapterV2WakeRoute,
+          tracker: ClaudeWakeTracker,
+          wakes: ReadonlyArray<ProviderAdapter.ProviderAdapterV2PendingWake>,
+        ) =>
+          wakes.length === 0 || wakeEvents === null
+            ? Effect.void
+            : wakeEvents.orphaned({
+                ...route,
+                wakes,
+                lastWakeupCallAtMs: tracker.lastWakeupCallAtMs(),
+              });
         const wakeTrackerFor = (nativeThreadId: string) => {
           const existing = wakeTrackers.get(nativeThreadId);
           if (existing !== undefined) return existing;
@@ -10263,7 +10278,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           });
           const closedExistingNativeThreadId = existing !== null ? existing.nativeThreadId : null;
           if (existing !== null) {
-            existing.orphanWakesOnExit = true;
             yield* existing.query.close.pipe(Effect.ignore);
             if (existing.nativeThreadId !== nativeThreadId) {
               yield* clearWakeStateForNativeThread(existing.nativeThreadId);
@@ -10371,7 +10385,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             receivedInit: false,
             permissionMode: queryOptions.permissionMode,
             stopping: false,
-            orphanWakesOnExit: false,
+            stoppedByUser: false,
             subagentsFromEarlierProcesses: new Set(
               [...(yield* Ref.get(sessionSubagentsByTaskId)).values()].filter(
                 (subagent) => subagent.task.status === "running",
@@ -10383,13 +10397,30 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             threadId: turnInput.threadId,
             providerThreadId: turnInput.providerThread.id,
           });
+          const route = {
+            threadId: turnInput.threadId,
+            providerThreadId: turnInput.providerThread.id,
+            nativeSessionId: nativeThreadId,
+          };
+          // A native session this thread left (a rollback to its start) is not
+          // resumed again, so its jobs are not parked or sent any more.
+          for (const [staleNativeId, staleRoute] of wakeThreadRoutes) {
+            if (staleNativeId !== nativeThreadId && staleRoute.threadId === turnInput.threadId) {
+              wakeThreadRoutes.delete(staleNativeId);
+              wakeTrackers.delete(staleNativeId);
+            }
+          }
+          // The previous CLI's exit has not handed its wakeups over yet (a close
+          // that timed out): no process holds them now.
+          const startTracker = wakeTrackers.get(nativeThreadId);
+          if (startTracker !== undefined) {
+            const stale = startTracker.takeWakeups();
+            startTracker.processEnded();
+            yield* handOverWakeups(route, startTracker, stale);
+          }
           // A resumed CLI restores its scheduled jobs; a fresh one has none.
           if (shouldResume && wakeEvents !== null) {
-            yield* wakeEvents.processStarted({
-              threadId: turnInput.threadId,
-              providerThreadId: turnInput.providerThread.id,
-              nativeSessionId: nativeThreadId,
-            });
+            yield* wakeEvents.processStarted(route);
           }
           // Read when a shutdown leaves this CLI in t3-keeper: what the next
           // server needs to tell this turn's result from another turn's.
@@ -10475,25 +10506,38 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 }
               }),
             ),
-            Effect.ensuring(
+            Effect.onExit((exit) =>
               Effect.gen(function* () {
                 unregisterKeeperTurnState(turnInput.threadId, readKeeperTurnState);
+                const current = yield* Ref.get(queryContext);
+                // A newer CLI of this native session took the tracker over already.
+                if (
+                  current !== null &&
+                  current !== context &&
+                  current.nativeThreadId === context.nativeThreadId
+                ) {
+                  return;
+                }
                 const tracker = wakeTrackers.get(context.nativeThreadId);
-                // A resumed CLI does not restore ScheduleWakeup calls, so a CLI
-                // ended inside a live session hands them to T3 now.
-                const orphans =
-                  context.orphanWakesOnExit && tracker !== undefined ? tracker.takeWakeups() : [];
-                // A wake turn the CLI ran ends with it; its other wakeups stay listed for parking.
-                tracker?.processEnded();
-                if (orphans.length > 0 && wakeEvents !== null) {
-                  yield* wakeEvents.orphaned({
+                if (tracker === undefined) return;
+                // A closing session is released, and the release parks what the CLI held.
+                const released =
+                  sessionClosing || (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause));
+                // Any other end (a Stop, a crash, a restart for new settings) leaves
+                // its ScheduleWakeup calls with no process; a cut wake turn's wakeup too.
+                const orphans = released
+                  ? []
+                  : tracker.takeWakeups({ includeFiring: !context.stoppedByUser });
+                tracker.processEnded();
+                yield* handOverWakeups(
+                  {
                     threadId: turnInput.threadId,
                     providerThreadId: turnInput.providerThread.id,
                     nativeSessionId: context.nativeThreadId,
-                    wakes: orphans,
-                    lastWakeupCallAtMs: tracker?.lastWakeupCallAtMs() ?? null,
-                  });
-                }
+                  },
+                  tracker,
+                  orphans,
+                );
               }).pipe(Effect.andThen(Deferred.succeed(closed, undefined))),
             ),
             Effect.forkIn(sessionScope),
@@ -10933,7 +10977,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               next.add(turnInput.providerTurnId);
               return next;
             });
-            existing.orphanWakesOnExit = true;
+            existing.stoppedByUser = true;
             yield* existing.query.interrupt;
             yield* existing.query.close.pipe(Effect.ignore);
             const closed = yield* Deferred.await(existing.closed).pipe(
@@ -11134,6 +11178,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         );
 
         const closeSession = Effect.fnUntraced(function* () {
+          sessionClosing = true;
           const existing = yield* Ref.get(queryContext);
           if (existing !== null) {
             yield* existing.query.close.pipe(Effect.ignore);

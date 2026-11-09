@@ -3961,6 +3961,47 @@ it.effect("ProviderSessionManagerV2 tells delivery what a thread's live process 
   }),
 );
 
+it.effect(
+  "ProviderSessionManagerV2 parks the wakeups of a detach the thread goes on from, not of a plain one",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const fake = yield* makeWakeParkingFake();
+      const effect = Effect.gen(function* () {
+        const kept = yield* openWakeTestSession(wakeTestThreadId);
+        yield* kept.manager.detach({
+          providerSessionId: kept.providerSessionId,
+          threadId: wakeTestThreadId,
+          keepWakes: true,
+        });
+        assert.isFalse(yield* kept.manager.isLive(kept.providerSessionId));
+        // null: the process ends regardless, so nothing is pinned for being due soon.
+        assert.deepEqual(yield* Ref.get(fake.parkCalls), [{ idleTimeoutMs: null, threadCount: 1 }]);
+        const plainThreadId = ThreadId.make("thread-provider-session-manager-wake-archived");
+        const plain = yield* openWakeTestSession(plainThreadId);
+        yield* plain.manager.detach({
+          providerSessionId: plain.providerSessionId,
+          threadId: plainThreadId,
+        });
+        assert.isFalse(yield* plain.manager.isLive(plain.providerSessionId));
+        assert.equal((yield* Ref.get(fake.parkCalls)).length, 1);
+      });
+
+      yield* effect.pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 60_000,
+            // A Claude session holds one thread, so its detach releases it.
+            capabilities: ExclusiveCapabilities,
+            wakeThreads: wakeTestThreads,
+            wakeParkingLayer: fake.layer,
+          }),
+        ),
+      );
+    }),
+);
+
 it.effect("ProviderSessionManagerV2 parks every wakeup at server shutdown", () =>
   Effect.gen(function* () {
     const state = yield* Ref.make(emptyState);
