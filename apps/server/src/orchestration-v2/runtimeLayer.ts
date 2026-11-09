@@ -40,6 +40,7 @@ import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationServic
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
+import * as ClaudeWakeParkingService from "./ClaudeWakeParkingService.ts";
 import * as CommandOutputHub from "./CommandOutputHub.ts";
 import * as ProviderRuntimeRecoveryService from "./ProviderRuntimeRecoveryService.ts";
 import * as ProviderSwitchService from "./ProviderSwitchService.ts";
@@ -130,9 +131,16 @@ const layerCommandOutputHubProvided = CommandOutputHub.layer.pipe(
   Layer.provide(Layer.merge(layerEventSink, ProjectionStore.layer)),
 );
 
+// Same ProviderContinuationRequests.layer reference as the continuation worker, so
+// memoization shares one request queue.
+const layerClaudeWakeParkingProvided = ClaudeWakeParkingService.layer.pipe(
+  Layer.provide(ProviderContinuationRequests.layer),
+);
+
 const layerProviderSessionManagerProvided = ProviderSessionManager.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
+      layerClaudeWakeParkingProvided,
       layerCommandOutputHubProvided,
       ProviderAdapterRegistry.layerFromProviderInstanceRegistry,
       layerEventSink,

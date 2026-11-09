@@ -15,6 +15,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderSessionId,
+  ProviderThreadId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -51,6 +52,8 @@ import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
+import * as ClaudeWakeParkingService from "./ClaudeWakeParkingService.ts";
+import type { ParkedWake } from "./ClaudeWakeParking.ts";
 import * as CommandOutputHub from "./CommandOutputHub.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
@@ -335,6 +338,9 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     }) => Effect.Effect<void>;
     readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
     readonly hasPendingBackgroundWorkForThread?: Effect.Effect<boolean>;
+    readonly hasActiveSelfStartedTurn?: Effect.Effect<boolean>;
+    readonly wakeThreads?: Effect.Effect<ReadonlyArray<ProviderAdapter.ProviderAdapterV2WakeThread>>;
+    readonly adoptWakes?: ProviderAdapter.ProviderAdapterV2SessionRuntime["adoptWakes"];
     readonly backgroundTasksEndWithProcess?: boolean;
     readonly hangSessionScopeClose?: boolean;
     readonly startTurn?: Effect.Effect<void>;
@@ -425,6 +431,11 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
             : {
                 hasPendingBackgroundWorkForThread: () => options.hasPendingBackgroundWorkForThread!,
               }),
+          ...(options.hasActiveSelfStartedTurn === undefined
+            ? {}
+            : { hasActiveSelfStartedTurn: options.hasActiveSelfStartedTurn }),
+          ...(options.wakeThreads === undefined ? {} : { wakeThreads: options.wakeThreads }),
+          ...(options.adoptWakes === undefined ? {} : { adoptWakes: options.adoptWakes }),
           ensureThread: () => unimplemented("ensureThread unused in test"),
           resumeThread: (threadInput) =>
             Ref.update(state, (current) => ({
@@ -482,6 +493,10 @@ function layerTest(input: {
   };
   readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
   readonly hasPendingBackgroundWorkForThread?: Effect.Effect<boolean>;
+  readonly hasActiveSelfStartedTurn?: Effect.Effect<boolean>;
+  readonly wakeThreads?: Effect.Effect<ReadonlyArray<ProviderAdapter.ProviderAdapterV2WakeThread>>;
+  readonly adoptWakes?: ProviderAdapter.ProviderAdapterV2SessionRuntime["adoptWakes"];
+  readonly wakeParkingLayer?: Layer.Layer<ClaudeWakeParkingService.ClaudeWakeParking>;
   readonly backgroundTasksEndWithProcess?: boolean;
   readonly hangSessionScopeClose?: boolean;
   readonly startTurn?: Effect.Effect<void>;
@@ -513,6 +528,11 @@ function layerTest(input: {
       ...(input.hasPendingBackgroundWorkForThread === undefined
         ? {}
         : { hasPendingBackgroundWorkForThread: input.hasPendingBackgroundWorkForThread }),
+      ...(input.hasActiveSelfStartedTurn === undefined
+        ? {}
+        : { hasActiveSelfStartedTurn: input.hasActiveSelfStartedTurn }),
+      ...(input.wakeThreads === undefined ? {} : { wakeThreads: input.wakeThreads }),
+      ...(input.adoptWakes === undefined ? {} : { adoptWakes: input.adoptWakes }),
       ...(input.backgroundTasksEndWithProcess === undefined
         ? {}
         : { backgroundTasksEndWithProcess: input.backgroundTasksEndWithProcess }),
@@ -571,6 +591,7 @@ function layerTest(input: {
           layerTestStores,
           ...(input.serverSettingsLayer === undefined ? [] : [input.serverSettingsLayer]),
           ...(input.projectServiceLayer === undefined ? [] : [input.projectServiceLayer]),
+          ...(input.wakeParkingLayer === undefined ? [] : [input.wakeParkingLayer]),
         ),
       ),
     ),
@@ -3670,3 +3691,261 @@ it("ProviderSessionManagerV2 reads the idle timeout from T3_PROVIDER_IDLE_TIMEOU
     assert.strictEqual(read(bad), undefined, bad);
   }
 });
+
+const openWakeTestSession = Effect.fn("openWakeTestSession")(function* (threadId: ThreadId) {
+  const eventSink = yield* EventSink.EventSinkV2;
+  const idAllocator = yield* IdAllocator.IdAllocatorV2;
+  const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+  const now = yield* DateTime.now;
+  const providerSessionId = yield* idAllocator.allocate.providerSession({
+    providerInstanceId: modelSelection.instanceId,
+    threadId,
+  });
+  yield* eventSink.write({
+    events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+  });
+  yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+  return { manager, providerSessionId };
+});
+
+const settleFibers = Effect.gen(function* () {
+  for (let i = 0; i < 20; i += 1) yield* Effect.yieldNow;
+});
+
+it.effect(
+  "ProviderSessionManagerV2 keeps a session through a self-started wake turn within the pin budget only",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const effect = Effect.gen(function* () {
+        const { manager, providerSessionId } = yield* openWakeTestSession(
+          ThreadId.make("thread-provider-session-manager-self-started-turn"),
+        );
+        // Idle timeout 1 s, pin budget 1.5 s: the wake turn holds the process past the first check.
+        yield* TestClock.adjust("1500 millis");
+        yield* settleFibers;
+        assert.isTrue(yield* manager.isLive(providerSessionId));
+        assert.equal((yield* Ref.get(state)).closeCount, 0);
+
+        // The turn never reports its end; the spent pin budget releases the process.
+        yield* TestClock.adjust("3500 millis");
+        yield* settleFibers;
+        assert.isFalse(yield* manager.isLive(providerSessionId));
+        assert.equal((yield* Ref.get(state)).closeCount, 1);
+      });
+
+      yield* effect.pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 1_000,
+            maxIdlePinMs: 1_500,
+            hasActiveSelfStartedTurn: Effect.succeed(true),
+          }),
+        ),
+      );
+    }),
+);
+
+const wakeTestThreadId = ThreadId.make("thread-provider-session-manager-wake-parking");
+
+const parkedJob: ParkedWake = {
+  wakeId: "native-session-wake-parking:cron:f851d733",
+  threadId: String(wakeTestThreadId),
+  providerThreadId: "provider-thread-wake-parking",
+  nativeSessionId: "native-session-wake-parking",
+  kind: "cron",
+  jobId: "f851d733",
+  cron: "59 23 31 12 *",
+  prompt: "say PING",
+  recurring: false,
+  createdAtMs: 0,
+  dueAtMs: 1_000_000,
+  parkedAtMs: 0,
+};
+
+const makeWakeParkingFake = Effect.fnUntraced(function* () {
+  const parkCalls = yield* Ref.make<
+    ReadonlyArray<{ readonly idleTimeoutMs: number | null; readonly threadCount: number }>
+  >([]);
+  const outcome = yield* Ref.make<ClaudeWakeParkingService.ClaudeWakeParkOutcome>({
+    type: "pin",
+    reason: "due soon",
+  });
+  const openedThreads = yield* Ref.make<ReadonlyArray<string>>([]);
+  const undone = yield* Ref.make(0);
+  const probe = yield* Ref.make<ClaudeWakeParkingService.LiveWakeProbe | null>(null);
+  const layer = Layer.succeed(
+    ClaudeWakeParkingService.ClaudeWakeParking,
+    ClaudeWakeParkingService.ClaudeWakeParking.of({
+      parkBeforeRelease: (input) =>
+        Ref.update(parkCalls, (calls) => [
+          ...calls,
+          { idleTimeoutMs: input.idleTimeoutMs, threadCount: input.threads.length },
+        ]).pipe(Effect.andThen(Ref.get(outcome))),
+      undoPark: () => Ref.update(undone, (count) => count + 1),
+      threadOpened: (threadId) =>
+        Ref.update(openedThreads, (ids) => [...ids, threadId]).pipe(Effect.as([parkedJob])),
+      setLiveWakeProbe: (next) => Ref.set(probe, next),
+    }),
+  );
+  return { parkCalls, outcome, openedThreads, undone, probe, layer };
+});
+
+const wakeTestThread: ProviderAdapter.ProviderAdapterV2WakeThread = {
+  threadId: wakeTestThreadId,
+  providerThreadId: ProviderThreadId.make("provider-thread-wake-parking"),
+  nativeSessionId: "native-session-wake-parking",
+  wakes: [
+    {
+      kind: "wakeup" as const,
+      toolUseId: "toolu-wake",
+      dueAtMs: 0,
+      prompt: "check the build",
+    },
+  ],
+  lastWakeupCallAtMs: 0,
+};
+const wakeTestThreads = Effect.succeed([wakeTestThread]);
+
+it.effect(
+  "ProviderSessionManagerV2 pins a session whose wakeup is due soon and releases it once parked",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const fake = yield* makeWakeParkingFake();
+      const parkedRow: ParkedWake = {
+        ...parkedJob,
+        wakeId: "native-session-wake-parking:wakeup:toolu-wake",
+        kind: "wakeup",
+        jobId: null,
+        cron: null,
+        prompt: "check the build",
+      };
+      const effect = Effect.gen(function* () {
+        const { manager, providerSessionId } = yield* openWakeTestSession(wakeTestThreadId);
+
+        yield* TestClock.adjust("1 second");
+        yield* settleFibers;
+        assert.deepEqual(yield* Ref.get(fake.parkCalls), [{ idleTimeoutMs: 1_000, threadCount: 1 }]);
+        assert.isTrue(yield* manager.isLive(providerSessionId));
+        assert.equal((yield* Ref.get(state)).closeCount, 0);
+
+        yield* Ref.set(fake.outcome, { type: "parked", rows: [parkedRow] });
+        yield* TestClock.adjust("1 second");
+        yield* settleFibers;
+        assert.isFalse(yield* manager.isLive(providerSessionId));
+        assert.equal((yield* Ref.get(state)).closeCount, 1);
+        // The release went through, so nothing is given back.
+        assert.equal(yield* Ref.get(fake.undone), 0);
+      });
+
+      yield* effect.pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 1_000,
+            wakeThreads: wakeTestThreads,
+            wakeParkingLayer: fake.layer,
+          }),
+        ),
+      );
+    }),
+);
+
+it.effect("ProviderSessionManagerV2 hands a new session the thread's parked jobs", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const fake = yield* makeWakeParkingFake();
+    const adopted = yield* Ref.make<
+      ReadonlyArray<{
+        readonly nativeSessionId: string;
+        readonly wakes: ReadonlyArray<ProviderAdapter.ProviderAdapterV2PendingWake>;
+      }>
+    >([]);
+    const effect = Effect.gen(function* () {
+      yield* openWakeTestSession(wakeTestThreadId);
+      assert.deepEqual(yield* Ref.get(fake.openedThreads), [String(wakeTestThreadId)]);
+      assert.deepEqual(yield* Ref.get(adopted), [
+        {
+          nativeSessionId: "native-session-wake-parking",
+          wakes: [
+            {
+              kind: "cron",
+              jobId: "f851d733",
+              cron: "59 23 31 12 *",
+              prompt: "say PING",
+              recurring: false,
+              createdAtMs: 0,
+              dueAtMs: 1_000_000,
+            },
+          ],
+        },
+      ]);
+    });
+
+    yield* effect.pipe(
+      Effect.provide(
+        layerTest({
+          state,
+          idleTimeoutMs: 60_000,
+          wakeThreads: wakeTestThreads,
+          adoptWakes: (nativeSessionId, wakes) =>
+            Ref.update(adopted, (seen) => [...seen, { nativeSessionId, wakes }]),
+          wakeParkingLayer: fake.layer,
+        }),
+      ),
+    );
+  }),
+);
+
+it.effect("ProviderSessionManagerV2 tells delivery what a thread's live process holds", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const fake = yield* makeWakeParkingFake();
+    const effect = Effect.gen(function* () {
+      const probe = yield* Ref.get(fake.probe);
+      assert.isNotNull(probe);
+      if (probe === null) return;
+      assert.isNull(yield* probe(String(wakeTestThreadId)));
+      yield* openWakeTestSession(wakeTestThreadId);
+      assert.deepEqual(yield* probe(String(wakeTestThreadId)), wakeTestThread);
+      assert.isNull(yield* probe("thread-other"));
+    });
+
+    yield* effect.pipe(
+      Effect.provide(
+        layerTest({
+          state,
+          idleTimeoutMs: 60_000,
+          wakeThreads: wakeTestThreads,
+          wakeParkingLayer: fake.layer,
+        }),
+      ),
+    );
+  }),
+);
+
+it.effect("ProviderSessionManagerV2 parks every wakeup at server shutdown", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const fake = yield* makeWakeParkingFake();
+    const effect = Effect.gen(function* () {
+      const { manager } = yield* openWakeTestSession(wakeTestThreadId);
+      yield* manager.shutdown;
+      // null: the process ends regardless, so nothing is pinned for being due soon.
+      assert.deepEqual(yield* Ref.get(fake.parkCalls), [{ idleTimeoutMs: null, threadCount: 1 }]);
+    });
+
+    yield* effect.pipe(
+      Effect.provide(
+        layerTest({
+          state,
+          idleTimeoutMs: 60_000,
+          wakeThreads: wakeTestThreads,
+          wakeParkingLayer: fake.layer,
+        }),
+      ),
+    );
+  }),
+);
