@@ -53,6 +53,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { environmentThreadDetails, threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { renderAssistantCitationsAsText } from "@t3tools/shared/assistantCitations";
 import { toolActivityFaviconUrl } from "@t3tools/shared/favicon";
 import { isJavaScriptReplTool } from "@t3tools/shared/toolActivity";
 import { useMarkdownCodeHighlight } from "./markdownCodeHighlightState";
@@ -1234,6 +1235,8 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
                       line
                     ) /* oxlint-enable react/no-array-index-key */,
                 )
+            ) : shownItem.type === "system_notice" ? (
+              props.renderReasoning(renderAssistantCitationsAsText(shownItem.message))
             ) : fullDetail ? (
               <Text selectable className="font-mono text-2xs leading-normal text-foreground-muted">
                 {fullDetail}
