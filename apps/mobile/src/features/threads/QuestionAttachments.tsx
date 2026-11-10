@@ -8,7 +8,7 @@ import { convertPastedImagesToAttachments } from "../../lib/composerImages";
 import { PROVIDER_SEND_TURN_MAX_ATTACHMENTS, type UserInputQuestion } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { View } from "react-native";
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { ComposerAttachmentButton } from "./ComposerAttachmentButton";
 import { ComposerAttachmentStrip } from "../../components/ComposerAttachmentStrip";
 import { pickComposerFiles, pickComposerMedia } from "../../lib/composerImages";
@@ -61,9 +61,28 @@ export function QuestionAttachments(props: {
   // Unmounted inputs never emit onBlur; explicitly release keyboard ownership.
   const releaseFocus = useEffectEvent(() => {
     if (focusedRef.current) onInputFocusChange?.(false);
+    focusedRef.current = false;
   });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- releases keyboard ownership on unmount, since an unmounted native input never emits blur
   useEffect(() => () => releaseFocus(), []);
+  // Each keystroke re-renders the whole thread screen, and Android keyboards can repeat
+  // the word being typed when JS writes the field back mid-word. So the field keeps its
+  // own text, and a value it did not type, such as an option tap clearing it, remounts it.
+  const [field, setField] = useState({ revision: 0, text: props.value });
+  const shownRef = useRef(props.value);
+  const value = props.value;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the field owns its text while typing, so only a value it did not type is pushed into it
+  useLayoutEffect(() => {
+    if (value === shownRef.current) return;
+    shownRef.current = value;
+    releaseFocus();
+    // oxlint-disable-next-line react/set-state-in-effect -- Remounts the field with a value it did not type, before the frame paints.
+    setField((current) => ({ revision: current.revision + 1, text: value }));
+  }, [value]);
+  const changeText = (text: string) => {
+    shownRef.current = text;
+    props.onChangeText(text);
+  };
   const append = (
     key: string,
     attachments: Parameters<typeof appendComposerDraftAttachments>[1],
@@ -193,13 +212,13 @@ export function QuestionAttachments(props: {
       />
       <FilePreviewModal source={previewFile} onRequestClose={() => setPreviewFile(null)} />
       <VideoPreviewModal source={previewVideo} onRequestClose={() => setPreviewVideo(null)} />
-      <TextInputWrapper onPaste={paste}>
+      <TextInputWrapper key={field.revision} onPaste={paste}>
         <TextInput
-          value={props.value}
+          defaultValue={field.text}
           multiline={props.question.initialAnswer !== undefined}
           submitBehavior={props.question.initialAnswer !== undefined ? "newline" : undefined}
           editable={!props.disabled}
-          onChangeText={props.onChangeText}
+          onChangeText={changeText}
           onFocus={() => {
             focusedRef.current = true;
             onInputFocusChange?.(true);
