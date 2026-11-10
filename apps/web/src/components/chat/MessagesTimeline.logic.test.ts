@@ -1182,6 +1182,31 @@ describe("deriveMessagesTimelineRows", () => {
       ]);
     });
 
+    it("keeps a refused call's lead-in for the retried question when no new text came", () => {
+      const askTool = (id: string, at: string, status?: string) =>
+        work(id, at, {
+          ...(status ? { toolLifecycleStatus: status } : {}),
+          projectedItem: { item: { type: "dynamic_tool", toolName: "AskUserQuestion" } },
+        });
+      const ids = visibleEntryIds([
+        user,
+        message("assistant-report", "Context. A or B?", "2026-01-01T00:00:01Z"),
+        askTool("ask-refused", "2026-01-01T00:00:02Z", "failed"),
+        work("work-1", "2026-01-01T00:00:03Z"),
+        askTool("ask-retry", "2026-01-01T00:00:04Z"),
+        question("ask-1", "2026-01-01T00:00:05Z"),
+        work("work-2", "2026-01-01T00:00:06Z"),
+        message("assistant-final", "Picked A.", "2026-01-01T00:00:07Z"),
+      ]);
+      expect(ids).toEqual([
+        "user-entry",
+        "turn-fold:turn-1",
+        "assistant-report-entry",
+        "ask-1-entry",
+        "assistant-final-entry",
+      ]);
+    });
+
     it("folds text that a tool call, not a question, follows", () => {
       const ids = visibleEntryIds([
         user,
