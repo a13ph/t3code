@@ -177,6 +177,12 @@ settle every thread in that section between it and the one you release on.
 The **Un-settle** and **Wake** buttons work the same way in their sections.
 Press `Escape` while dragging to cancel.
 
+On web and desktop, settling or snoozing the open thread from the sidebar, or settling it with
+its shortcut, opens the next thread in the list. To work through the threads waiting for you
+oldest first, set **Settings → General → After settle or snooze** to **Oldest waiting**. Then
+the open thread's own menu moves on too while the sidebar is shown, to the thread that has
+waited longest for you. When no other thread waits, a new thread starts in the same project.
+
 By default, environments settle inactive threads after three days and settle
 threads whose pull request merged. A closed pull request can also settle an idle
 thread. An empty thread's inactivity counts from when it was created.

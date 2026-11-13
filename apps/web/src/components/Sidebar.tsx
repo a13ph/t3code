@@ -124,7 +124,7 @@ import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useSidebarProjectGroups } from "../hooks/useSidebarProjectGroups";
 import { useTerminalFocus } from "../hooks/useTerminalFocus";
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
-import { registerSettleAndAdvance } from "../settleAndAdvance";
+import { registerSettleAndAdvance, registerSnoozeAndAdvance } from "../settleAndAdvance";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { useBoringSidebarEnabled, useClientSettings } from "../hooks/useSettings";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
@@ -185,6 +185,7 @@ import {
   planSidebarThreadDrop,
   reduceSidebarProjectScopeMenuState,
   resolveAdjacentThreadId,
+  resolveOldestWaitingThread,
   resolveSidebarSweepKeys,
   resolveSidebarDropTarget,
   resolveSidebarDropVerb,
@@ -968,6 +969,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   });
   const boringSidebarEnabled = useBoringSidebarEnabled();
   const folderRowsMultiline = useClientSettings((settings) => settings.boringSidebarMultilineRows);
+  const afterSettleOrSnooze = useClientSettings((settings) => settings.afterSettleOrSnooze);
   const newThreadContext = useHandleNewThread();
   // Row callbacks capture only the handler; the rest of the context changes with the route.
   const { handleNewThread } = newThreadContext;
@@ -1365,6 +1367,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const orderedThreadKeysRef = useRef(orderedThreadKeys);
   // Read changing maps/sets through refs so streamed events preserve row callbacks.
   const threadByKeyRef = useRef(threadByKey);
+  const activeThreadsRef = useRef(activeThreads);
   const settledThreadKeysRef = useRef(settledThreadKeys);
   const snoozedThreadKeysRef = useRef(snoozedThreadKeys);
 
@@ -1535,7 +1538,21 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         : ([...orderedKeys.slice(currentIndex + 1), ...orderedKeys.slice(0, currentIndex)].find(
             (key) => !settledKeys.has(key) && !snoozedKeys.has(key) && !coParkingKeys?.has(key),
           ) ?? null);
-    const nextThread = nextCardKey ? threadByKeyRef.current.get(nextCardKey) : null;
+    // With nothing waiting, oldest-waiting mode skips the next row, which may be pinned or working.
+    const nextThread =
+      afterSettleOrSnooze === "oldest_waiting"
+        ? resolveOldestWaitingThread({
+            inboxThreads: activeThreadsRef.current,
+            skip: (thread) => {
+              const key = threadShellKey(thread);
+              return key === threadKey || coParkingKeys?.has(key) === true;
+            },
+            isWorking: inboxReturns.isWorking,
+            returnedAt: inboxReturns.returnedAt,
+          })
+        : nextCardKey
+          ? threadByKeyRef.current.get(nextCardKey)
+          : null;
     return nextThread
       ? () => navigateToThread(scopeThreadRef(nextThread.environmentId, nextThread.id))
       : shell
@@ -1720,6 +1737,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     projectGroupsRef.current = projectGroups;
     orderedThreadKeysRef.current = orderedThreadKeys;
     threadByKeyRef.current = threadByKey;
+    activeThreadsRef.current = activeThreads;
     settledThreadKeysRef.current = settledThreadKeys;
     snoozedThreadKeysRef.current = snoozedThreadKeys;
     sectionByThreadKeyRef.current = sectionByThreadKey;
@@ -2190,6 +2208,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       }
     })();
   };
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- registers this sidebar's snooze handler in the module-level snoozeAndAdvance registry
+  useEffect(() => registerSnoozeAndAdvance(attemptSnooze), [attemptSnooze]);
 
   const handleMultiSelectContextMenu = useStableCallback(
     async (position: { x: number; y: number }) => {

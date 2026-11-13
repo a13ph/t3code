@@ -35,6 +35,7 @@ import {
 } from "../state/entities";
 import { usePrimaryEnvironmentId } from "../state/environments";
 import { readLocalApi } from "../localApi";
+import { settleAndAdvance, snoozeAndAdvance } from "../settleAndAdvance";
 import {
   deriveLogicalProjectKeyFromSettings,
   derivePhysicalProjectKey,
@@ -93,6 +94,9 @@ export function useThreadActionMenu(input: {
   const confirmThreadDelete = useClientSettings((s) => s.confirmThreadDelete);
   const confirmThreadArchive = useClientSettings((s) => s.confirmThreadArchive);
   const timestampFormat = useClientSettings((s) => s.timestampFormat);
+  // Settle and snooze from here stay on the thread, unless the user chose to go to the oldest
+  // waiting one; then the sidebar parks it and moves on, as from its own menu.
+  const afterSettleOrSnooze = useClientSettings((s) => s.afterSettleOrSnooze);
   const { copyToClipboard: copyPathToClipboard } = useCopyToClipboard<{ path: string }>({
     onCopy: ({ path }) => {
       toastManager.add({ type: "success", title: "Path copied", description: path });
@@ -171,6 +175,9 @@ export function useThreadActionMenu(input: {
                 threadRef.environmentId,
               );
         if (!preset) return;
+        if (afterSettleOrSnooze === "oldest_waiting" && snoozeAndAdvance(threadRef, preset)) {
+          return;
+        }
         const result = await snoozeThread(threadRef, preset.snoozedUntil);
         if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
           failureToast("Failed to snooze thread", squashAtomCommandFailure(result));
@@ -217,6 +224,7 @@ export function useThreadActionMenu(input: {
           return;
         }
         case "settle":
+          if (afterSettleOrSnooze === "oldest_waiting" && settleAndAdvance(threadRef)) return;
           await reportFailure("Failed to settle thread", () => settleThread(threadRef));
           return;
         case "unsettle":

@@ -13,6 +13,7 @@ import {
   resolveSidebarRowThreadId,
   orderItemsByPreferredIds,
   pinOrderKeyBetween,
+  resolveOldestWaitingThread,
   resolveProjectStatusIndicator,
   resolveSidebarSweepKeys,
   resolveSidebarThreadStatus,
@@ -1130,6 +1131,52 @@ describe("Working shelf (beta)", () => {
           entry === waiting ? Date.parse("2026-03-09T11:05:00.000Z") : undefined,
         ).map((entry) => entry.id),
       ).toEqual(["asks-approval", "finished"]);
+    });
+  });
+
+  describe("resolveOldestWaitingThread", () => {
+    const thread = (id: string, completedAt: string) => ({
+      id: ThreadId.make(id),
+      environmentId: localEnvironmentId,
+      createdAt: "2026-03-01T09:00:00.000Z",
+      unsettledAt: null,
+      latestRun: { ...makeLatestRun({ completedAt }), requestedAt: "2026-03-01T09:00:00.000Z" },
+    });
+    const newest = thread("newest", "2026-03-09T12:00:00.000Z");
+    const middle = thread("middle", "2026-03-09T11:00:00.000Z");
+    const oldest = thread("oldest", "2026-03-09T10:00:00.000Z");
+    const pick = (input: {
+      skip?: ReadonlyArray<string>;
+      working?: ReadonlyArray<string>;
+      returnedAt?: (entry: typeof oldest) => number | undefined;
+    }) =>
+      resolveOldestWaitingThread({
+        inboxThreads: [newest, oldest, middle],
+        skip: (entry) => input.skip?.includes(entry.id) === true,
+        isWorking: (entry) => input.working?.includes(entry.id) === true,
+        ...(input.returnedAt ? { returnedAt: input.returnedAt } : {}),
+      })?.id ?? null;
+
+    it("opens the thread that has waited longest, whatever the list order", () => {
+      expect(pick({})).toBe("oldest");
+    });
+
+    it("passes over the parked thread and threads still working", () => {
+      expect(pick({ skip: ["oldest"] })).toBe("middle");
+      expect(pick({ skip: ["oldest"], working: ["middle"] })).toBe("newest");
+    });
+
+    it("dates a wait from when the thread came back to the inbox", () => {
+      expect(
+        pick({
+          returnedAt: (entry) =>
+            entry === oldest ? Date.parse("2026-03-09T13:00:00.000Z") : undefined,
+        }),
+      ).toBe("middle");
+    });
+
+    it("finds nothing when every thread is parked or working", () => {
+      expect(pick({ skip: ["oldest", "middle"], working: ["newest"] })).toBeNull();
     });
   });
 
