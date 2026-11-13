@@ -1,9 +1,4 @@
-import {
-  DEFAULT_CLIENT_SETTINGS,
-  EnvironmentId,
-  MessageId,
-  ThreadId,
-} from "@t3tools/contracts";
+import { DEFAULT_CLIENT_SETTINGS, EnvironmentId, MessageId, ThreadId } from "@t3tools/contracts";
 import {
   serializeAssistantCitation,
   withAssistantCitationComment,
