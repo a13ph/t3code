@@ -575,6 +575,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["composer rich text tiptap bold italic markdown styled wysiwyg"],
   },
   {
+    id: "cite-on-selection",
+    title: "Cite on selection",
+    to: "/settings/chat",
+    searchTerms: ["quote citation select highlight assistant text comment automatic instant"],
+  },
+  {
     id: "send-shortcut",
     title: "Send shortcut",
     to: "/settings/chat",

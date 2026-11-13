@@ -44,6 +44,8 @@ export function AssistantCitationChip({
     sourceAnchor?: AssistantCitationSourceAnchor | undefined;
     onOpenChange: (open: boolean) => void;
     onCancel?: () => void;
+    /** Drops the citation when a press on assistant text closes it without a comment. */
+    onDiscard?: () => void;
     onSave: (comment: string) => boolean;
     onSaveAndSend?: (comment: string) => boolean;
     onDraftChange?: (comment: string) => void;
@@ -63,18 +65,24 @@ export function AssistantCitationChip({
   useEffect(() => {
     if (!commentOpen) draftCommentRef.current = null;
   }, [commentOpen]);
-  const settleDraftOnClose = (reason: string): boolean => {
+  const settleDraftOnClose = (
+    reason: string,
+    discardIfEmpty = false,
+  ): "close" | "keep-open" | "discard" => {
     const dismissal = resolveAssistantCitationCommentDismissal({
       reason,
       draft: draftCommentRef.current,
       savedComment: citation.comment,
+      discardIfEmpty,
     });
-    if (dismissal.kind === "commit") return commentEditor?.onSave(dismissal.comment) ?? true;
-    return dismissal.kind !== "keep-open";
+    if (dismissal.kind === "commit") {
+      return commentEditor?.onSave(dismissal.comment) === false ? "keep-open" : "close";
+    }
+    return dismissal.kind;
   };
   const onSourceUnavailable = useEffectEvent(() => {
     if (!sourceAnchor) return;
-    if (settleDraftOnClose("none")) {
+    if (settleDraftOnClose("none") !== "keep-open") {
       commentEditor?.onOpenChange(false);
     } else {
       setUnavailableSourceAnchor(sourceAnchor);
@@ -166,11 +174,22 @@ export function AssistantCitationChip({
         <Popover
           open={commentEditor.open}
           onOpenChange={(open, eventDetails) => {
-            if (!open && !settleDraftOnClose(eventDetails.reason)) {
+            if (open) {
+              commentEditor.onOpenChange(true);
+              return;
+            }
+            const outcome = settleDraftOnClose(
+              eventDetails.reason,
+              commentEditor.onDiscard !== undefined &&
+                eventDetails.reason === "outside-press" &&
+                isAssistantTextPress(eventDetails.event),
+            );
+            if (outcome === "keep-open") {
               eventDetails.cancel();
               return;
             }
-            commentEditor.onOpenChange(open);
+            commentEditor.onOpenChange(false);
+            if (outcome === "discard") commentEditor.onDiscard?.();
           }}
         >
           <PopoverTrigger
@@ -195,8 +214,10 @@ export function AssistantCitationChip({
                   ? () => {
                       const activeElement = document.activeElement;
                       if (
-                        activeElement === document.body ||
-                        (activeElement !== null && commentPopupRef.current?.contains(activeElement))
+                        !isSelectingAssistantText() &&
+                        (activeElement === document.body ||
+                          (activeElement !== null &&
+                            commentPopupRef.current?.contains(activeElement)))
                       ) {
                         commentEditor.onRestoreFocus?.();
                       }
@@ -246,6 +267,24 @@ export function AssistantCitationChip({
       ) : null}
     </ContextChip>
   );
+}
+
+const ASSISTANT_CITATION_SOURCE_SELECTOR = "[data-assistant-citation-source]";
+
+function isAssistantTextPress(event: Event): boolean {
+  return (
+    event.target instanceof Element &&
+    event.target.closest(ASSISTANT_CITATION_SOURCE_SELECTOR) !== null
+  );
+}
+
+// Moving focus back to the composer would replace a selection the user is making in a message.
+function isSelectingAssistantText(): boolean {
+  const selection = window.getSelection();
+  const anchor = selection?.anchorNode;
+  if (!selection || selection.isCollapsed || !anchor) return false;
+  const element = anchor instanceof Element ? anchor : anchor.parentElement;
+  return element?.closest(ASSISTANT_CITATION_SOURCE_SELECTOR) != null;
 }
 
 function AssistantCitationQuote({ citation }: { citation: AssistantCitation }) {

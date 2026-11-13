@@ -509,6 +509,9 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.composerRichTextEnabled !== DEFAULT_UNIFIED_SETTINGS.composerRichTextEnabled
       ? ["Rich text composer"]
       : []),
+    ...(settings.citeOnSelection !== DEFAULT_UNIFIED_SETTINGS.citeOnSelection
+      ? ["Cite on selection"]
+      : []),
     ...(settings.sendShortcut !== DEFAULT_UNIFIED_SETTINGS.sendShortcut ? ["Send shortcut"] : []),
     ...(settings.followUpBehavior !== DEFAULT_UNIFIED_SETTINGS.followUpBehavior
       ? ["Follow-up behavior"]
@@ -625,6 +628,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       proactivePanelsEnabled: DEFAULT_UNIFIED_SETTINGS.proactivePanelsEnabled,
       showSkillsInSlashMenu: DEFAULT_UNIFIED_SETTINGS.showSkillsInSlashMenu,
       composerRichTextEnabled: DEFAULT_UNIFIED_SETTINGS.composerRichTextEnabled,
+      citeOnSelection: DEFAULT_UNIFIED_SETTINGS.citeOnSelection,
       sendShortcut: DEFAULT_UNIFIED_SETTINGS.sendShortcut,
       followUpBehavior: DEFAULT_UNIFIED_SETTINGS.followUpBehavior,
       contextWindowMeterEnabled: DEFAULT_UNIFIED_SETTINGS.contextWindowMeterEnabled,
@@ -1120,6 +1124,27 @@ export function ChatSettingsPanel() {
                 updateSettings({ composerRichTextEnabled: Boolean(checked) })
               }
               aria-label="Rich text composer"
+            />
+          }
+        />
+        <SettingsRow
+          {...searchableSetting("cite-on-selection")}
+          description="Selecting assistant text with the mouse cites it and opens its comment. Selecting more text keeps a commented citation and drops an empty one."
+          resetAction={
+            settings.citeOnSelection !== DEFAULT_UNIFIED_SETTINGS.citeOnSelection ? (
+              <SettingResetButton
+                label="cite on selection"
+                onClick={() =>
+                  updateSettings({ citeOnSelection: DEFAULT_UNIFIED_SETTINGS.citeOnSelection })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.citeOnSelection}
+              onCheckedChange={(checked) => updateSettings({ citeOnSelection: Boolean(checked) })}
+              aria-label="Cite on selection"
             />
           }
         />

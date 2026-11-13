@@ -120,6 +120,10 @@ On web and desktop, select text within one assistant response and choose
 **Cite in composer**. You can add a comment about the quote and write instructions
 around it.
 
+To skip the button, turn on **Cite on selection** in Settings > Chat. Selecting text with the
+mouse then cites it and opens its comment right away. Selecting the next passage keeps the
+citation if it has a comment and drops it if not. Press Escape to drop it without selecting more.
+
 Select the quote in a draft or sent message to return to its source. If the source
 is unavailable or has changed, the saved quote remains readable.
 

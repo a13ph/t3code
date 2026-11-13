@@ -57,6 +57,7 @@ import {
   expandCollapsedComposerCursor,
   pastedPathQueryLength,
 } from "~/composer-logic";
+import { useClientSettings } from "~/hooks/useSettings";
 import { useStableCallback } from "~/hooks/useStableCallback";
 import { caretLineDirection, ComposerTextDirectionExtension } from "~/composer-text-direction";
 import {
@@ -414,7 +415,9 @@ function ComposerCitationNodeView({ node, editor, getPos }: NodeViewProps) {
   };
 
   const removeOnCancel = commentTarget?.removeOnCancel;
-  const onRemove = () => {
+  const citeOnSelection = useClientSettings((settings) => settings.citeOnSelection);
+  // A discard leaves focus where the press put it, so the next selection can start there.
+  const onRemove = ({ focus }: { focus: boolean }) => {
     if (!editor.isEditable || !removeOnCancel) return;
     const pos = nodePos();
     if (pos === null) return;
@@ -424,7 +427,8 @@ function ComposerCitationNodeView({ node, editor, getPos }: NodeViewProps) {
     const end = pos + current.nodeSize;
     const from = removeOnCancel.before && doc.textBetween(pos - 1, pos) === " " ? pos - 1 : pos;
     const to = removeOnCancel.after && doc.textBetween(end, end + 1) === " " ? end + 1 : end;
-    editor.chain().focus().deleteRange({ from, to }).run();
+    const chain = editor.chain();
+    (focus ? chain.focus() : chain).deleteRange({ from, to }).run();
   };
 
   const onRestoreFocus = () => {
@@ -470,7 +474,10 @@ function ComposerCitationNodeView({ node, editor, getPos }: NodeViewProps) {
             if (open && !editor.isEditable) return;
             commentContext.onOpenChange(citeKey, open);
           },
-          ...(removeOnCancel ? { onCancel: onRemove } : {}),
+          ...(removeOnCancel ? { onCancel: () => onRemove({ focus: true }) } : {}),
+          ...(removeOnCancel && citeOnSelection
+            ? { onDiscard: () => onRemove({ focus: false }) }
+            : {}),
           onSave: onSaveComment,
           onDraftChange: (comment) => commentContext.onDraftChange(citeKey, comment),
           onSaveAndSend: (comment) => {
