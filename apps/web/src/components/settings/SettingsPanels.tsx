@@ -13,6 +13,7 @@ import {
   type SidebarProjectGroupingMode,
 } from "@t3tools/contracts";
 import {
+  AfterSettleOrSnooze,
   DEFAULT_UNIFIED_SETTINGS,
   type DiffLayout,
   MAX_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
@@ -121,6 +122,12 @@ const SIDEBAR_PROJECT_SORT_ORDER_LABELS: Record<SidebarProjectSortOrder, string>
   manual: "Manual",
 };
 const isSidebarProjectSortOrder = Schema.is(SidebarProjectSortOrder);
+
+const AFTER_SETTLE_OR_SNOOZE_LABELS: Record<AfterSettleOrSnooze, string> = {
+  next: "Next thread",
+  oldest_waiting: "Oldest waiting",
+};
+const isAfterSettleOrSnooze = Schema.is(AfterSettleOrSnooze);
 
 const TIMESTAMP_FORMAT_LABELS = {
   locale: "System default",
@@ -468,6 +475,9 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.sidebarAlwaysShowJumpHints !== DEFAULT_UNIFIED_SETTINGS.sidebarAlwaysShowJumpHints
       ? ["Thread numbers"]
       : []),
+    ...(settings.afterSettleOrSnooze !== DEFAULT_UNIFIED_SETTINGS.afterSettleOrSnooze
+      ? ["After settle or snooze"]
+      : []),
     ...(settings.sidebarAutoSettleAfterDays !== DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays
       ? ["Auto-settle inactive threads"]
       : []),
@@ -639,6 +649,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       sidebarProjectSortOrder: DEFAULT_UNIFIED_SETTINGS.sidebarProjectSortOrder,
       sidebarWorkingShelfEnabled: DEFAULT_UNIFIED_SETTINGS.sidebarWorkingShelfEnabled,
       sidebarAlwaysShowJumpHints: DEFAULT_UNIFIED_SETTINGS.sidebarAlwaysShowJumpHints,
+      afterSettleOrSnooze: DEFAULT_UNIFIED_SETTINGS.afterSettleOrSnooze,
       sidebarAutoSettleAfterDays: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays,
       sidebarAutoSettleKeepPullRequests: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleKeepPullRequests,
       sidebarAutoSettleOnMerge: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge,
@@ -918,6 +929,49 @@ export function GeneralSettingsPanel() {
               }
               aria-label="Always show thread numbers"
             />
+          }
+        />
+        <SettingsRow
+          {...searchableSetting("after-settle-or-snooze")}
+          description="Which thread opens after you settle or snooze the open one. Oldest waiting opens the inbox thread that has waited longest for you, also from the thread's own menu while the sidebar is shown."
+          resetAction={
+            settings.afterSettleOrSnooze !== DEFAULT_UNIFIED_SETTINGS.afterSettleOrSnooze ? (
+              <SettingResetButton
+                label="after settle or snooze"
+                onClick={() =>
+                  updateSettings({
+                    afterSettleOrSnooze: DEFAULT_UNIFIED_SETTINGS.afterSettleOrSnooze,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.afterSettleOrSnooze}
+              onValueChange={(value) => {
+                if (isAfterSettleOrSnooze(value)) {
+                  updateSettings({ afterSettleOrSnooze: value });
+                }
+              }}
+            >
+              <SelectTrigger
+                size="sm"
+                className="w-full sm:w-44"
+                aria-label="After settle or snooze"
+              >
+                <SelectValue>
+                  {AFTER_SETTLE_OR_SNOOZE_LABELS[settings.afterSettleOrSnooze]}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {AfterSettleOrSnooze.literals.map((choice) => (
+                  <SelectItem hideIndicator key={choice} value={choice}>
+                    {AFTER_SETTLE_OR_SNOOZE_LABELS[choice]}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
           }
         />
       </SettingsSection>
