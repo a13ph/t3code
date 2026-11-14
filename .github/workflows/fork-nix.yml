@@ -108,4 +108,4 @@ jobs:
               echo
               echo "No CACHIX_AUTH_TOKEN secret: built, not cached."
             fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
