@@ -205,6 +205,7 @@ export function AssistantCitationChip({
               side={activeSourceAnchor ? "bottom" : "top"}
               align="end"
               anchor={popupAnchor}
+              instantOpen={activeSourceAnchor !== undefined}
               initialFocus={() => {
                 commentInputRef.current?.focus({ preventScroll: true });
                 return false;
