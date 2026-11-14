@@ -6,10 +6,11 @@ import {
   resolvedLinkPlaceholder,
   resolvedLinkTooltipLines,
   type ResolvedLinkRef,
-} from "../../resolvedLinks";
+} from "@t3tools/client-runtime/resolved-links";
 import { useRightPanelStore } from "../../rightPanelStore";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { MarkdownFileLink } from "./MarkdownFileLink";
+import { useNoteLinks } from "../files/noteLinks";
 import { useResolvedLink } from "./useResolvedLink";
 
 // Theme colours only, so the mark follows light, dark and custom themes.
@@ -35,6 +36,7 @@ export function MarkdownResolvedLink(props: {
   readonly theme: "light" | "dark";
 }) {
   const resolution = useResolvedLink(props.link, props.environmentId);
+  const noteLinks = useNoteLinks();
   const { threadRef } = props;
   const fallbackLabel = props.label || resolvedLinkPlaceholder(props.link);
   const href = resolvedLinkHref(props.link);
@@ -56,6 +58,10 @@ export function MarkdownResolvedLink(props: {
         theme={props.theme}
         threadRef={threadRef}
         onOpenInPanel={(panelPath, line) => {
+          if (noteLinks) {
+            noteLinks.open(panelPath, line, environmentId);
+            return;
+          }
           if (!threadRef) return;
           useRightPanelStore.getState().openFile(threadRef, panelPath, line, environmentId);
         }}
@@ -81,9 +87,7 @@ export function MarkdownResolvedLink(props: {
   const missing = resolution._tag === "missing";
   return (
     <Tooltip>
-      <TooltipTrigger
-        render={<span data-resolved-link={missing ? "missing" : "resolving"} />}
-      >
+      <TooltipTrigger render={<span data-resolved-link={missing ? "missing" : "resolving"} />}>
         {fallbackLabel}
       </TooltipTrigger>
       <TooltipPopup side="top">

@@ -447,6 +447,10 @@
       "types": "./src/markdownGithubAlerts.ts",
       "import": "./src/markdownGithubAlerts.ts"
     },
+    "./wikilinks": {
+      "types": "./src/wikilinks.ts",
+      "import": "./src/wikilinks.ts"
+    },
     "./markdownFrontmatter": {
       "types": "./src/markdownFrontmatter.ts",
       "import": "./src/markdownFrontmatter.ts"

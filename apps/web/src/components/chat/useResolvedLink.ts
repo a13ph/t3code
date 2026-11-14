@@ -2,7 +2,7 @@ import type { EnvironmentId, ResolvedLink } from "@t3tools/contracts";
 import { useEffect, useEffectEvent, useId, useRef, useState } from "react";
 
 import { useDeadlinePassed } from "../../hooks/useDeadline";
-import type { ResolvedLinkRef } from "../../resolvedLinks";
+import type { ResolvedLinkRef } from "@t3tools/client-runtime/resolved-links";
 import { useEnvironments } from "../../state/environments";
 import { useEnvironmentQuery } from "../../state/query";
 import { resolvedLinkLookup } from "../../state/resolvedLinkLookup";

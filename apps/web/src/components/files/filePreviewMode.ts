@@ -10,6 +10,31 @@ export function resolveFilePreviewPath(path: string | null, cwd: string): string
 export const isMarkdownPreviewFile = (path: string): boolean =>
   /\.(?:md|mdx|markdown|mdown|mkd)$/i.test(path);
 
+const TEXT_ENTRY = "input, textarea, select, [contenteditable]:not([contenteditable='false'])";
+
+/**
+ * The tab history step of a key: Alt+Left back, Alt+Right forward, as in a browser. In a text
+ * field or an editor those keys move the cursor by word, so there, or once the editor took the
+ * key, they step nothing.
+ */
+export function fileHistoryStepOfKey(event: {
+  readonly altKey: boolean;
+  readonly ctrlKey: boolean;
+  readonly metaKey: boolean;
+  readonly shiftKey: boolean;
+  readonly key: string;
+  readonly defaultPrevented: boolean;
+  readonly target: unknown;
+}): -1 | 1 | null {
+  if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return null;
+  if (event.defaultPrevented) return null;
+  const target = event.target as { closest?: (selector: string) => unknown } | null;
+  if (typeof target?.closest === "function" && target.closest(TEXT_ENTRY) !== null) return null;
+  if (event.key === "ArrowLeft") return -1;
+  if (event.key === "ArrowRight") return 1;
+  return null;
+}
+
 export function filePreviewReadErrorMessage(error: ProjectReadFileError): string {
   switch (error.failure) {
     case "path_not_file":

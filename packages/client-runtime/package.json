@@ -3,6 +3,14 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./resolved-links": {
+      "types": "./src/resolvedLinks.ts",
+      "default": "./src/resolvedLinks.ts"
+    },
+    "./state/link-resolver": {
+      "types": "./src/state/linkResolver.ts",
+      "default": "./src/state/linkResolver.ts"
+    },
     "./zip/bounded-zip": {
       "types": "./src/zip/boundedZip.ts",
       "default": "./src/zip/boundedZip.ts"

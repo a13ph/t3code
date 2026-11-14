@@ -155,7 +155,13 @@ const CHAT_MARKDOWN_SANITIZE_SCHEMA = {
     ],
     blockquote: [...(defaultSchema.attributes?.blockquote ?? []), "dataAlert"],
     div: [...(defaultSchema.attributes?.div ?? []), ...CODEX_ARTIFACT_TEMPLATE_HAST_PROPERTIES],
-    a: [...(defaultSchema.attributes?.a ?? []), "dataPullRequestAutolink"],
+    // dataWikilink: the target a note's `[[wikilink]]` names, set by `remarkWikilinks`.
+    a: [
+      ...(defaultSchema.attributes?.a ?? []),
+      "dataPullRequestAutolink",
+      "dataWikilink",
+      "dataWikilinkAlias",
+    ],
     img: [
       ...(defaultSchema.attributes?.img ?? []),
       "dataLocalSrc",

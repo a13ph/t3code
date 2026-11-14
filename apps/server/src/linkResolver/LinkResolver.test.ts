@@ -9,6 +9,7 @@ import {
   LINK_RESOLVER_UNAVAILABLE,
   LinkResolverProcess,
   linkResolverEnv,
+  linkResolverFor,
   normalizeResolvedLink,
   resolveLink,
   startLinkResolvers,
@@ -37,8 +38,22 @@ let seen = 0;
 let hung = false;
 rl.on("line", (raw) => {
   seen += 1;
-  const { id } = JSON.parse(raw);
+  const { id, from, kind, scheme } = JSON.parse(raw);
   const reply = (link) => out({ id, link });
+  if (id === "busy") return out({ id, kind, unavailable: true });
+  // A program on the first protocol answers a backlinks line as a plain lookup.
+  if (kind === "backlinks" && id === "old") return reply(null);
+  if (kind === "backlinks" && id === "slow") {
+    return setTimeout(() => out({ id, kind, links: [] }), 600);
+  }
+  if (kind === "backlinks") {
+    return out({ id, kind, links: [{ path: "/n/b1.md", label: scheme + ":" + id }, { label: "no path" }, "x"] });
+  }
+  if (from !== undefined) {
+    // Answered newest first, so only the echoed from tells the two apart.
+    const delay = from.endsWith("slow.md") ? 200 : 0;
+    return setTimeout(() => out({ id, from, link: { path: "/n/" + id + ".md", label: id + "@" + from } }), delay);
+  }
   if (id === "missing") return reply(null);
   // Stops answering, as a stuck program does, and stays alive.
   if (hung) return;
@@ -450,6 +465,99 @@ describe("LinkResolverProcess", () => {
     expect(labelOf(await resolver.resolve("a1"))).toBe("a1");
     resolver.close();
     expect(await resolver.resolve("a2")).toBeNull();
+  });
+
+  it("sends the scheme on every lookup line", async () => {
+    const { resolver } = await readyResolver();
+    try {
+      const answer = await resolver.resolve("echo:x", { scheme: "wikilink" });
+      expect(answer !== null && "tooltip" in answer ? JSON.parse(answer.tooltip) : null).toEqual({
+        id: "echo:x",
+        scheme: "wikilink",
+      });
+    } finally {
+      resolver.close();
+    }
+  });
+
+  it("tells wikilinks with one target apart by the note holding them", async () => {
+    const { resolver } = await readyResolver();
+    try {
+      const [slow, quick, again] = await Promise.all([
+        resolver.resolve("same", { from: "/v/slow.md" }),
+        resolver.resolve("same", { from: "/v/quick.md" }),
+        resolver.resolve("same", { from: "/v/slow.md" }),
+      ]);
+      expect(labelOf(slow)).toBe("same@/v/slow.md");
+      expect(labelOf(quick)).toBe("same@/v/quick.md");
+      expect(labelOf(again)).toBe("same@/v/slow.md");
+    } finally {
+      resolver.close();
+    }
+  });
+
+  it("lists backlinks, keeping only entries that are links", async () => {
+    const { resolver } = await readyResolver();
+    try {
+      expect(await resolver.backlinks("/v/note.md", "wikilink")).toEqual({
+        links: [
+          { path: "/n/b1.md", label: "wikilink:/v/note.md", mark: "", tone: "normal", tooltip: "" },
+        ],
+      });
+      // A resolve lookup for the same id is another request, not this one's answer.
+      expect(labelOf(await resolver.resolve("/v/note.md"))).toBe("/v/note.md");
+    } finally {
+      resolver.close();
+    }
+  });
+
+  it("answers a late backlinks line unavailable and keeps the program", async () => {
+    const { resolver, logs, starts } = await readyResolver({ answerTimeoutMs: 300 });
+    try {
+      expect(await resolver.backlinks("slow")).toEqual(LINK_RESOLVER_UNAVAILABLE);
+      expect(labelOf(await resolver.resolve("a1"))).toBe("a1");
+      expect(starts).toHaveLength(1);
+      expect(logs.some((line) => line.includes("no answer in"))).toBe(false);
+    } finally {
+      resolver.close();
+    }
+  });
+
+  it("stops asking a program that answers backlinks lines as plain lookups", async () => {
+    const { resolver } = await readyResolver();
+    try {
+      expect(await resolver.backlinks("old")).toEqual(LINK_RESOLVER_UNAVAILABLE);
+      expect(await resolver.backlinks("/v/note.md")).toBeNull();
+      // warmup, old, then this one: the second backlinks line was never sent.
+      expect(labelOf(await resolver.resolve("count-after"))).toBe("3");
+    } finally {
+      resolver.close();
+    }
+  });
+
+  it("answers unavailable when the program says so, and asks again next time", async () => {
+    const { resolver } = await readyResolver();
+    try {
+      expect(await resolver.resolve("busy")).toEqual(LINK_RESOLVER_UNAVAILABLE);
+      expect(await resolver.backlinks("busy")).toEqual(LINK_RESOLVER_UNAVAILABLE);
+      expect(labelOf(await resolver.resolve("count-after"))).toBe("4");
+    } finally {
+      resolver.close();
+    }
+  });
+});
+
+describe("linkResolverFor", () => {
+  it("runs one program for every scheme set to the same argv", () => {
+    const argv = [process.execPath, "-e", "0", "shared-argv-test"];
+    const notes = linkResolverFor("notes", argv);
+    try {
+      expect(linkResolverFor("wikilink", argv)).toBe(notes);
+      expect(linkResolverFor("notes", [...argv, "other"])).not.toBe(notes);
+    } finally {
+      notes.close();
+      linkResolverFor("notes", [...argv, "other"]).close();
+    }
   });
 });
 

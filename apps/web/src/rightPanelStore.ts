@@ -26,6 +26,14 @@ export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
 export type PullRequestDetailTab = "summary" | "guide" | "timeline" | "code";
 
+/** A file a tab showed, as its surface names it. */
+export interface FileHistoryEntry {
+  relativePath: string;
+  environmentId?: string;
+}
+
+type FileSurface = Extract<RightPanelSurface, { kind: "file" }>;
+
 export interface DeviceTabTarget {
   hostId: string;
   deviceId: string;
@@ -64,6 +72,10 @@ export type RightPanelSurface =
       /** Present when a chat link named a file on another connected server than the
           thread's; `relativePath` is then absolute on that server. */
       environmentId?: string;
+      /** Files this tab showed before a followed link replaced them, oldest first. */
+      back?: FileHistoryEntry[];
+      /** Files left by going back, nearest first. */
+      forward?: FileHistoryEntry[];
     }
   | {
       id: `pull-request:${string}`;
@@ -135,6 +147,19 @@ interface RightPanelStoreState {
     line?: number,
     environmentId?: string,
   ) => void;
+  /**
+   * Follows a link from the file tab `surfaceId` in place, like a browser tab: the file it showed
+   * goes on its back list. `environmentId` names another server than the thread's.
+   */
+  navigateFile: (
+    ref: ScopedThreadRef,
+    surfaceId: string,
+    relativePath: string,
+    line?: number,
+    environmentId?: string,
+  ) => void;
+  /** Shows the file tab's previous (`-1`) or next (`1`) file in its history. */
+  stepFileHistory: (ref: ScopedThreadRef, surfaceId: string, step: -1 | 1) => void;
   /** Moves in place; "" opens the root explorer. folderTrail keeps the return path; keepSource opens beside the source. */
   navigateFolder: (
     ref: ScopedThreadRef,
@@ -249,6 +274,50 @@ const fileSurface = (
   revealRequestId,
   ...(environmentId === undefined ? {} : { environmentId }),
 });
+
+// Files a tab showed before, oldest first; kept short, as a browser tab's is in practice.
+const MAX_FILE_HISTORY = 50;
+
+function fileHistoryEntries(value: unknown): FileHistoryEntry[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(
+      (entry): entry is FileHistoryEntry =>
+        typeof entry === "object" &&
+        entry !== null &&
+        typeof (entry as FileHistoryEntry).relativePath === "string" &&
+        (entry as FileHistoryEntry).relativePath !== "" &&
+        ((entry as FileHistoryEntry).environmentId === undefined ||
+          typeof (entry as FileHistoryEntry).environmentId === "string"),
+    )
+    .slice(-MAX_FILE_HISTORY)
+    .map(({ relativePath, environmentId }) => ({
+      relativePath,
+      ...(environmentId === undefined ? {} : { environmentId }),
+    }));
+}
+
+const historyEntryOf = (surface: FileSurface): FileHistoryEntry => ({
+  relativePath: surface.relativePath,
+  ...(surface.environmentId === undefined ? {} : { environmentId: surface.environmentId }),
+});
+
+/**
+ * Shows `target` in place of the file tab `surfaceId`, with the history it is given; another tab
+ * already showing `target` is closed, so the one tab keeps the trail.
+ */
+function replaceFileSurface(
+  current: ThreadRightPanelState,
+  surfaceId: string,
+  target: FileSurface,
+): ThreadRightPanelState {
+  const index = current.surfaces.findIndex((surface) => surface.id === surfaceId);
+  if (index < 0) return current;
+  const surfaces = current.surfaces.flatMap((surface, i) =>
+    i === index ? [target] : surface.id === target.id ? [] : [surface],
+  );
+  return { ...current, isOpen: true, activeSurfaceId: target.id, surfaces };
+}
 
 const attachmentSurface = (attachment: ChatFileAttachment): RightPanelSurface => ({
   id: `attachment:${attachment.id}`,
@@ -488,7 +557,11 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                         surface.revealRequestId >= 0
                           ? surface.revealRequestId
                           : 0;
-                      const { environmentId, ...rest } = surface;
+                      const { environmentId, back, forward, ...rest } = surface;
+                      const history = {
+                        back: fileHistoryEntries(back),
+                        forward: fileHistoryEntries(forward),
+                      };
                       // Anything else stored under that name is not an environment.
                       return [
                         {
@@ -496,6 +569,8 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                           revealLine,
                           revealRequestId,
                           ...(typeof environmentId === "string" ? { environmentId } : {}),
+                          ...(history.back.length > 0 ? { back: history.back } : {}),
+                          ...(history.forward.length > 0 ? { forward: history.forward } : {}),
                         },
                       ];
                     }
@@ -790,6 +865,67 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
                   )
                 : [...withoutStandaloneExplorer, surface],
             };
+          }),
+        ),
+      navigateFile: (ref, surfaceId, requestedPath, line, requestedEnvironmentId) =>
+        set((state) =>
+          userAction(state, scopedThreadKey(ref), (current) => {
+            const source = current.surfaces.find((surface) => surface.id === surfaceId);
+            if (source?.kind !== "file" || source.attachment !== undefined) return current;
+            const environmentId =
+              requestedEnvironmentId === undefined || requestedEnvironmentId === ref.environmentId
+                ? undefined
+                : requestedEnvironmentId;
+            const relativePath = /^[A-Za-z]:\/+$/.test(requestedPath)
+              ? requestedPath
+              : requestedPath.replace(/\/+$/, "") || requestedPath;
+            const targetId = fileSurfaceId(relativePath, environmentId);
+            if (targetId === source.id) {
+              // A link to the note itself, such as to one of its lines: reveal, keep history.
+              return replaceFileSurface(current, surfaceId, {
+                ...source,
+                revealLine: normalizeRevealLine(line),
+                revealRequestId: source.revealRequestId + 1,
+              });
+            }
+            const back = [...(source.back ?? []), historyEntryOf(source)].slice(-MAX_FILE_HISTORY);
+            return replaceFileSurface(current, surfaceId, {
+              ...(fileSurface(
+                relativePath,
+                normalizeRevealLine(line),
+                1,
+                environmentId,
+              ) as FileSurface),
+              back,
+            });
+          }),
+        ),
+      stepFileHistory: (ref, surfaceId, step) =>
+        set((state) =>
+          userAction(state, scopedThreadKey(ref), (current) => {
+            const source = current.surfaces.find((surface) => surface.id === surfaceId);
+            if (source?.kind !== "file") return current;
+            const back = source.back ?? [];
+            const forward = source.forward ?? [];
+            const entry = step < 0 ? back.at(-1) : forward[0];
+            if (entry === undefined) return current;
+            const target = fileSurface(
+              entry.relativePath,
+              null,
+              1,
+              entry.environmentId,
+            ) as FileSurface;
+            const history =
+              step < 0
+                ? { back: back.slice(0, -1), forward: [historyEntryOf(source), ...forward] }
+                : { back: [...back, historyEntryOf(source)], forward: forward.slice(1) };
+            return replaceFileSurface(current, surfaceId, {
+              ...target,
+              ...(history.back.length > 0 ? { back: history.back.slice(-MAX_FILE_HISTORY) } : {}),
+              ...(history.forward.length > 0
+                ? { forward: history.forward.slice(0, MAX_FILE_HISTORY) }
+                : {}),
+            });
           }),
         ),
       navigateFolder: (ref, surfaceId, relativePath, folderTrail, keepSource = false) =>

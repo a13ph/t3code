@@ -1,15 +1,11 @@
-import { createEnvironmentRpcQueryAtomFamily } from "@t3tools/client-runtime/state/runtime";
-import { WS_METHODS } from "@t3tools/contracts";
+import { createLinkResolverEnvironmentAtoms } from "@t3tools/client-runtime/state/link-resolver";
 
 import { connectionAtomRuntime } from "../connection/runtime";
 
-/**
- * Web-only: a resolved link in chat asks a connected server what it names. The short stale time
- * lets a renamed target show its new label the next time the chip mounts.
- */
-export const resolvedLinkLookup = createEnvironmentRpcQueryAtomFamily(connectionAtomRuntime, {
-  label: "environment-data:links:resolve",
-  tag: WS_METHODS.linksResolve,
-  staleTimeMs: 5_000,
-  idleTtlMs: 60_000,
-});
+const linkResolverAtoms = createLinkResolverEnvironmentAtoms(connectionAtomRuntime);
+
+/** What a link names, asked of one connected server. */
+export const resolvedLinkLookup = linkResolverAtoms.resolve;
+
+/** The notes that link to a note, asked of the server holding it. */
+export const linkBacklinksLookup = linkResolverAtoms.backlinks;

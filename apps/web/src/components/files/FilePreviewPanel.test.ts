@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 
 import { remapFileCommentAnnotations } from "./fileCommentAnnotations";
 import {
+  fileHistoryStepOfKey,
   filePreviewReadErrorMessage,
   isMarkdownPreviewFile,
   resolveFilePreviewPath,
@@ -396,5 +397,30 @@ describe("document preview contents", () => {
     expect(result.pages[0]!.html).toContain('alt="© ≂̸"');
     expect(result.pages[1]!.html).toContain('src="data:image/png;base64,');
     expect(result.pages[1]!.html).not.toMatch(/https:|script|alert/);
+  });
+});
+
+describe("file tab history keys", () => {
+  const key = (key: string, target: unknown = null, extra: object = {}) => ({
+    altKey: true,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    defaultPrevented: false,
+    key,
+    target,
+    ...extra,
+  });
+  const inside = (match: boolean) => ({ closest: () => (match ? {} : null) });
+
+  it("steps back and forward on Alt+Left and Alt+Right in the preview", () => {
+    expect(fileHistoryStepOfKey(key("ArrowLeft", inside(false)))).toBe(-1);
+    expect(fileHistoryStepOfKey(key("ArrowRight"))).toBe(1);
+    expect(fileHistoryStepOfKey(key("ArrowLeft", null, { shiftKey: true }))).toBeNull();
+  });
+
+  it("leaves the keys to a text field or an editor that took them", () => {
+    expect(fileHistoryStepOfKey(key("ArrowLeft", inside(true)))).toBeNull();
+    expect(fileHistoryStepOfKey(key("ArrowRight", null, { defaultPrevented: true }))).toBeNull();
   });
 });

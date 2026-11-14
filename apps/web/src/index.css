@@ -1928,6 +1928,12 @@ code {
   list-style-type: disc;
 }
 
+/* A note property's list is a column of values, like the notes linking to it. */
+[data-note-properties] .chat-markdown ul {
+  padding-inline-start: 0;
+  list-style-type: none;
+}
+
 /* --list-gutter defaults to the same 1.25rem as .chat-markdown ul, but
    ChatMarkdown's `ol` renderer widens it (via inline style) for lists whose
    widest marker has multiple characters so it isn't clipped by list-style-position:

@@ -1,4 +1,8 @@
-import { isReservedLinkScheme, isResolvedLinkId } from "@t3tools/contracts";
+import {
+  isReservedLinkScheme,
+  isResolvedLinkId,
+  WIKILINK_RESOLVER_SCHEME,
+} from "@t3tools/contracts";
 import { unwrapResolvedLinkHref } from "@t3tools/shared/markdownPipeline";
 
 /**
@@ -39,7 +43,10 @@ export function parseResolvedLinkHref(
   return isResolvedLinkId(id) ? { scheme, id } : null;
 }
 
-/** Every link scheme the given servers resolve, sorted, deduplicated and lower case. */
+/**
+ * Every link scheme the given servers resolve for chat links, sorted, deduplicated and lower
+ * case. The wikilink scheme names a resolver for notes, not a kind of link, so it is left out.
+ */
 export function linkSchemesOf(
   configs: Iterable<{ readonly linkSchemes?: ReadonlyArray<string> | undefined } | undefined>,
 ): ReadonlyArray<string> {
@@ -47,10 +54,25 @@ export function linkSchemesOf(
   for (const config of configs) {
     for (const raw of config?.linkSchemes ?? []) {
       const scheme = raw.trim().toLowerCase();
-      if (RESOLVED_LINK_SCHEME.test(scheme) && !isReservedLinkScheme(scheme)) schemes.add(scheme);
+      if (
+        RESOLVED_LINK_SCHEME.test(scheme) &&
+        !isReservedLinkScheme(scheme) &&
+        scheme !== WIKILINK_RESOLVER_SCHEME
+      ) {
+        schemes.add(scheme);
+      }
     }
   }
   return [...schemes].sort();
+}
+
+/** Whether a server resolves wikilinks in notes, and answers which notes link to a note. */
+export function resolvesWikilinks(
+  config: { readonly linkSchemes?: ReadonlyArray<string> | undefined } | null | undefined,
+): boolean {
+  return (config?.linkSchemes ?? []).some(
+    (scheme) => scheme.trim().toLowerCase() === WIKILINK_RESOLVER_SCHEME,
+  );
 }
 
 export function resolvedLinkHref(link: ResolvedLinkRef): string {

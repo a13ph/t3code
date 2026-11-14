@@ -228,6 +228,20 @@ export function RightPanelSurfaceContent(props: {
                 .navigateFolder(threadRef, surface.id, relativePath, folderTrail, keepSource)
             }
             folderTrail={surface.folderTrail}
+            history={
+              surface.kind === "file" && attachment === undefined
+                ? {
+                    canGoBack: (surface.back?.length ?? 0) > 0,
+                    canGoForward: (surface.forward?.length ?? 0) > 0,
+                    step: (step) =>
+                      useRightPanelStore.getState().stepFileHistory(threadRef, surface.id, step),
+                    follow: (path, line, linkEnvironmentId) =>
+                      useRightPanelStore
+                        .getState()
+                        .navigateFile(threadRef, surface.id, path, line, linkEnvironmentId),
+                  }
+                : undefined
+            }
             onPendingChange={files.onPendingChange}
             selectedFilePending={surface.kind === "file" && files.pendingSurfaceIds.has(surface.id)}
             workspaceMutationId={props.workspaceMutationId}

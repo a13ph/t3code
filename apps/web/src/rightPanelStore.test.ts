@@ -38,13 +38,111 @@ async function reloadRightPanelStore() {
   expect(useRightPanelStore.persist.hasHydrated()).toBe(true);
 }
 
+describe("rightPanelStore file tab history", () => {
+  const state = () => selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+
+  it("follows links in place and steps back and forward", () => {
+    const store = useRightPanelStore.getState();
+    store.openFile(refA, "notes/a.md");
+    store.openFile(refA, "other.md");
+    store.activateSurface(refA, "file:notes/a.md");
+    store.navigateFile(refA, "file:notes/a.md", "notes/b.md", 4);
+    store.navigateFile(refA, "file:notes/b.md", "/home/u/c.md", undefined, "env-2");
+    expect(state().surfaces.map((surface) => surface.id)).toEqual([
+      "file:env-2:/home/u/c.md",
+      "file:other.md",
+    ]);
+    expect(state().activeSurfaceId).toBe("file:env-2:/home/u/c.md");
+    expect(state().surfaces[0]).toMatchObject({
+      environmentId: "env-2",
+      back: [{ relativePath: "notes/a.md" }, { relativePath: "notes/b.md" }],
+    });
+
+    store.stepFileHistory(refA, "file:env-2:/home/u/c.md", -1);
+    expect(state().surfaces[0]).toEqual({
+      id: "file:notes/b.md",
+      kind: "file",
+      relativePath: "notes/b.md",
+      revealLine: null,
+      revealRequestId: 1,
+      back: [{ relativePath: "notes/a.md" }],
+      forward: [{ relativePath: "/home/u/c.md", environmentId: "env-2" }],
+    });
+
+    store.stepFileHistory(refA, "file:notes/b.md", 1);
+    expect(state().surfaces[0]).toMatchObject({
+      id: "file:env-2:/home/u/c.md",
+      back: [{ relativePath: "notes/a.md" }, { relativePath: "notes/b.md" }],
+    });
+    expect(state().surfaces[0]).not.toHaveProperty("forward");
+
+    // A new link clears forward; stepping past either end changes nothing.
+    store.stepFileHistory(refA, "file:env-2:/home/u/c.md", 1);
+    expect(state().activeSurfaceId).toBe("file:env-2:/home/u/c.md");
+  });
+
+  it("drops a forward trail on a new link and closes a duplicate tab", () => {
+    const store = useRightPanelStore.getState();
+    store.openFile(refA, "a.md");
+    store.navigateFile(refA, "file:a.md", "b.md");
+    store.stepFileHistory(refA, "file:b.md", -1);
+    store.openFile(refA, "c.md");
+    store.activateSurface(refA, "file:a.md");
+    store.navigateFile(refA, "file:a.md", "c.md");
+    expect(state().surfaces).toEqual([
+      expect.objectContaining({ id: "file:c.md", back: [{ relativePath: "a.md" }] }),
+    ]);
+    expect(state().surfaces[0]).not.toHaveProperty("forward");
+  });
+
+  it("reveals a line without new history for a link to the same file", () => {
+    const store = useRightPanelStore.getState();
+    store.openFile(refA, "a.md");
+    store.navigateFile(refA, "file:a.md", "a.md", 9);
+    expect(state().surfaces[0]).toMatchObject({ revealLine: 9, revealRequestId: 2 });
+    expect(state().surfaces[0]).not.toHaveProperty("back");
+  });
+
+  it("keeps valid history through a reload and drops the rest", () => {
+    const migrated = migratePersistedRightPanelState({
+      byThreadKey: {
+        "env-1:thread-A": {
+          isOpen: true,
+          activeSurfaceId: "file:a.md",
+          surfaces: [
+            {
+              id: "file:a.md",
+              kind: "file",
+              relativePath: "a.md",
+              revealLine: null,
+              revealRequestId: 1,
+              back: [{ relativePath: "x.md" }, { relativePath: 3 }, "y", { relativePath: "" }],
+              forward: "nope",
+            },
+          ],
+        },
+      },
+    });
+    expect(migrated.byThreadKey["env-1:thread-A"]?.surfaces[0]).toEqual({
+      id: "file:a.md",
+      kind: "file",
+      relativePath: "a.md",
+      revealLine: null,
+      revealRequestId: 1,
+      back: [{ relativePath: "x.md" }],
+    });
+  });
+});
+
 describe("rightPanelStore file surfaces on another server", () => {
   it("keeps one path on two servers as two tabs and the thread's own as a plain one", () => {
     const store = useRightPanelStore.getState();
     store.openFile(refA, "/home/user/x.md", undefined, "env-1");
     store.openFile(refA, "/home/user/x.md", 3, "env-2");
-    const surfaces = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)
-      .surfaces;
+    const surfaces = selectThreadRightPanelState(
+      useRightPanelStore.getState().byThreadKey,
+      refA,
+    ).surfaces;
     expect(surfaces.map((surface) => surface.id)).toEqual([
       "file:/home/user/x.md",
       "file:env-2:/home/user/x.md",
@@ -88,13 +186,7 @@ describe("rightPanelStore file surfaces on another server", () => {
   it("walks up to a folder on the same server", () => {
     const store = useRightPanelStore.getState();
     store.openFile(refA, "/home/user/x.md", undefined, "env-2");
-    store.navigateFolder(
-      refA,
-      "file:env-2:/home/user/x.md",
-      "/home/user",
-      "/home/user/x.md",
-      true,
-    );
+    store.navigateFolder(refA, "file:env-2:/home/user/x.md", "/home/user", "/home/user/x.md", true);
     const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
     expect(state.activeSurfaceId).toBe("file:env-2:/home/user");
     expect(state.surfaces[1]).toMatchObject({

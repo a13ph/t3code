@@ -1,3 +1,4 @@
+import { parseWikilinkInner, wikilinkHref } from "@t3tools/shared/wikilinks";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -53,6 +54,18 @@ describe("relative links inside a rendered host file", () => {
       filePath: "/repo/docs/src/main.ts",
       workspaceRelativePath: "docs/src/main.ts",
     });
+  });
+
+  it("resolve a wikilink's file name holding punctuation", () => {
+    const href = wikilinkHref(parseWikilinkInner("trip - food, maps (v2)")!);
+    for (const [cwd, base] of [
+      ["/repo", "/notes/drafts"],
+      ["C:\\repo", "D:\\notes\\drafts"],
+    ] as const) {
+      expect(resolveMarkdownFileLinkMeta(href, cwd, base)).toMatchObject({
+        basename: "trip - food, maps (v2).md",
+      });
+    }
   });
 });
 
