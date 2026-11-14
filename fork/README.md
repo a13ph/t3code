@@ -5,9 +5,16 @@ this fork's `public/*` branches merged on top, plus the files that
 build it. A push to any `fork-release*` branch runs the workflows:
 
 - `flake.nix`: the `desktop`, `server` (no Codex) and `t3-keeper-src`
-  packages for NixOS, from nixpkgs' T3 Code recipe.
-- `.github/workflows/fork-nix.yml`: builds them and pushes them to the
-  `a13ph-t3code` Cachix cache.
+  packages for NixOS, from nixpkgs' T3 Code recipe, and
+  `lib.mkPackages`, which makes the first two from a full build.
+  - `fork/wrapper.nix` wraps a build as nixpkgs' wrapper does, without
+    a link per file of it.
+  - `fork/server.nix` cuts the headless server out of the full build:
+    `apps/server` and only the packages it needs at run time
+    (`fork/server-closure.py`).
+- `.github/workflows/fork-nix.yml`: builds them and starts the server
+  (`fork/check-server.sh`, with a control run that must fail). Only
+  then does it push them to the Cachix cache the workflow names.
 - `.github/workflows/fork-android.yml`: the signed arm64 APK.
 - `.github/workflows/fork-windows.yml`: the unsigned Windows x64
   installer, packaged by upstream's `release-desktop.yml`.

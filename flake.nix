@@ -72,17 +72,48 @@
           + prev.preBuild;
         }
       );
+      # The packages made from one full build. Exposed as lib.mkPackages, so
+      # a caller that rebuilds `unwrapped` (with another src) gets the same
+      # wrappers and server cut from this flake's nixpkgs.
+      mkPackages =
+        full:
+        let
+          # nixpkgs' resource monitor, the sidecar its wrapper points at.
+          resourceMonitor = (pkgs.t3code.override { t3code-unwrapped = full; }).resourceMonitor;
+          serverUnwrapped = pkgs.callPackage ./fork/server.nix {
+            inherit nodejs;
+            t3code-unwrapped = full;
+          };
+          wrap =
+            u: args:
+            pkgs.callPackage ./fork/wrapper.nix (
+              {
+                t3code-unwrapped = u;
+                t3code-resource-monitor = resourceMonitor;
+              }
+              // args
+            );
+        in
+        {
+          inherit serverUnwrapped;
+          desktop = wrap full { };
+          server = wrap serverUnwrapped { enableCodex = false; };
+        };
+      built = mkPackages unwrapped;
     in
     {
+      lib.mkPackages = mkPackages;
+
       packages.${system} = {
         # The desktop app and its bundled server, with the Codex CLI on PATH
         # as nixpkgs ships it.
-        desktop = pkgs.t3code.override { t3code-unwrapped = unwrapped; };
-        # The same build for a headless `t3` server, without Codex.
-        server = pkgs.t3code.override {
-          t3code-unwrapped = unwrapped;
-          enableCodex = false;
-        };
+        desktop = built.desktop;
+        # A headless `t3` server, without Codex: apps/server and the
+        # packages it needs at run time, cut out of the same build.
+        server = built.server;
+        server-unwrapped = built.serverUnwrapped;
+        # The node binary the server runs on, for CI's start check.
+        server-node = nodejs;
         # The t3-keeper modules the server spawns Claude through when
         # T3_KEEPER_SOCKET is set, for a keeper service run beside it.
         t3-keeper-src = pkgs.runCommand "t3-keeper-src-${base.version}" { } ''

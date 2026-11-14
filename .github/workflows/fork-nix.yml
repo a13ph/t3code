@@ -43,23 +43,65 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h /
       - uses: cachix/install-nix-action@v31
+      # Nothing is pushed until the server start check below passed.
       - uses: cachix/cachix-action@v16
         if: env.CACHIX_AUTH_TOKEN != ''
         with:
           name: ${{ env.CACHIX_CACHE }}
           authToken: ${{ env.CACHIX_AUTH_TOKEN }}
+          skipPush: true
+          useDaemon: false
       - name: Build
         run: |
           set -euo pipefail
           nix build --print-build-logs --no-link --print-out-paths \
-            .#desktop .#server .#t3-keeper-src | tee out-paths.txt
+            .#desktop .#server .#t3-keeper-src | tee out-paths
+          nix build --no-link --print-out-paths \
+            .#server-unwrapped .#server-node > check-paths
+      # The server output holds only the packages its package.json leads
+      # to; one it loads without declaring would stop it at start. The
+      # control drops @bufbuild/protobuf, which the server loads at start
+      # through @cursor/sdk, a dependency of a dependency.
+      - name: Start the server
+        run: |
+          set -euo pipefail
+          server=$(sed -n 2p out-paths)
+          su=$(sed -n 1p check-paths)
+          node=$(sed -n 2p check-paths)/bin/node
+          fork/check-server.sh "$server" "$su" "$node" '@bufbuild+protobuf@' | tee check-server-out
+      - name: Push to Cachix
+        if: env.CACHIX_AUTH_TOKEN != ''
+        run: cachix push "$CACHIX_CACHE" < out-paths
       - name: Store paths
         run: |
+          set -euo pipefail
+          desktop=$(sed -n 1p out-paths)
+          server=$(sed -n 2p out-paths)
+          su=$(sed -n 1p check-paths)
+          full=$(nix-store -q --references "$desktop" | grep -- '-t3code-unwrapped-')
           {
             echo '### Store paths'
             echo
             echo '```'
-            cat out-paths.txt
+            cat out-paths
+            echo '```'
+            echo
+            echo '### Sizes'
+            echo
+            echo 'Own size by du on the runner (ext4), then closure size by nix path-info -S, in MiB.'
+            echo
+            echo '```'
+            for p in "$desktop" "$server" "$full" "$su"; do
+              own=$(du -sm "$p" | cut -f1)
+              closure=$(nix path-info -S "$p" | awk '{print int($2 / 1048576)}')
+              echo "$own own, $closure closure, $p"
+            done
+            echo '```'
+            echo
+            echo '### Server start check'
+            echo
+            echo '```'
+            cat check-server-out
             echo '```'
             if [[ -z "$CACHIX_AUTH_TOKEN" ]]; then
               echo
