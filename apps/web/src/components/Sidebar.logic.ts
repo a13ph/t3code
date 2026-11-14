@@ -56,6 +56,44 @@ export function shouldNavigateAfterThreadPark(input: {
   );
 }
 
+/** Where a settle or snooze moves on to; `go` settles once the route has changed. */
+export type ParkNavigation = { readonly go: () => Promise<unknown> | void };
+
+/**
+ * Settles or snoozes the open thread and moves on once it shows parked, which the
+ * optimistic state does before the server replies; otherwise after the server accepts.
+ * A refused park returns to the thread unless the user has left where it moved on to.
+ */
+export async function parkThenMoveOn<R extends { readonly _tag: string }>(input: {
+  readonly park: () => Promise<R>;
+  readonly moveOn: ParkNavigation | null;
+  readonly showsParked: () => boolean;
+  readonly location: () => string;
+  readonly returnToThread: () => void;
+}): Promise<R> {
+  const moveOn = input.moveOn;
+  const go = async () => {
+    await moveOn?.go();
+  };
+  const parking = input.park();
+  if (moveOn === null || !input.showsParked()) {
+    const result = await parking;
+    if (result._tag === "Success" && input.showsParked()) void go().catch(() => {});
+    return result;
+  }
+  // Where the move landed, or null when it failed.
+  const landed = go().then(
+    () => input.location(),
+    () => null,
+  );
+  const result = await parking;
+  if (result._tag !== "Success") {
+    const at = await landed;
+    if (at !== null && input.location() === at) input.returnToThread();
+  }
+  return result;
+}
+
 /**
  * The inbox thread that has waited longest for the user, for the "Oldest
  * waiting" choice after a settle or snooze. Inbox order is newest return

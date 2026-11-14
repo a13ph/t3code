@@ -14,6 +14,7 @@ import {
   orderItemsByPreferredIds,
   pinOrderKeyBetween,
   resolveOldestWaitingThread,
+  parkThenMoveOn,
   resolveProjectStatusIndicator,
   resolveSidebarSweepKeys,
   resolveSidebarThreadStatus,
@@ -1492,5 +1493,109 @@ describe("resolveSidebarFolderDot", () => {
     expect(resolveSidebarFolderDot([idle, working])).toBe("working");
     expect(resolveSidebarFolderDot([working, unread])).toBe("unread");
     expect(resolveSidebarFolderDot([unread, limited])).toBe("attention");
+  });
+});
+
+describe("moving on after a settle or snooze", () => {
+  const success = { _tag: "Success" } as const;
+  const failure = { _tag: "Failure" } as const;
+  type Result = typeof success | typeof failure;
+  // Lets the promise callbacks a step queued run before the next step.
+  const flushPromises = async () => {
+    for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
+  };
+
+  function setup(input: { parkedBeforeReply: boolean; parkedAfterReply?: boolean }) {
+    const events: string[] = [];
+    let parked = input.parkedBeforeReply;
+    let location = "/current";
+    let reply: (result: Result) => void = () => {};
+    let land: () => void = () => {};
+    const run = parkThenMoveOn<Result>({
+      park: () =>
+        new Promise<Result>((resolve) => {
+          reply = (result) => {
+            parked = input.parkedAfterReply ?? parked;
+            resolve(result);
+          };
+        }),
+      moveOn: {
+        go: () => {
+          events.push("moved");
+          return new Promise<void>((resolve) => {
+            land = () => {
+              location = "/oldest";
+              resolve();
+            };
+          });
+        },
+      },
+      showsParked: () => parked && location === "/current",
+      location: () => location,
+      returnToThread: () => {
+        events.push("returned");
+        location = "/current";
+      },
+    });
+    return {
+      events,
+      run,
+      reply: (result: Result) => reply(result),
+      land: () => land(),
+      leaveTo: (path: string) => {
+        location = path;
+      },
+    };
+  }
+
+  it("moves on before the server replies when the thread already shows parked", async () => {
+    const park = setup({ parkedBeforeReply: true });
+    expect(park.events).toEqual(["moved"]);
+    park.land();
+    park.reply(success);
+    await park.run;
+    expect(park.events).toEqual(["moved"]);
+  });
+
+  it("waits for the server when the thread cannot show parked yet", async () => {
+    const park = setup({ parkedBeforeReply: false, parkedAfterReply: true });
+    expect(park.events).toEqual([]);
+    park.reply(success);
+    await park.run;
+    expect(park.events).toEqual(["moved"]);
+  });
+
+  it("returns to the thread when the server refuses the park", async () => {
+    const park = setup({ parkedBeforeReply: true });
+    park.land();
+    park.reply(failure);
+    await park.run;
+    expect(park.events).toEqual(["moved", "returned"]);
+  });
+
+  it("returns to the thread when the refusal beats the move", async () => {
+    const park = setup({ parkedBeforeReply: true });
+    park.reply(failure);
+    await flushPromises();
+    park.land();
+    await park.run;
+    expect(park.events).toEqual(["moved", "returned"]);
+  });
+
+  it("stays where the user went when a refusal arrives after they moved again", async () => {
+    const park = setup({ parkedBeforeReply: true });
+    park.land();
+    await flushPromises();
+    park.leaveTo("/settings");
+    park.reply(failure);
+    await park.run;
+    expect(park.events).toEqual(["moved"]);
+  });
+
+  it("stays on the thread when a park it waited for is refused", async () => {
+    const park = setup({ parkedBeforeReply: false });
+    park.reply(failure);
+    await park.run;
+    expect(park.events).toEqual([]);
   });
 });
