@@ -1,0 +1,65 @@
+name: Fork cite-on-select checks
+
+# Checks of the cite-on-select change against the release base, on a ci/ branch:
+# the web typecheck, the changed-file checks, and the citation unit and browser tests.
+on:
+  push:
+    branches: ["ci/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-test-cite-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Cite-on-select checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          sparse-checkout: |
+            /*
+            !/.repos/
+            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: ./.github/actions/setup-ci-deps
+
+      - name: Typecheck web
+        if: ${{ !cancelled() }}
+        run: vp run --filter @t3tools/web typecheck
+
+      - name: Install Chromium for web browser tests
+        if: ${{ !cancelled() }}
+        working-directory: apps/web
+        run: npx playwright install --with-deps --only-shell chromium
+
+      - name: Checks of changed files
+        if: ${{ !cancelled() }}
+        run: vp run check:changed 6d450a4284852af137b2f3407fddd89eb76e7644
+
+      - name: Formatter diff of changed files
+        if: ${{ failure() }}
+        run: |
+          git diff --name-only --diff-filter=d 6d450a4284852af137b2f3407fddd89eb76e7644 \
+            | xargs vp fmt --no-error-on-unmatched-pattern
+          git diff
+
+      - name: Citation tests
+        if: ${{ !cancelled() }}
+        working-directory: apps/web
+        run: >-
+          vp test run
+          src/components/chat/assistantCitationCommentDismissal.test.ts
+          src/components/chat/AssistantSelectionToolbar.browser.test.tsx
+          src/components/chat/AssistantCitationChip.browser.test.tsx
+          src/components/ComposerPromptEditorTiptap.citeOnSelection.browser.test.tsx
+          src/components/ComposerPromptEditorTiptap.citationDraft.browser.test.tsx
