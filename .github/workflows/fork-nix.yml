@@ -91,10 +91,11 @@ jobs:
             echo 'Own size by du on the runner (ext4), then closure size by nix path-info -S, in MiB.'
             echo
             echo '```'
-            for p in "$desktop" "$server" "$full" "$su"; do
+            for kv in "desktop=$desktop" "server=$server" "full-build=$full" "server-build=$su"; do
+              p=${kv#*=}
               own=$(du -sm "$p" | cut -f1)
               closure=$(nix path-info -S "$p" | awk '{print int($2 / 1048576)}')
-              echo "$own own, $closure closure, $p"
+              echo "${kv%%=*}: $own own, $closure closure, $p"
             done
             echo '```'
             echo

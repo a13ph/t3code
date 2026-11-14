@@ -12,7 +12,9 @@
   t3code-unwrapped,
 }:
 
-runCommand "t3code-server-unwrapped-${t3code-unwrapped.version}"
+# It keeps the full build's store name, t3code-unwrapped-<version>: tools
+# that tell T3 builds apart by the running server's paths match that name.
+runCommand "t3code-unwrapped-${t3code-unwrapped.version}"
   {
     inherit (t3code-unwrapped) version;
     nativeBuildInputs = [
