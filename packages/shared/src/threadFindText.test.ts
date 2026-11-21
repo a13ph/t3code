@@ -99,46 +99,44 @@ const assistantSegments = (text: string, cwd?: string) =>
 it("searches displayed prose and file-chip labels without hidden paths", () => {
   expect(
     assistantSegments("[important description](/tmp/actual.ts). `/tmp/inline-example.ts:42`"),
-  ).toEqual(["important description actual.ts. inline-example.ts · L42"]);
-  expect(assistantSegments("[label](src/main.ts#L3C2)", "/workspace/repo")).toEqual([
-    "label main.ts · L3:C2",
-  ]);
+  ).toEqual(["important description. inline-example.ts · L42"]);
+  // A labelled link's chip shows only its label.
+  expect(assistantSegments("[label](src/main.ts#L3C2)", "/workspace/repo")).toEqual(["label"]);
+  expect(assistantSegments("[](src/main.ts#L3C2)", "/workspace/repo")).toEqual(["main.ts · L3:C2"]);
   expect(assistantSegments("[label](src/main.ts#L3C2)")).toEqual(["label"]);
   for (const text of [
-    "[a](/repo/app/(a)/page.tsx) and [b](/repo/app/(b)/page.tsx)",
-    String.raw`[a](/repo/app/\(a\)/page.tsx) and [b](/repo/app/\(b\)/page.tsx)`,
+    "[](/repo/app/(a)/page.tsx) and [](/repo/app/(b)/page.tsx)",
+    String.raw`[](/repo/app/\(a\)/page.tsx) and [](/repo/app/\(b\)/page.tsx)`,
   ]) {
-    expect(assistantSegments(text, "/repo")).toEqual([
-      "a page.tsx · app/(a) and b page.tsx · app/(b)",
-    ]);
+    expect(assistantSegments(text, "/repo")).toEqual(["page.tsx · app/(a) and page.tsx · app/(b)"]);
   }
   expect(
     assistantSegments(
-      String.raw`[a](C:\repo\.a\page.tsx) and [b](C:\repo\.b\page.tsx)`,
+      String.raw`[](C:\repo\.a\page.tsx) and [](C:\repo\.b\page.tsx)`,
       String.raw`C:\repo`,
     ),
-  ).toEqual(["a page.tsx · repo/.a and b page.tsx · repo/.b"]);
+  ).toEqual(["page.tsx · repo/.a and page.tsx · repo/.b"]);
   expect(
     assistantSegments(
-      String.raw`[a](C:\repo\.a\x&amp;y\page.tsx) and [b](C:\repo\.b\x&amp;y\page.tsx)`,
+      String.raw`[](C:\repo\.a\x&amp;y\page.tsx) and [](C:\repo\.b\x&amp;y\page.tsx)`,
       String.raw`C:\repo`,
     ),
-  ).toEqual(["a page.tsx · .a/x&y and b page.tsx · .b/x&y"]);
+  ).toEqual(["page.tsx · .a/x&y and page.tsx · .b/x&y"]);
   expect(
-    assistantSegments("[a](/repo/a&amp;b/page.tsx) and [b](/repo/c&amp;d/page.tsx)", "/repo"),
-  ).toEqual(["a page.tsx · repo/a&b and b page.tsx · repo/c&d"]);
+    assistantSegments("[](/repo/a&amp;b/page.tsx) and [](/repo/c&amp;d/page.tsx)", "/repo"),
+  ).toEqual(["page.tsx · repo/a&b and page.tsx · repo/c&d"]);
   expect(
-    assistantSegments("[a](</repo/a&b)/page.tsx>) and [b](</repo/c&d)/page.tsx>)", "/repo"),
-  ).toEqual(["a page.tsx · repo/a&b) and b page.tsx · repo/c&d)"]);
+    assistantSegments("[](</repo/a&b)/page.tsx>) and [](</repo/c&d)/page.tsx>)", "/repo"),
+  ).toEqual(["page.tsx · repo/a&b) and page.tsx · repo/c&d)"]);
   expect(
-    assistantSegments("[a](/repo/a&b>c/page.tsx) and [b](/repo/c&d>e/page.tsx)", "/repo"),
-  ).toEqual(["a page.tsx · repo/a&b>c and b page.tsx · repo/c&d>e"]);
+    assistantSegments("[](/repo/a&b>c/page.tsx) and [](/repo/c&d>e/page.tsx)", "/repo"),
+  ).toEqual(["page.tsx · repo/a&b>c and page.tsx · repo/c&d>e"]);
   expect(
     assistantSegments(
-      String.raw`[a](</repo/a\<b &amp;c/page.tsx>) and [b](</repo/d\<e &amp;f/page.tsx>)`,
+      String.raw`[](</repo/a\<b &amp;c/page.tsx>) and [](</repo/d\<e &amp;f/page.tsx>)`,
       "/repo",
     ),
-  ).toEqual(["a page.tsx · repo/a<b &c and b page.tsx · repo/d<e &f"]);
+  ).toEqual(["page.tsx · repo/a<b &c and page.tsx · repo/d<e &f"]);
 });
 
 it("keeps fence paths literal and indexes file-chip labels in user messages", () => {
@@ -159,7 +157,7 @@ it.each([
     source: "assistant",
     cwd: "/workspace/repo",
     text: "[Read notes](src/notes.ts:42-64) and `test/notes.ts:42-64`",
-    expected: ["Read notes notes.ts · repo/src · L42–64 and notes.ts · repo/test · L42–64"],
+    expected: ["Read notes and notes.ts · repo/test · L42–64"],
   },
   {
     source: "assistant",
@@ -170,10 +168,7 @@ it.each([
       "`port:42-64`",
       "\n```text\n/tmp/notes.ts:42-64\n```",
     ].join(" "),
-    expected: [
-      "notes.ts · L42–64 relative web reverse notes.ts · L64 port:42-64",
-      "/tmp/notes.ts:42-64\n",
-    ],
+    expected: ["notes.ts · L42–64 relative web reverse port:42-64", "/tmp/notes.ts:42-64\n"],
   },
   {
     source: "plan",

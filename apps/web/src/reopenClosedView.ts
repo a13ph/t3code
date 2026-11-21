@@ -132,7 +132,12 @@ export async function reopenClosedView(
     case "file":
       if (surface.attachment) panels.openAttachment(ref, surface.attachment);
       else {
-        panels.openFile(ref, surface.relativePath, surface.revealLine ?? undefined);
+        panels.openFile(
+          ref,
+          surface.relativePath,
+          surface.revealLine ?? undefined,
+          surface.environmentId,
+        );
         if (typeof surface.folderTrail === "string") {
           panels.navigateFolder(ref, surface.id, surface.relativePath, surface.folderTrail);
         }

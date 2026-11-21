@@ -71,7 +71,8 @@ const isClosedViewEntry = (entry: unknown): entry is ClosedViewEntry => {
         typeof surface.relativePath === "string" &&
         (surface.revealLine === null || Number.isSafeInteger(surface.revealLine)) &&
         Number.isSafeInteger(surface.revealRequestId) &&
-        (surface.attachment === undefined || isAttachment(surface.attachment))
+        (surface.attachment === undefined || isAttachment(surface.attachment)) &&
+        (surface.environmentId === undefined || typeof surface.environmentId === "string")
       );
     case "device":
       return (
