@@ -15,7 +15,9 @@ import * as Schema from "effect/Schema";
 import type { RemoteOpenMode, RemoteOpenState } from "./remoteOpen";
 
 export const OPEN_IN_APPS = [
+  // oxlint-disable-next-line t3code/no-untranslated-copy -- product name, the same in every language
   { id: "nvim", label: "Neovim" },
+  // oxlint-disable-next-line t3code/no-untranslated-copy -- product name, the same in every language
   { id: "obsidian", label: "Obsidian" },
 ] as const;
 

@@ -276,7 +276,7 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
           ...(onOpenTarget
             ? (openTargets ?? []).map((target) => ({
                 id: `open-target:${target}` as const,
-                label: `Open in ${chipOpenTargetLabel(target)}`,
+                label: gt("Open in {editor}", { editor: chipOpenTargetLabel(target) }),
               }))
             : []),
           ...(onOpenInBrowser

@@ -724,7 +724,7 @@ function useChatMarkdownState({
   ) => {
     const showFailure = (description: string) =>
       toastManager.add(
-        stackedThreadToast({ type: "error", title: "Unable to open file", description }),
+        stackedThreadToast({ type: "error", title: gt("Unable to open file"), description }),
       );
     // Local VSCodium keeps the stock route: the server launches `codium`.
     if (target === "vscodium" && remoteOpen.state.mode === "local-exec") {
@@ -735,12 +735,12 @@ function useChatMarkdownState({
       }).then((result) => {
         if (result._tag === "Success" || isAtomCommandInterrupted(result)) return;
         const error = squashAtomCommandFailure(result);
-        showFailure(error instanceof Error ? error.message : "An error occurred.");
+        showFailure(thrownErrorMessage(error, m) ?? gt("An error occurred."));
       });
       return;
     }
     if (!isAbsolutePath(filePath)) {
-      showFailure(`${filePath} is not an absolute path.`);
+      showFailure(gt("{path} is not an absolute path.", { path: filePath }));
       return;
     }
     const url = buildChipOpenUrl({
@@ -752,7 +752,7 @@ function useChatMarkdownState({
     });
     if (url === undefined) return;
     void openRemoteEditorUrl(url).then((opened) => {
-      if (!opened) showFailure("The desktop app refused the link.");
+      if (!opened) showFailure(gt("The desktop app refused the link."));
     });
   };
   const revealFileInFileManager = (filePath: string) => {
