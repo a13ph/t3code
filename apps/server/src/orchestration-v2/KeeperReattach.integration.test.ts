@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -51,6 +52,7 @@ import * as ProjectStore from "./ProjectStore.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderRuntimeRecoveryService from "./ProviderRuntimeRecoveryService.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
+import * as ThreadViewers from "./ThreadViewers.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 
 const threadId = ThreadId.make("thread:keeper-reattach");
@@ -69,7 +71,7 @@ const layerShutdownRecovery = (databaseLayer: ReturnType<typeof sqliteAt>) => {
     TurnItemPositionStore.layer,
   ).pipe(Layer.provide(databaseLayer));
   const layerEventSink = EventSink.layerFromStores.pipe(
-    Layer.provide(Layer.mergeAll(layerStores, databaseLayer)),
+    Layer.provide(Layer.mergeAll(layerStores, databaseLayer, ThreadViewers.layer)),
   );
   return ProviderRuntimeRecoveryService.layer.pipe(
     Layer.provideMerge(
@@ -264,6 +266,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
               IdAllocator.layer,
               McpProviderSessions.layer,
               NodeServices.layer,
+              NodeCrypto.layer,
             ),
           ),
         ),
@@ -471,6 +474,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
               IdAllocator.layer,
               McpProviderSessions.layer,
               NodeServices.layer,
+              NodeCrypto.layer,
             ),
           ),
         ),
@@ -607,6 +611,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
               IdAllocator.layer,
               McpProviderSessions.layer,
               NodeServices.layer,
+              NodeCrypto.layer,
             ),
           ),
         ),

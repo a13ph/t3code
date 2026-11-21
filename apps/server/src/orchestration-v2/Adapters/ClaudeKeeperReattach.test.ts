@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -243,6 +244,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
             IdAllocator.layer,
             McpProviderSessions.layer,
             NodeServices.layer,
+            NodeCrypto.layer,
           ),
         ),
       ),
@@ -293,6 +295,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
             IdAllocator.layer,
             McpProviderSessions.layer,
             NodeServices.layer,
+            NodeCrypto.layer,
           ),
         ),
       ),

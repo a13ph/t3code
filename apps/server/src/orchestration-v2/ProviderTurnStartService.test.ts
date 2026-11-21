@@ -9,6 +9,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it, vi } from "vite-plus/test";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { it as effectIt } from "@effect/vitest";
 import {
   CheckpointScopeId,
@@ -3500,7 +3501,7 @@ async function reattachToKeptTurn(input: {
           Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),
           Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent }),
           IdAllocator.layer,
-          Path.layer,
+          Layer.mock(TurnItemPositionStore.TurnItemPositionStoreV2)({}),
           FileSystem.layerNoop({}),
           layerWorktreeLocation(),
           Layer.mock(GitWorkflow.GitWorkflowService)({}),
@@ -3508,6 +3509,7 @@ async function reattachToKeptTurn(input: {
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
             getThreadRecords: () => Effect.succeed(projection),
             getTurnStartContext: () => Effect.succeed({ ...projection, hasConversation: true }),
+            getRuntimeRecoveryProjection: () => Effect.succeed(projection),
           }),
           Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
           Layer.mock(ProviderAuthService.ProviderAuthService)({}),
@@ -3557,7 +3559,7 @@ function writtenOff(writeIfRunCurrent: ReturnType<typeof vi.fn>) {
   };
 }
 
-const keeperWriteOffIt = process.platform === "win32" ? it.skip : it;
+const keeperWriteOffIt = it.skipIf(HostProcess.Platform.defaultValue() === "win32");
 
 // Any failure after the keeper check, here the runtime policy, used to
 // escape the reattach and leave the run running with nothing to end it.

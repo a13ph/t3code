@@ -3,9 +3,10 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ClaudeSettings, ProviderInstanceId } from "@t3tools/contracts";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -215,19 +216,19 @@ export const keeperSocketWith = (options: { readonly orphans?: "hold" | "drain" 
         }),
     );
     yield* Effect.acquireRelease(
-      Effect.sync(() => {
-        const previous = process.env.T3_KEEPER_SOCKET;
-        process.env.T3_KEEPER_SOCKET = keeper.socketPath;
-        return previous;
-      }),
-      (previous) =>
-        Effect.sync(() => {
-          if (previous === undefined) delete process.env.T3_KEEPER_SOCKET;
-          else process.env.T3_KEEPER_SOCKET = previous;
-        }),
+      Effect.sync(() => swapKeeperSocketEnv(keeper.socketPath)),
+      (previous) => Effect.sync(() => swapKeeperSocketEnv(previous)),
     );
     return keeper as { readonly socketPath: string };
   });
+
+// The code under test finds the keeper through the server's environment.
+function swapKeeperSocketEnv(socketPath: string | undefined): string | undefined {
+  const previous = process.env.T3_KEEPER_SOCKET;
+  if (socketPath === undefined) delete process.env.T3_KEEPER_SOCKET;
+  else process.env.T3_KEEPER_SOCKET = socketPath;
+  return previous;
+}
 
 /** A keeper serving a fresh socket, holding orphans. */
 export const keeperSocket = keeperSocketWith();
@@ -272,7 +273,7 @@ export const firstKeeperAck = Effect.gen(function* () {
  */
 export const keeperAckedThrough = (threadId: string) =>
   Effect.promise(async () => {
-    const socketPath = process.env.T3_KEEPER_SOCKET!;
+    const socketPath = keeperSocketFromEnv();
     for (let tries = 0; tries < 200; tries += 1) {
       const reply = (await keeperRequest(socketPath, { op: "list" }, { timeoutMs: 5_000 })) as {
         readonly handles?: ReadonlyArray<{ name: string; last: number; acked: number }>;
@@ -284,10 +285,16 @@ export const keeperAckedThrough = (threadId: string) =>
     throw new Error(`t3-keeper never acknowledged every line of ${threadId}`);
   });
 
+function keeperSocketFromEnv(): string {
+  const socketPath = process.env.T3_KEEPER_SOCKET;
+  if (socketPath === undefined) throw new Error("T3_KEEPER_SOCKET is not set");
+  return socketPath;
+}
+
 export const realQueryRunner = ClaudeAdapterV2.layerQueryRunner.pipe(
   Layer.provide(Layer.succeed(ProviderEventLoggers, { native: undefined, canonical: undefined })),
   Layer.provide(PortScanner.layerTest),
-  Layer.provide(NodeServices.layer),
+  Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
 );
 
 const settings = Schema.decodeSync(ClaudeSettings)({});
@@ -311,7 +318,7 @@ export const makeKeeperTestAdapter = (
       attachmentsDir,
       fileSystem: yield* FileSystem.FileSystem,
       path: yield* Path.Path,
-      crypto: yield* Crypto.Crypto,
+      random: yield* SecureRandom.SecureRandom,
       idAllocator: yield* IdAllocator.IdAllocatorV2,
       queryRunner: yield* ClaudeAdapterV2.ClaudeAgentSdkQueryRunner,
       ...(continuationRequests === undefined ? {} : { continuationRequests }),

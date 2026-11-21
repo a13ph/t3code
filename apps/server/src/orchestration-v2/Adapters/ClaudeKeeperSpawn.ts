@@ -1,29 +1,9 @@
 // @effect-diagnostics globalConsole:off globalTimers:off - The SDK calls the spawner and its line hooks outside the Effect runtime.
 /**
- * Spawns the Claude CLI through t3-keeper (`../../t3Keeper/`) when
- * `T3_KEEPER_SOCKET` names its socket. A relative path is taken under
- * `$XDG_RUNTIME_DIR`.
- *
- * The CLI and every command it starts are children of the keeper, not of the
- * server. The CLI leads its own process group there, and what it leaves in
- * the group is killed when it exits, as with `spawnClaudeProcessGroup`.
- *
- * A server shutdown detaches every keeper child first
- * (`detachKeeperChildren`, on SIGTERM and SIGINT), so the SDK's own close,
- * which ends stdin and then signals, no longer reaches them, and a turn in
- * flight keeps running in the keeper. A stop of one session still ends its
- * CLI. The next server lists the keeper (`listKeeperThreads`) and attaches
- * to a thread's CLI again (`keeperAttachProcess`), from the last line it
- * acknowledged.
- *
- * The keeper holds every stdout line until it is acknowledged. A line is
- * acknowledged only once the adapter has handled the message it carried, and
- * a second or two later still, so the events it produced have reached the
- * database before the keeper may drop it. A restart replays the lines after
- * that point; the few handled just before the restart arrive twice.
- *
- * When the keeper cannot be reached for 10 s, the shim spawns the CLI
- * itself, as the SDK would have; that CLI still dies with the server.
+ * Spawns the Claude CLI through t3-keeper (`../../t3Keeper/`) when `T3_KEEPER_SOCKET` names its
+ * socket (a relative path is taken under `$XDG_RUNTIME_DIR`). The CLI and the commands it starts
+ * are the keeper's children, so a turn in flight outlives a server restart. The CLI leads its own
+ * process group there, killed when it exits, as with `spawnClaudeProcessGroup`.
  */
 import type { SpawnOptions, SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
 // @effect-diagnostics nodeBuiltinImport:off -- the socket path is a host path.
@@ -33,7 +13,11 @@ import type * as NodeStream from "node:stream";
 // @ts-ignore - plain ESM without types
 import { attachExisting, request, spawnNew } from "../../t3Keeper/shim.mjs";
 
-/** How long a handled line waits before the keeper is told it may drop it. */
+/**
+ * The keeper holds every stdout line until T3 acknowledges it, this long or twice that after the
+ * message it carried was handled, so its events reached the database first. A restart replays the
+ * lines after that point; the few handled just before it arrive twice.
+ */
 export const KEEPER_ACK_LAG_MS = 1_000;
 
 function keeperSocketPath(env: NodeJS.ProcessEnv): string | undefined {
@@ -116,15 +100,10 @@ function controlRequestId(line: string, type: ControlLineType): string | undefin
 }
 
 /**
- * Tracks the stdout lines T3 must act on and acknowledges them to the keeper,
- * `KEEPER_ACK_LAG_MS` to twice that after they were handled. A yielded
- * message's line is handled once the adapter handled the message. A control
- * request's line (a permission prompt, a hook callback) is handled once the
- * SDK wrote its control_response to stdin, or the CLI cancelled it, so a
- * restart does not ask an answered prompt again and still replays an open
- * one. The acknowledged point is the highest line below every open line.
- * Stops acknowledging for good once the child is detached, and when a
- * yielded message does not match the next line it expected.
+ * Acknowledges the lines T3 handled: a yielded message's once the adapter handled it, a control
+ * request's once the SDK answered it or the CLI cancelled it, so a restart replays only an open
+ * prompt. The point acknowledged is the highest line below every open one. Stops for good once
+ * the child is detached or a yielded message does not match the line it expected.
  */
 function makeLineCursor(threadId: string, start: number) {
   let child: KeeperChild | undefined;
@@ -268,7 +247,10 @@ function makeSpawner(
   };
 }
 
-/** A new CLI in the keeper for one thread, or undefined without a keeper socket. */
+/**
+ * A new CLI in the keeper for one thread, or undefined without a keeper socket. When the keeper
+ * cannot be reached for 10 s, the shim spawns the CLI itself; that CLI dies with the server.
+ */
 export function keeperSpawnProcess(
   threadId: string,
   options: {
@@ -421,8 +403,9 @@ export function keeperTurnStateThreads(): ReadonlyArray<string> {
 }
 
 /**
- * Leaves every live keeper child running: drops its connection without an
- * EOF. A local fallback child is left alone and dies with the server.
+ * Runs on SIGTERM and SIGINT, before anything closes: drops each live keeper child's connection
+ * without an EOF, so the SDK's close no longer reaches it and its turn runs on in the keeper. A
+ * stop of one session still ends its CLI. A local fallback child dies with the server.
  */
 export function detachKeeperChildren(): number {
   let detached = 0;

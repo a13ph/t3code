@@ -5345,6 +5345,7 @@ const ClaudeKeeperSubagent = Schema.Struct({
   runToolUseId: Schema.NullOr(Schema.String),
   effort: Schema.optional(Schema.String),
   nextChildItemOrdinal: Schema.Number,
+  resultNativeItemId: Schema.String,
   resultItemOrdinal: Schema.NullOr(Schema.Number),
   lastAssistantText: Schema.NullOr(Schema.String),
   lastAssistantMessageId: Schema.NullOr(Schema.String),
@@ -5365,11 +5366,10 @@ const ClaudeKeeperToolCall = Schema.Struct({
 
 const StringPairs = Schema.Array(Schema.Tuple([Schema.String, Schema.String]));
 
-// What the adapter knew of the subagents a kept CLI runs: the session
-// registry and its tool-use index, the turn's own index into it, the
-// subagents' open tool calls, the launches not yet started and the turn's
-// item ordinals. The CLI runs the subagents on; with this, the frames they
-// send after the restart land on the same cards, threads and items.
+// What the adapter knew of the subagents a kept CLI runs: the session registry and its tool-use
+// index, the turn's index into it, the subagents' open tool calls, launches not yet started and
+// the turn's item ordinals. With it, the frames the subagents send after the restart land on the
+// same cards, threads and items.
 const ClaudeKeeperSubagentState = Schema.Struct({
   subagents: Schema.Array(ClaudeKeeperSubagent),
   taskIdsByToolUseId: StringPairs,
@@ -6337,6 +6337,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               runToolUseId: subagent.runToolUseId,
               ...(subagent.effort === undefined ? {} : { effort: subagent.effort }),
               nextChildItemOrdinal: subagent.nextChildItemOrdinal,
+              resultNativeItemId: subagent.resultNativeItemId,
               resultItemOrdinal: subagent.resultItemOrdinal,
               lastAssistantText: subagent.lastAssistantText,
               lastAssistantMessageId: subagent.lastAssistantMessageId,
@@ -6388,6 +6389,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 runToolUseId: entry.runToolUseId,
                 effort: entry.effort,
                 nextChildItemOrdinal: entry.nextChildItemOrdinal,
+                resultNativeItemId: entry.resultNativeItemId,
                 resultItemOrdinal: entry.resultItemOrdinal,
                 lastAssistantText: entry.lastAssistantText,
                 lastAssistantMessageId: entry.lastAssistantMessageId,
@@ -13690,7 +13692,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     context.nativeThreadId,
                     context.stopping ? "interrupted" : "failed",
                   );
-                } else if (!ownsLiveQuery) {
+                } else {
                   yield* endSubagentsOfReplacedQuery(context);
                 }
               }),

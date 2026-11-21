@@ -19,6 +19,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import {
   closeKeeperThread,
@@ -222,12 +223,9 @@ export async function closeUnrecordedKeeperThreads(
 }
 
 /**
- * The run a t3-keeper reattach can continue: the thread's only unfinished
- * run, running a root turn with nothing waiting on an answer. A subagent the
- * run launched goes on in the same CLI, and the adapter's turn state carries
- * what T3 knew of it. One from another run, such as a background subagent an
- * earlier run left running, or a runless nested one, is not routed to the
- * reattached run, so it is not carried; nor are approvals.
+ * The run a t3-keeper reattach can continue: the thread's only unfinished run, running a root turn
+ * with nothing waiting on an answer. Its own subagents go on in the same CLI. A subagent of another
+ * run, such as a background one an earlier run left, would not be routed to it, so it refuses.
  */
 export function keeperReattachableRun(projection: ProjectionStore.ProjectionRuntimeRecoveryState) {
   const unfinished = nonterminalRuns(projection);
@@ -1239,9 +1237,10 @@ export const make = Effect.gen(function* () {
     }
     // Detached, but no next server will take it up: close it now, as a
     // shutdown without t3-keeper would, so it does not work on unseen.
+    const env = yield* HostProcess.Environment;
     yield* Effect.promise(() =>
       closeUnrecordedKeeperThreads(keeperDetachedThreads(), recorded, (handle) =>
-        closeKeeperThread(handle),
+        closeKeeperThread(handle, { env }),
       ),
     );
     return recorded;
@@ -1260,9 +1259,10 @@ export const make = Effect.gen(function* () {
       );
     // Shutdown leaves alone a thread whose CLI it left in t3-keeper; startup
     // leaves it to its reattach while the keeper still holds that CLI.
+    const hostEnvironment = yield* HostProcess.Environment;
     const keeperThreads =
       trigger === "startup"
-        ? yield* Effect.promise(() => listKeeperThreads())
+        ? yield* Effect.promise(() => listKeeperThreads({ env: hostEnvironment }))
         : new Map(
             [...keeperDetachedThreads()].map(([threadId, detached]) => [
               threadId,

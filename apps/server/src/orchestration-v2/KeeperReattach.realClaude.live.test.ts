@@ -2,7 +2,7 @@
 // @effect-diagnostics globalRandom:off globalDate:off -- prompt markers and the wall-clock progress log are plain helpers outside Effect.
 import * as NodeFS from "node:fs";
 import * as NodeHttp from "node:http";
-import { setTimeout as sleep } from "node:timers/promises";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -30,6 +30,7 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import {
   firstKeeperAck,
+  keeperAckedThrough,
   keeperSocketWith,
   keeperTestModelSelection,
   makeKeeperTestAdapter,
@@ -49,11 +50,14 @@ import * as ProjectStore from "./ProjectStore.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderRuntimeRecoveryService from "./ProviderRuntimeRecoveryService.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
+import * as ThreadViewers from "./ThreadViewers.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 
 // Opt-in: the real `claude` on the user's login, small haiku turns.
 // T3K_REAL_CLAUDE=1 runs it; T3K_CLAUDE names another binary.
 const enabled = process.env.T3K_REAL_CLAUDE === "1";
+// T3K_MCP=0 runs it without T3's MCP server.
+const mcpOn = process.env.T3K_MCP !== "0";
 const realClaudeBinary = () => {
   const named = process.env.T3K_CLAUDE ?? `${process.env.HOME}/.local/bin/claude`;
   return NodeFS.realpathSync(named);
@@ -127,7 +131,7 @@ const layerShutdownRecovery = (databaseLayer: ReturnType<typeof sqliteAt>) => {
     TurnItemPositionStore.layer,
   ).pipe(Layer.provide(databaseLayer));
   const layerEventSink = EventSink.layerFromStores.pipe(
-    Layer.provide(Layer.mergeAll(layerStores, databaseLayer)),
+    Layer.provide(Layer.mergeAll(layerStores, databaseLayer, ThreadViewers.layer)),
   );
   return ProviderRuntimeRecoveryService.layer.pipe(
     Layer.provideMerge(
@@ -155,8 +159,10 @@ const watch = (predicate: (event: OrchestrationV2DomainEvent) => boolean) =>
     );
   });
 
+// oxlint-disable-next-line t3code/no-wall-clock-in-tests -- the progress log's elapsed time is for reading a failed real CLI run; nothing asserts on it.
 const started = Date.now();
 const log = (line: string) =>
+  // oxlint-disable-next-line t3code/no-wall-clock-in-tests -- as above.
   process.stdout.write(`# [${((Date.now() - started) / 1000).toFixed(1)}s] ${line}\n`);
 
 // A stand-in for T3's MCP endpoint on the streamable HTTP transport: one
@@ -272,7 +278,7 @@ const restartDuringTurn = ({ marker, prompt, runs, subagent = false }: Scenario)
       const attachmentsDir = path.join(stateDir, "attachments");
       yield* fs.makeDirectory(attachmentsDir);
       const databaseLayer = sqliteAt(path.join(stateDir, "state.sqlite"));
-      const mcpOn = process.env.T3K_MCP !== "0";
+
       if (mcpOn) {
         mcpCredential = {
           environmentId: EnvironmentId.make("00000000-0000-4000-8000-000000000001"),
@@ -374,7 +380,7 @@ const restartDuringTurn = ({ marker, prompt, runs, subagent = false }: Scenario)
           yield* acked;
           // Past the acknowledgement lag: the next server gets no replay of
           // the subagent's start, only the frames after its Bash call began.
-          if (subagent) yield* Effect.promise(() => sleep(2_500));
+          if (subagent) yield* keeperAckedThrough(threadId);
           const handles = yield* keeperList(keeper.socketPath);
           assert.equal(handles.length, 1);
           // SIGTERM: the keeper children are detached before anything closes.
@@ -511,6 +517,7 @@ const restartDuringTurn = ({ marker, prompt, runs, subagent = false }: Scenario)
           IdAllocator.layer,
           layerFixedMcpSession,
           NodeServices.layer,
+          NodeCrypto.layer,
         ),
       ),
     ),
