@@ -9,7 +9,7 @@ import {
   withAssistantCitationComment,
 } from "@t3tools/shared/assistantCitations";
 import { createRef, useState } from "react";
-import { afterEach, expect, it } from "vite-plus/test";
+import { expect, it } from "vite-plus/test";
 
 import { page, userEvent } from "vite-plus/test/browser";
 
@@ -34,7 +34,9 @@ const citation = {
 };
 const promptWithCitation = `See ${serializeAssistantCitation(citation)} `;
 
-function Composer({ editorRef }: { editorRef: React.RefObject<ComposerPromptEditorHandle | null> }) {
+type EditorRef = React.RefObject<ComposerPromptEditorHandle | null>;
+
+function Composer({ editorRef }: { editorRef: EditorRef }) {
   const [prompt, setPrompt] = useState(promptWithCitation);
   return (
     <>
@@ -63,9 +65,13 @@ function Composer({ editorRef }: { editorRef: React.RefObject<ComposerPromptEdit
   );
 }
 
-// Opens the comment of a citation just inserted after "See ", as a Cite does.
-async function renderFreshCitation(citeOnSelection: boolean) {
+function citeOnSelectionSetting(citeOnSelection: boolean): Disposable {
   __setClientSettingsForTests({ ...DEFAULT_CLIENT_SETTINGS, citeOnSelection });
+  return { [Symbol.dispose]: () => __setClientSettingsForTests(DEFAULT_CLIENT_SETTINGS) };
+}
+
+// Opens the comment of a citation just inserted after "See ", as a Cite does.
+async function renderFreshCitation() {
   const editorRef = createRef<ComposerPromptEditorHandle>();
   const screen = await render(<Composer editorRef={editorRef} />);
   const sourceAnchor = findAssistantCitationSourceAnchor(document, citation);
@@ -87,12 +93,9 @@ function promptOf(screen: Awaited<ReturnType<typeof render>>) {
   return () => screen.container.querySelector("output")?.dataset.prompt;
 }
 
-afterEach(() => {
-  __setClientSettingsForTests(DEFAULT_CLIENT_SETTINGS);
-});
-
 it("drops an uncommented citation when a press on assistant text starts the next one", async () => {
-  await using screen = await renderFreshCitation(true);
+  using _settings = citeOnSelectionSetting(true);
+  await using screen = await renderFreshCitation();
 
   await page.getByText("hello world").click();
 
@@ -101,24 +104,23 @@ it("drops an uncommented citation when a press on assistant text starts the next
 });
 
 it("keeps a commented citation when a press on assistant text starts the next one", async () => {
-  await using screen = await renderFreshCitation(true);
+  using _settings = citeOnSelectionSetting(true);
+  await using screen = await renderFreshCitation();
 
   await page.getByLabelText("Comment on selected text").click();
   await userEvent.keyboard("check this");
   await page.getByText("hello world").click();
 
-  await expect
-    .poll(promptOf(screen))
-    .toBe(`See ${serializeAssistantCitation(withAssistantCitationComment(citation, "check this"))} `);
+  const note = serializeAssistantCitation(withAssistantCitationComment(citation, "check this"));
+  await expect.poll(promptOf(screen)).toBe(`See ${note} `);
 });
 
 it("keeps an uncommented citation on the same press while cite on selection is off", async () => {
-  await using screen = await renderFreshCitation(false);
+  using _settings = citeOnSelectionSetting(false);
+  await using screen = await renderFreshCitation();
 
   await page.getByText("hello world").click();
 
-  await expect
-    .element(page.getByLabelText("Comment on selected text"))
-    .not.toBeInTheDocument();
+  await expect.element(page.getByLabelText("Comment on selected text")).not.toBeInTheDocument();
   expect(promptOf(screen)()).toBe(promptWithCitation);
 });

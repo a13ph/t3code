@@ -5,7 +5,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { useState } from "react";
-import { afterEach, expect, it, vi } from "vite-plus/test";
+import { expect, it, vi } from "vite-plus/test";
 
 import { page, userEvent } from "vite-plus/test/browser";
 
@@ -23,23 +23,26 @@ function Timeline({ onCite }: { onCite: (citation: AssistantCitation) => boolean
   return (
     <>
       <div ref={setViewport} data-assistant-citation-viewport="" style={{ height: 200 }}>
-        <p data-assistant-citation-source="message">hello world</p>
+        <p data-assistant-citation-source="message">
+          <span>hello</span> world
+        </p>
       </div>
       <AssistantSelectionToolbar viewport={viewport} threadRef={threadRef} onCite={onCite} />
     </>
   );
 }
 
-afterEach(() => {
-  __setClientSettingsForTests(DEFAULT_CLIENT_SETTINGS);
-});
+function citeOnSelectionSetting(citeOnSelection: boolean): Disposable {
+  __setClientSettingsForTests({ ...DEFAULT_CLIENT_SETTINGS, citeOnSelection });
+  return { [Symbol.dispose]: () => __setClientSettingsForTests(DEFAULT_CLIENT_SETTINGS) };
+}
 
 it("cites a mouse selection at once while cite on selection is on", async () => {
-  __setClientSettingsForTests({ ...DEFAULT_CLIENT_SETTINGS, citeOnSelection: true });
+  using _settings = citeOnSelectionSetting(true);
   const onCite = vi.fn((_citation: AssistantCitation) => true);
   await using _screen = await render(<Timeline onCite={onCite} />);
 
-  await userEvent.dblClick(page.getByText("hello world"));
+  await userEvent.dblClick(page.getByText("hello", { exact: true }));
 
   await expect.poll(() => onCite.mock.calls.length).toBe(1);
   expect(onCite.mock.calls[0]?.[0].text).toBe("hello");
@@ -48,10 +51,11 @@ it("cites a mouse selection at once while cite on selection is on", async () => 
 });
 
 it("offers the Cite button for a mouse selection while cite on selection is off", async () => {
+  using _settings = citeOnSelectionSetting(false);
   const onCite = vi.fn((_citation: AssistantCitation) => true);
   await using _screen = await render(<Timeline onCite={onCite} />);
 
-  await userEvent.dblClick(page.getByText("hello world"));
+  await userEvent.dblClick(page.getByText("hello", { exact: true }));
 
   await expect.element(page.getByLabelText("Cite selection in composer")).toBeVisible();
   expect(onCite).not.toHaveBeenCalled();
