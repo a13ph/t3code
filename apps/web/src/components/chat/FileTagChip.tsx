@@ -10,9 +10,13 @@ export function FileTagChipContent(props: {
   theme: "light" | "dark";
   environmentId?: EnvironmentId | null | undefined;
   cwd?: string | undefined;
+  /** Shown in front of the icon, such as a resolved link's mark. */
+  leading?: ReactNode | undefined;
+  labelClassName?: string | undefined;
 }) {
   return (
     <>
+      {props.leading}
       {props.icon ?? (
         <WorkspaceEntryIcon
           path={props.path}
@@ -21,7 +25,7 @@ export function FileTagChipContent(props: {
           theme={props.theme}
         />
       )}
-      <ContextChipLabel>{props.label}</ContextChipLabel>
+      <ContextChipLabel className={props.labelClassName}>{props.label}</ContextChipLabel>
     </>
   );
 }

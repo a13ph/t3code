@@ -13,7 +13,10 @@ import {
   resolveRemoteFileServer,
   type RemoteFileLink,
 } from "../remoteFileLinks";
+import { parseResolvedLinkHref, resolvedLinkHref, type ResolvedLinkRef } from "../resolvedLinks";
 import { useEnvironments } from "../state/environments";
+import { useLinkSchemes } from "../state/linkSchemes";
+import { MarkdownResolvedLink } from "./chat/MarkdownResolvedLink";
 import {
   isMarkdownFileLinkLabel,
   isWindowsDrivePathHref,
@@ -38,6 +41,7 @@ import {
   chatMarkdownImageSource,
   decodeMarkdownLinkEscapes,
   remarkAssistantInsights,
+  chatMarkdownRehypePlugins,
 } from "@t3tools/shared/markdownPipeline";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -468,6 +472,51 @@ function markdownUrlTransform(href: string) {
   return rewriteMarkdownFileUriHref(href) ?? defaultUrlTransform(href);
 }
 
+interface LinkSchemeRehypePlugins {
+  readonly render: PluggableList;
+  readonly literal: PluggableList;
+}
+
+const linkSchemeRehypePlugins = new Map<string, LinkSchemeRehypePlugins>();
+// Renderers are cached by plugin list, so a list made for some link schemes carries the URL
+// transform that keeps those schemes.
+const urlTransformByRehypePlugins = new WeakMap<PluggableList, (href: string) => string>();
+
+/** The rehype plugins with the connected servers' link schemes kept by the sanitizer. */
+function chatMarkdownRehypePluginsFor(
+  linkSchemes: ReadonlySet<string>,
+  parseRawHtml: boolean,
+): PluggableList {
+  if (linkSchemes.size === 0) {
+    return parseRawHtml
+      ? CHAT_MARKDOWN_RENDER_REHYPE_PLUGINS
+      : CHAT_MARKDOWN_LITERAL_HTML_REHYPE_PLUGINS;
+  }
+  const key = [...linkSchemes].sort().join(",");
+  let plugins = linkSchemeRehypePlugins.get(key);
+  if (plugins === undefined) {
+    const schemes = new Set(linkSchemes);
+    const urlTransform = (href: string) =>
+      parseResolvedLinkHref(href, schemes) ? href : markdownUrlTransform(href);
+    plugins = {
+      render: [
+        ...chatMarkdownRehypePlugins(schemes),
+        rehypeHeadingIds,
+        rehypeTextDirection,
+        rehypeChipPunctuation,
+      ],
+      literal: [...CHAT_MARKDOWN_LITERAL_HTML_REHYPE_PLUGINS],
+    };
+    urlTransformByRehypePlugins.set(plugins.render, urlTransform);
+    urlTransformByRehypePlugins.set(plugins.literal, urlTransform);
+    linkSchemeRehypePlugins.set(key, plugins);
+  }
+  return parseRawHtml ? plugins.render : plugins.literal;
+}
+
+const urlTransformFor = (rehypePlugins: PluggableList) =>
+  urlTransformByRehypePlugins.get(rehypePlugins) ?? markdownUrlTransform;
+
 const NO_MARKDOWN_EDITORS: ReadonlyArray<EditorId> = [];
 
 type MarkdownServerConfigFields = ReturnType<typeof markdownServerConfigFields>;
@@ -512,9 +561,15 @@ function fileLinkSourcesKey(
   text: string,
   cwd: string | undefined,
   imageBaseDir: string | undefined,
+  linkSchemes: ReadonlySet<string>,
 ): string {
   const hrefs = extractMarkdownLinkHrefs(renderCodexInlineDirectivesAsMarkdown(text))
-    .filter((href) => !parseComposerContextHref(href) && !parseRemoteFileHref(href))
+    .filter(
+      (href) =>
+        !parseComposerContextHref(href) &&
+        !parseRemoteFileHref(href) &&
+        !parseResolvedLinkHref(href, linkSchemes),
+    )
     .map(decodeMarkdownLinkEscapes)
     .map(normalizeMarkdownLinkHrefKey)
     .filter((href) => resolveMarkdownFileLinkMeta(href, cwd, imageBaseDir ?? cwd));
@@ -614,6 +669,10 @@ function MarkdownRemoteFileLink(props: {
       openInEditorMenuLabel=""
     />
   );
+}
+
+function resolvedLinkCopyMarkdown(link: ResolvedLinkRef, label: string): string {
+  return `[${label.replace(/[\\[\]]/g, "\\$&")}](<${resolvedLinkHref(link)}>)`;
 }
 
 function useChatMarkdownState({
@@ -856,6 +915,7 @@ function useChatMarkdownState({
     });
   };
   const diffThemeName = resolveDiffThemeName(resolvedTheme);
+  const linkSchemes = useLinkSchemes();
   const handleCopy = (event: ReactClipboardEvent<HTMLElement>) => {
     const selection = window.getSelection();
     if (!selection || selection.isCollapsed || !event.clipboardData) return;
@@ -880,7 +940,7 @@ function useChatMarkdownState({
   // Keyed by the file links found, not the text, so streamed text that adds none keeps the
   // renderer context, and every block reading it, unchanged.
   // A template literal marks the key as a string, so the compiler memoizes the maps on its value.
-  const fileLinksKey = `${fileLinkSourcesKey(text, cwd, imageBaseDir)}`;
+  const fileLinksKey = `${fileLinkSourcesKey(text, cwd, imageBaseDir, linkSchemes)}`;
   const { markdownFileLinkMetaByHref, inlineCodeFileLinkMetaByText, fileLinkParentSuffixByPath } =
     resolveFileLinkSources(fileLinksKey, cwd, imageBaseDir);
   const resolveThreadPullRequest = (
@@ -1180,6 +1240,7 @@ function useChatMarkdownState({
     mathEnabled,
     isStreaming,
     linkTargetPreference,
+    linkSchemes,
     markdownFileLinkMetaByHref,
     onTaskListChange,
     onUseArtifactTemplate,
@@ -1372,6 +1433,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
       updateThreadPullRequestLink,
       fileLinkChip,
       renderContextReference,
+      linkSchemes,
     } = use(ChatMarkdownRendererContext);
     const text = use(ChatMarkdownTextContext);
     const citation = href ? parseAssistantCitationHref(href) : null;
@@ -1400,6 +1462,22 @@ const CHAT_MARKDOWN_COMPONENTS = {
         renderContextReference({ ...contextReference, label, leading, trailing })
       ) : (
         <span>{label}</span>
+      );
+    }
+    const resolvedLink = parseResolvedLinkHref(href, linkSchemes);
+    if (resolvedLink && href) {
+      const written = hastPlainTextDeep(node).trim();
+      // An autolink's text is its own URL, which is no label.
+      const label = parseResolvedLinkHref(written, linkSchemes) === null ? written : "";
+      return (
+        <MarkdownResolvedLink
+          link={resolvedLink}
+          {...(label ? { label } : {})}
+          copyMarkdown={resolvedLinkCopyMarkdown(resolvedLink, label)}
+          environmentId={environmentId}
+          threadRef={threadRef}
+          theme={resolvedTheme}
+        />
       );
     }
     const remoteFile = parseRemoteFileHref(href);
@@ -1690,9 +1768,11 @@ const CHAT_MARKDOWN_COMPONENTS = {
   code: function MarkdownCode({ node, children, className, ...props }) {
     const {
       cwd,
+      environmentId,
       imageBaseDir,
       inlineCodeFileLinkMetaByText,
       fileLinkChip,
+      linkSchemes,
       mathEnabled,
       inline,
       resolvedTheme,
@@ -1710,6 +1790,18 @@ const CHAT_MARKDOWN_COMPONENTS = {
     }
     if (node?.properties?.dataInlineCode != null) {
       const codeText = nodeToPlainText(children);
+      const resolvedLink = parseResolvedLinkHref(codeText, linkSchemes);
+      if (resolvedLink) {
+        return (
+          <MarkdownResolvedLink
+            link={resolvedLink}
+            copyMarkdown={`\`${codeText}\``}
+            environmentId={environmentId}
+            threadRef={threadRef}
+            theme={resolvedTheme}
+          />
+        );
+      }
       // `alpha:/home/user/x.md` names a file on another server; unknown names stay code.
       const remoteFile = parseRemoteFileHref(codeText);
       if (remoteFile) {
@@ -2070,7 +2162,7 @@ function markdownRenderer(remarkPlugins: PluggableList, rehypePlugins: Pluggable
       remarkPlugins,
       rehypePlugins,
       components: CHAT_MARKDOWN_COMPONENTS,
-      urlTransform: markdownUrlTransform,
+      urlTransform: urlTransformFor(rehypePlugins),
     });
     byRehype.set(rehypePlugins, renderer);
   }
@@ -2099,7 +2191,7 @@ const MarkdownSource = memo(function MarkdownSource({
         remarkPlugins,
         rehypePlugins,
         components: CHAT_MARKDOWN_COMPONENTS,
-        urlTransform: markdownUrlTransform,
+        urlTransform: urlTransformFor(rehypePlugins),
       });
   const element = render(text);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Caching during render would make React Compiler rebuild the element when `cache` flips.
@@ -2181,11 +2273,7 @@ function ChatMarkdown({
             key={index}
             text={source}
             remarkPlugins={remarkPlugins}
-            rehypePlugins={
-              parseRawHtml
-                ? CHAT_MARKDOWN_RENDER_REHYPE_PLUGINS
-                : CHAT_MARKDOWN_LITERAL_HTML_REHYPE_PLUGINS
-            }
+            rehypePlugins={chatMarkdownRehypePluginsFor(componentState.linkSchemes, parseRawHtml)}
             shared={!uncachedPlugins}
             // Every block before the last is finished, so its parse can be reused.
             cache={!props.isStreaming || index < blocks.length - 1}
