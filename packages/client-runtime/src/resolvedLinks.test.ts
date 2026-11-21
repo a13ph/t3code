@@ -6,7 +6,8 @@ import {
   resolvedLinkHref,
   resolvedLinkPlaceholder,
   resolvedLinkTooltipLines,
-} from "./resolvedLinks";
+  resolvesWikilinks,
+} from "./resolvedLinks.ts";
 
 const SCHEMES = new Set(["notes"]);
 const UUID = "3f2b9c1e-7d4a-4e6b-9a8c-2d5f1b0e7c43";
@@ -98,7 +99,19 @@ describe("resolvedLinkTooltipLines", () => {
   });
 });
 
+describe("resolvesWikilinks", () => {
+  it("is true only for a server announcing the wikilink scheme", () => {
+    expect(resolvesWikilinks({ linkSchemes: ["notes", " WikiLink "] })).toBe(true);
+    expect(resolvesWikilinks({ linkSchemes: ["notes"] })).toBe(false);
+    expect(resolvesWikilinks(null)).toBe(false);
+  });
+});
+
 describe("linkSchemesOf", () => {
+  it("leaves out the wikilink scheme, which names no chat link", () => {
+    expect(linkSchemesOf([{ linkSchemes: ["notes", "wikilink"] }])).toEqual(["notes"]);
+  });
+
   it("joins every server's schemes, lower case and sorted", () => {
     expect(
       linkSchemesOf([

@@ -2,13 +2,19 @@
 // child shared by every connection, read as raw bytes and timed per answer; called from a plain
 // Promise handler, outside any Effect runtime.
 /**
- * One long-running program per scheme: it prints `{"ready": true}`, then answers each `{"id"}`
- * stdin line with a UTF-8 `{"id", "link"}` line, `link` the target or null, and exits when stdin
- * closes. Until ready, and after it fails or times out, lookups answer `LINK_RESOLVER_UNAVAILABLE`.
+ * One program per argv: after `{"ready": true}` it answers each `{"id", "scheme", "from"?,
+ * "kind"?}` stdin line with one `{"id", "link"}` (or `"links"` for backlinks) line, or
+ * `"unavailable": true` for "not now". Wikilink and backlinks lines go only to a wikilink program.
  */
 import * as NodeChildProcess from "node:child_process";
 
-import type { LinkResolveResult, ResolvedLink, ResolvedLinkTone } from "@t3tools/contracts";
+import type {
+  LinkBacklinksResult,
+  LinkResolveResult,
+  LinkResolveUnavailable,
+  ResolvedLink,
+  ResolvedLinkTone,
+} from "@t3tools/contracts";
 
 const LINK_RESOLVER_ANSWER_TIMEOUT_MS = 10_000;
 export const LINK_RESOLVER_UNAVAILABLE = { unavailable: true } as const;
@@ -17,7 +23,8 @@ export const LINK_RESOLVER_UNAVAILABLE = { unavailable: true } as const;
 const MIN_RESTART_GAP_MS = 1_000;
 const MAX_RESTART_GAP_MS = 60_000;
 const ANSWER_CACHE_MS = 5_000;
-const MAX_PENDING = 64;
+// A note asks once per wikilink, and an index note can hold hundreds.
+const MAX_PENDING = 1_024;
 const MAX_LABEL_LENGTH = 500;
 const MAX_TOOLTIP_LENGTH = 4_000;
 // Code points enough for any one grapheme a mark is meant to be; a longer one is cut first.
@@ -48,12 +55,53 @@ export interface LinkResolverOptions {
   readonly now?: () => number;
 }
 
-type Answer = ResolvedLink | null;
+type LookupKind = "resolve" | "backlinks";
+
+/** One request line: a link to resolve, or a note whose linking notes are wanted. */
+interface LookupRequest {
+  readonly kind: LookupKind;
+  readonly id: string;
+  readonly scheme: string;
+  /** The note holding the link, for a wikilink. */
+  readonly from?: string | undefined;
+}
+
+// What a waiting lookup ends with: the program's answer line, or no answer.
+type Outcome = { readonly record: Record<string, unknown> } | "unavailable" | "closed";
 
 interface Pending {
-  readonly id: string;
-  readonly settle: (answer: LinkResolveResult) => void;
+  readonly request: LookupRequest;
+  readonly settle: (outcome: Outcome) => void;
   timer: ReturnType<typeof setTimeout> | null;
+}
+
+const MAX_BACKLINKS = 500;
+
+function requestKey(request: LookupRequest): string {
+  return asciiJson([request.kind, request.scheme, request.id, request.from ?? null]);
+}
+
+// An answer names its lookup by id, and by kind, from and scheme when it echoes them; a program
+// on the first protocol echoes only the id.
+function answers(record: Record<string, unknown>, request: LookupRequest): boolean {
+  const kind = record.kind === undefined ? "resolve" : record.kind;
+  return (
+    record.id === request.id &&
+    kind === request.kind &&
+    (typeof record.from !== "string" || record.from === request.from) &&
+    (typeof record.scheme !== "string" || record.scheme === request.scheme)
+  );
+}
+
+/** The notes a backlinks answer lists, each as `normalizeResolvedLink` keeps it. */
+export function normalizeBacklinks(raw: unknown): ReadonlyArray<ResolvedLink> {
+  if (!Array.isArray(raw)) return [];
+  const links: ResolvedLink[] = [];
+  for (const entry of raw.slice(0, MAX_BACKLINKS)) {
+    const link = normalizeResolvedLink(entry);
+    if (link !== null) links.push(link);
+  }
+  return links;
 }
 
 /** The server's environment without its own settings and tokens, which a program has no use for. */
@@ -162,8 +210,8 @@ export function normalizeResolvedLink(raw: unknown): ResolvedLink | null {
 export class LinkResolverProcess {
   private child: NodeChildProcess.ChildProcessWithoutNullStreams | null = null;
   private readonly pending: Pending[] = [];
-  private readonly inFlight = new Map<string, Promise<LinkResolveResult>>();
-  private readonly cache = new Map<string, { readonly answer: Answer; readonly at: number }>();
+  private readonly inFlight = new Map<string, Promise<unknown>>();
+  private readonly cache = new Map<string, { readonly answer: unknown; readonly at: number }>();
   private buffered: Buffer[] = [];
   private bufferedBytes = 0;
   private lastStartAt = Number.NEGATIVE_INFINITY;
@@ -172,6 +220,8 @@ export class LinkResolverProcess {
   private answeredSinceStart = false;
   // Set by the program's ready line; until then it is sent nothing, so nothing is timed.
   private ready = false;
+  // Set when the running program answers a backlinks line as a plain lookup: it predates them.
+  private noBacklinks = false;
   private stderrWindowStart = Number.NEGATIVE_INFINITY;
   private stderrLines = 0;
   private closed = false;
@@ -199,16 +249,55 @@ export class LinkResolverProcess {
     this.now = options.now ?? Date.now;
   }
 
-  resolve(id: string): Promise<LinkResolveResult> {
+  /**
+   * What `id` names. `scheme` is the link's, when one program serves several; `from` is the note
+   * holding a wikilink.
+   */
+  resolve(
+    id: string,
+    options: { readonly scheme?: string; readonly from?: string | undefined } = {},
+  ): Promise<LinkResolveResult> {
+    const request: LookupRequest = {
+      kind: "resolve",
+      id,
+      scheme: options.scheme ?? this.scheme,
+      ...(options.from !== undefined ? { from: options.from } : {}),
+    };
+    return this.lookup(request, (record) => normalizeResolvedLink(record.link));
+  }
+
+  /** The notes that link to the note at `path`. */
+  backlinks(path: string, scheme: string = this.scheme): Promise<LinkBacklinksResult> {
+    if (this.noBacklinks) return Promise.resolve(null);
+    return this.lookup({ kind: "backlinks", id: path, scheme }, (record) => ({
+      links: normalizeBacklinks(record.links),
+    }));
+  }
+
+  private lookup<A>(
+    request: LookupRequest,
+    read: (record: Record<string, unknown>) => A,
+  ): Promise<A | LinkResolveUnavailable | null> {
     if (this.closed) return Promise.resolve(null);
-    const cached = this.cache.get(id);
+    const key = requestKey(request);
+    const cached = this.cache.get(key);
     if (cached !== undefined && this.now() - cached.at < this.answerCacheMs) {
-      return Promise.resolve(cached.answer);
+      return Promise.resolve(cached.answer as A);
     }
-    const asked = this.inFlight.get(id);
-    if (asked !== undefined) return asked;
-    const lookup = this.ask(id).finally(() => this.inFlight.delete(id));
-    this.inFlight.set(id, lookup);
+    const asked = this.inFlight.get(key);
+    if (asked !== undefined) return asked as Promise<A | LinkResolveUnavailable | null>;
+    const lookup = this.ask(request)
+      .then((outcome): A | LinkResolveUnavailable | null => {
+        if (outcome === "closed") return null;
+        if (outcome === "unavailable" || outcome.record.unavailable === true) {
+          return LINK_RESOLVER_UNAVAILABLE;
+        }
+        const answer = read(outcome.record);
+        this.remember(key, answer);
+        return answer;
+      })
+      .finally(() => this.inFlight.delete(key));
+    this.inFlight.set(key, lookup);
     return lookup;
   }
 
@@ -224,10 +313,10 @@ export class LinkResolverProcess {
     if (this.child !== null) this.fail(this.child, null);
   }
 
-  private ask(id: string): Promise<LinkResolveResult> {
-    if (this.pending.length >= this.maxPending) return Promise.resolve(LINK_RESOLVER_UNAVAILABLE);
+  private ask(request: LookupRequest): Promise<Outcome> {
+    if (this.pending.length >= this.maxPending) return Promise.resolve("unavailable");
     const child = this.ensureChild();
-    if (child === null) return Promise.resolve(LINK_RESOLVER_UNAVAILABLE);
+    if (child === null) return Promise.resolve("unavailable");
     if (!this.ready) {
       // No deadline: an index build on a cold disk can take minutes. Said once per start, so a
       // program that never prints its ready line is visible in the log.
@@ -238,14 +327,20 @@ export class LinkResolverProcess {
         );
       }
       this.warnedNotReady = true;
-      return Promise.resolve(LINK_RESOLVER_UNAVAILABLE);
+      return Promise.resolve("unavailable");
     }
     return new Promise((settle) => {
-      const entry: Pending = { id, settle, timer: null };
+      const entry: Pending = { request, settle, timer: null };
       this.pending.push(entry);
       if (this.pending.length === 1) this.armHeadTimer();
+      const line = {
+        id: request.id,
+        scheme: request.scheme,
+        ...(request.from !== undefined ? { from: request.from } : {}),
+        ...(request.kind !== "resolve" ? { kind: request.kind } : {}),
+      };
       try {
-        child.stdin.write(Buffer.from(`${asciiJson({ id })}\n`, "utf8"));
+        child.stdin.write(Buffer.from(`${asciiJson(line)}\n`, "utf8"));
       } catch (cause) {
         this.fail(child, `write failed: ${String(cause)}`);
       }
@@ -269,6 +364,7 @@ export class LinkResolverProcess {
     this.lastStartAt = now;
     this.answeredSinceStart = false;
     this.ready = false;
+    this.noBacklinks = false;
     this.warnedNotReady = false;
     let child: NodeChildProcess.ChildProcessWithoutNullStreams;
     try {
@@ -350,10 +446,22 @@ export class LinkResolverProcess {
     }
     const record =
       typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : null;
-    const at =
+    let at =
       typeof record?.id === "string"
-        ? this.pending.findIndex((entry) => entry.id === record.id)
+        ? this.pending.findIndex((entry) => answers(record, entry.request))
         : -1;
+    if (at === -1 && record !== null && record.kind === undefined) {
+      // A plain answer to a backlinks line: the program predates them, so it is not asked again.
+      at = this.pending.findIndex(
+        (entry) => entry.request.kind === "backlinks" && entry.request.id === record.id,
+      );
+      if (at !== -1) {
+        this.noBacklinks = true;
+        this.log(`link resolver ${this.scheme}: the program answers no backlinks lines`);
+        this.settleAt(at, "unavailable");
+        return;
+      }
+    }
     // A line that names no waiting lookup is not an answer, whatever it holds: matching by order
     // would hand every later answer to the wrong link.
     if (record === null || at === -1) {
@@ -364,14 +472,16 @@ export class LinkResolverProcess {
       );
       return;
     }
+    this.answeredSinceStart = true;
+    this.settleAt(at, { record });
+  }
+
+  private settleAt(at: number, outcome: Outcome): void {
     const [entry] = this.pending.splice(at, 1);
     if (entry === undefined) return;
     if (entry.timer !== null) clearTimeout(entry.timer);
     if (at === 0) this.armHeadTimer();
-    this.answeredSinceStart = true;
-    const answer = normalizeResolvedLink(record.link);
-    this.remember(entry.id, answer);
-    entry.settle(answer);
+    entry.settle(outcome);
   }
 
   private onFirstLine(line: Buffer): void {
@@ -395,22 +505,30 @@ export class LinkResolverProcess {
     }
   }
 
-  private remember(id: string, answer: Answer): void {
+  private remember(key: string, answer: unknown): void {
     const now = this.now();
-    for (const [key, entry] of this.cache) {
-      if (now - entry.at >= this.answerCacheMs) this.cache.delete(key);
+    for (const [cachedKey, entry] of this.cache) {
+      if (now - entry.at >= this.answerCacheMs) this.cache.delete(cachedKey);
     }
-    this.cache.set(id, { answer, at: now });
+    this.cache.set(key, { answer, at: now });
   }
 
   // Only the oldest lookup is timed: it has waited longest, and an answer to any later one resets
-  // nothing, so a program that never answers it is stopped.
+  // nothing, so a program that never answers it is stopped. A backlinks line may be slow work
+  // rather than a hung program, so it alone answers unavailable and the program keeps running.
   private armHeadTimer(): void {
     const head = this.pending[0];
     if (head === undefined || head.timer !== null) return;
     const child = this.child;
     head.timer = setTimeout(() => {
-      if (child !== null) this.fail(child, `no answer in ${this.answerTimeoutMs} ms`);
+      if (child === null || child !== this.child) return;
+      if (head.request.kind === "backlinks" && this.pending[0] === head) {
+        this.log(`link resolver ${this.scheme}: no backlinks answer in ${this.answerTimeoutMs} ms`);
+        head.timer = null;
+        this.settleAt(0, "unavailable");
+        return;
+      }
+      this.fail(child, `no answer in ${this.answerTimeoutMs} ms`);
     }, this.answerTimeoutMs);
   }
 
@@ -427,7 +545,7 @@ export class LinkResolverProcess {
     if (reason !== null && !this.closed) this.log(`link resolver ${this.scheme}: ${reason}`);
     for (const entry of this.pending.splice(0)) {
       if (entry.timer !== null) clearTimeout(entry.timer);
-      entry.settle(this.closed ? null : LINK_RESOLVER_UNAVAILABLE);
+      entry.settle(this.closed ? "closed" : "unavailable");
     }
     this.stopChild(child);
   }
@@ -439,13 +557,31 @@ export class LinkResolverProcess {
  */
 export function resolveLink(
   resolvers: Readonly<Record<string, ReadonlyArray<string>>> | undefined,
-  input: { readonly scheme: string; readonly id: string },
+  input: { readonly scheme: string; readonly id: string; readonly from?: string | undefined },
   resolverFor: typeof linkResolverFor = linkResolverFor,
 ): Promise<LinkResolveResult> {
   if (resolvers === undefined || !Object.hasOwn(resolvers, input.scheme)) {
     return Promise.resolve(null);
   }
-  return resolverFor(input.scheme, resolvers[input.scheme]!).resolve(input.id);
+  return resolverFor(input.scheme, resolvers[input.scheme]!).resolve(input.id, {
+    scheme: input.scheme,
+    from: input.from,
+  });
+}
+
+/**
+ * The `links.backlinks` answer: null for a scheme this server has no program for, else the notes
+ * the scheme's program says link to `path`.
+ */
+export function linkBacklinks(
+  resolvers: Readonly<Record<string, ReadonlyArray<string>>> | undefined,
+  input: { readonly scheme: string; readonly path: string },
+  resolverFor: typeof linkResolverFor = linkResolverFor,
+): Promise<LinkBacklinksResult> {
+  if (resolvers === undefined || !Object.hasOwn(resolvers, input.scheme)) {
+    return Promise.resolve(null);
+  }
+  return resolverFor(input.scheme, resolvers[input.scheme]!).backlinks(input.path, input.scheme);
 }
 
 /** Starts every configured scheme's program. */
@@ -458,9 +594,12 @@ export function startLinkResolvers(
 
 const processes = new Map<string, LinkResolverProcess>();
 
-/** The one running program for a scheme and argv, shared by every connection. */
+/**
+ * The one running program for an argv, shared by every connection and by every scheme set to
+ * that argv; each request names its scheme. `scheme` names the program in the log.
+ */
 export function linkResolverFor(scheme: string, argv: ReadonlyArray<string>): LinkResolverProcess {
-  const key = asciiJson([scheme, argv]);
+  const key = asciiJson(argv);
   let resolver = processes.get(key);
   if (resolver === undefined) {
     resolver = new LinkResolverProcess(scheme, argv);

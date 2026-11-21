@@ -49,12 +49,13 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { mediaFileReference } from "@t3tools/client-runtime/media-reference";
-import { FolderTree, Globe2, WrapTextIcon } from "lucide-react";
+import { ArrowLeft, ArrowRight, FolderTree, Globe2, WrapTextIcon } from "lucide-react";
 import * as Schema from "effect/Schema";
 import {
   lazy,
   Suspense,
   useEffect,
+  type MouseEvent,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -125,6 +126,7 @@ import { resolveCenteredFileLineScrollTop } from "./fileLineReveal";
 import { DiffCommentAnnotation } from "../diffs/DiffCommentAnnotation";
 import { projectFileCacheKey } from "./fileContentRevision";
 import {
+  fileHistoryStepOfKey,
   filePreviewReadErrorMessage,
   isMarkdownPreviewFile,
   resolveFilePreviewPath,
@@ -165,6 +167,23 @@ interface FilePreviewPanelProps {
   onPendingChange: (relativePath: string, pending: boolean) => void;
   selectedFilePending: boolean;
   workspaceMutationId: string | null;
+  /** Back and forward through the files this tab showed; absent for a tab without history. */
+  history?: FileTabHistory | undefined;
+}
+
+export interface FileTabHistory {
+  readonly canGoBack: boolean;
+  readonly canGoForward: boolean;
+  readonly step: (step: -1 | 1) => void;
+  /** Follows a link from the file shown, in place. */
+  readonly follow: (path: string, line: number | undefined, environmentId: EnvironmentId) => void;
+}
+
+// The back and forward buttons of a five-button mouse.
+function fileHistoryStepOfMouse(event: MouseEvent<HTMLElement>): -1 | 1 | null {
+  if (event.button === 3) return -1;
+  if (event.button === 4) return 1;
+  return null;
 }
 
 const MermaidFilePreview = lazy(() =>
@@ -1148,6 +1167,8 @@ function RenderedMarkdownSurface({
   workspaceMutationId,
   readOnly,
   onPendingChange,
+  notePath,
+  onFollowLink,
 }: Omit<
   EditableFileSurfaceProps,
   | "resolvedTheme"
@@ -1161,6 +1182,8 @@ function RenderedMarkdownSurface({
   threadRef: ScopedThreadRef;
   readOnly: boolean;
   workspaceMutationId: string | null;
+  notePath: string | null;
+  onFollowLink: FileTabHistory["follow"] | undefined;
 }) {
   const saveTarget = { environmentId, cwd, relativePath };
   useFileSaveSession(saveTarget, onPendingChange);
@@ -1169,6 +1192,9 @@ function RenderedMarkdownSurface({
     <ScrollArea className="min-h-0 flex-1" onKeyDown={selectRenderedContentOnSelectAll}>
       <FileMarkdownPreview
         text={contents}
+        environmentId={environmentId}
+        notePath={notePath}
+        onFollowLink={onFollowLink}
         cwd={cwd}
         relativePath={relativePath}
         threadRef={threadRef}
@@ -1230,6 +1256,7 @@ export default function FilePreviewPanel({
   onOpenFile,
   onNavigateFolder,
   folderTrail,
+  history,
   onPendingChange,
   selectedFilePending,
   workspaceMutationId,
@@ -1530,10 +1557,41 @@ export default function FilePreviewPanel({
     );
   }
 
+  const stepHistory = (step: -1 | 1 | null, event: { preventDefault: () => void }) => {
+    if (history === undefined || step === null) return;
+    if (step < 0 ? !history.canGoBack : !history.canGoForward) return;
+    event.preventDefault();
+    history.step(step);
+  };
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
+    <div
+      className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background outline-none"
+      // Focusable, so a click in the file gives its keys to the tab's history.
+      tabIndex={history === undefined ? undefined : -1}
+      onKeyDown={(event) => stepHistory(fileHistoryStepOfKey(event), event)}
+      onMouseUp={(event) => stepHistory(fileHistoryStepOfMouse(event), event)}
+    >
       {breadcrumbPath !== null && breadcrumbTrail !== null ? (
         <div className={FILE_SURFACE_SUBHEADER_CLASS} data-surface-subheader>
+          {history !== undefined && (history.canGoBack || history.canGoForward) ? (
+            <>
+              <FileSurfaceAction
+                label="Back (Alt+Left)"
+                disabled={!history.canGoBack}
+                onPress={() => history.step(-1)}
+              >
+                <ArrowLeft className="size-3.5" />
+              </FileSurfaceAction>
+              <FileSurfaceAction
+                label="Forward (Alt+Right)"
+                disabled={!history.canGoForward}
+                onPress={() => history.step(1)}
+              >
+                <ArrowRight className="size-3.5" />
+              </FileSurfaceAction>
+            </>
+          ) : null}
           <ScrollArea
             radius="none"
             ref={breadcrumbRef}
@@ -1805,6 +1863,8 @@ export default function FilePreviewPanel({
                 workspaceMutationId={workspaceMutationId}
                 readOnly={file.data.truncated || !canEditFile}
                 onPendingChange={onPendingChange}
+                notePath={absolutePath}
+                onFollowLink={history?.follow}
               />
             ) : tableDelimiter && renderTable ? (
               <DelimitedTablePreview
