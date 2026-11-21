@@ -1,7 +1,11 @@
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
-import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
+import {
+  resolveThreadWorkingStartedAt,
+  type EnvironmentThreadShell,
+} from "@t3tools/client-runtime/state/models";
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
+import { sortInboxThreadsByReturn } from "@t3tools/client-runtime/state/thread-inbox";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
 import * as React from "react";
@@ -70,6 +74,28 @@ export function shouldNavigateAfterThreadPark(input: {
       ? input.thread.settledOverride === "settled"
       : effectiveSnoozed(input.thread, { now: input.now }))
   );
+}
+
+/**
+ * The inbox thread that has waited longest for the user, for the "Oldest
+ * waiting" choice after a settle or snooze. Inbox order is newest return
+ * first, so this is its last row that is neither working nor skipped.
+ */
+export function resolveOldestWaitingThread<
+  T extends Pick<
+    EnvironmentThreadShell,
+    "id" | "environmentId" | "createdAt" | "unsettledAt" | "latestRun"
+  >,
+>(input: {
+  readonly inboxThreads: readonly T[];
+  readonly skip: (thread: T) => boolean;
+  readonly isWorking: (thread: T) => boolean;
+  readonly returnedAt?: (thread: T) => number | undefined;
+}): T | null {
+  const waiting = input.inboxThreads.filter(
+    (thread) => !input.skip(thread) && !input.isWorking(thread),
+  );
+  return sortInboxThreadsByReturn(waiting, input.returnedAt).at(-1) ?? null;
 }
 
 export const THREAD_JUMP_HINT_SHOW_DELAY_MS = 200;

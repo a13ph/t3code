@@ -80,6 +80,11 @@ export const SidebarThreadSortOrder = Schema.Literals(["updated_at", "created_at
 export type SidebarThreadSortOrder = typeof SidebarThreadSortOrder.Type;
 const DEFAULT_SIDEBAR_THREAD_SORT_ORDER: SidebarThreadSortOrder = "updated_at";
 
+/** Which thread opens after the user settles or snoozes the one they have open. */
+export const AfterSettleOrSnooze = Schema.Literals(["next", "oldest_waiting"]);
+export type AfterSettleOrSnooze = typeof AfterSettleOrSnooze.Type;
+const DEFAULT_AFTER_SETTLE_OR_SNOOZE: AfterSettleOrSnooze = "next";
+
 export const SidebarProjectGroupingMode = Schema.Literals([
   "repository",
   "repository_path",
@@ -546,6 +551,9 @@ export const ClientSettingsSchema = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
   sidebarWorkingShelfEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  afterSettleOrSnooze: AfterSettleOrSnooze.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_AFTER_SETTLE_OR_SNOOZE)),
+  ),
   sidebarProjectGroupingMode: SidebarProjectGroupingMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE)),
   ),
@@ -2111,6 +2119,7 @@ export const ClientSettingsPatch = Schema.Struct({
   threadDetailsUsageEnabled: Schema.optionalKey(Schema.Boolean),
   threadDetailsItems: Schema.optionalKey(Schema.Record(Schema.String, Schema.Boolean)),
   sidebarWorkingShelfEnabled: Schema.optionalKey(Schema.Boolean),
+  afterSettleOrSnooze: Schema.optionalKey(AfterSettleOrSnooze),
   sidebarProjectGroupingMode: Schema.optionalKey(SidebarProjectGroupingMode),
   sidebarProjectGroupingOverrides: Schema.optionalKey(
     Schema.Record(TrimmedNonEmptyString, SidebarProjectGroupingMode),
