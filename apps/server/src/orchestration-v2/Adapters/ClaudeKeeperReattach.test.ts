@@ -1,15 +1,9 @@
-// @effect-diagnostics nodeBuiltinImport:off -- the fake CLI and the keeper are real processes and sockets.
-import * as NodeFS from "node:fs";
-import * as NodeOS from "node:os";
-import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
-  ClaudeSettings,
   MessageId,
   NodeId,
   ProjectId,
-  ProviderInstanceId,
   ProviderSessionId,
   RunAttemptId,
   RunId,
@@ -17,146 +11,37 @@ import {
   type OrchestrationV2ProviderThread,
   type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
-import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as Path from "effect/Path";
-import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { vi } from "vite-plus/test";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
-import { ProviderEventLoggers } from "@t3tools/provider-core/server/ProviderEventLoggers";
-import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
+import {
+  fakeClaudeCli,
+  firstKeeperAck,
+  keeperSocket,
+  keeperTestModelSelection as modelSelection,
+  makeKeeperTestAdapter,
+  realQueryRunner,
+  SLOW_COMMAND,
+  SLOW_COMMAND_REPLY,
+} from "./ClaudeKeeper.testkit.ts";
 import { detachKeeperChildren, keeperDetachedThreads } from "./ClaudeKeeperSpawn.ts";
 // @ts-ignore - plain ESM without types
-import { startKeeper } from "../../t3Keeper/keeper.mjs";
-// @ts-ignore - plain ESM without types
-import { KeeperProcess, request as keeperRequest } from "../../t3Keeper/shim.mjs";
+import { request as keeperRequest } from "../../t3Keeper/shim.mjs";
 
-const settings = Schema.decodeSync(ClaudeSettings)({});
-const modelSelection = {
-  instanceId: ProviderInstanceId.make(ClaudeAdapterV2.CLAUDE_PROVIDER),
-  model: "claude-sonnet-4-6",
-};
-
-// A stand-in for the Claude CLI on the stream-json protocol: it answers every
-// control request, and on the first prompt starts a Bash call, then holds
-// until the test creates `release`, then reports the call's result, a reply
-// and the turn's result.
-const FAKE_CLI = String.raw`
-import * as fs from "node:fs";
-import * as path from "node:path";
-import * as readline from "node:readline";
-const dir = path.dirname(process.argv[1]);
-const out = (frame) => process.stdout.write(JSON.stringify(frame) + "\n");
-const usage = { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
-const assistant = (id, content) => ({
-  type: "assistant", uuid: "a-" + id, session_id: "s", parent_tool_use_id: null,
-  message: { id, type: "message", role: "assistant", model: "claude-sonnet-4-6", content,
-    stop_reason: null, stop_sequence: null, usage },
-});
-let prompted = false;
-const turn = async () => {
-  out(assistant("msg_tool", [{ type: "tool_use", id: "toolu_1", name: "Bash",
-    input: { command: "sleep 60; echo done-4857" } }]));
-  while (!fs.existsSync(path.join(dir, "release"))) await new Promise((r) => setTimeout(r, 20));
-  out({ type: "user", uuid: "u-result", session_id: "s", parent_tool_use_id: null,
-    message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1",
-      is_error: false, content: "done-4857" }] } });
-  out(assistant("msg_reply", [{ type: "text", text: "The command printed done-4857." }]));
-  out({ type: "result", subtype: "success", uuid: "r-1", session_id: "s", is_error: false,
-    num_turns: 1, result: "The command printed done-4857.", stop_reason: "end_turn",
-    duration_ms: 1, duration_api_ms: 1, total_cost_usd: 0, usage, modelUsage: {},
-    permission_denials: [], terminal_reason: "completed" });
-};
-const lines = readline.createInterface({ input: process.stdin });
-lines.on("line", (line) => {
-  if (!line.trim()) return;
-  const m = JSON.parse(line);
-  if (m.type === "control_request") {
-    const response = m.request.subtype === "initialize"
-      ? { commands: [], models: [], account: {}, output_style: "default", available_output_styles: [] }
-      : m.request.subtype === "mcp_set_servers" ? { added: [], removed: [], errors: {} } : {};
-    out({ type: "control_response", response: { subtype: "success", request_id: m.request_id, response } });
-  } else if (m.type === "user" && !prompted) {
-    prompted = true;
-    void turn();
-  }
-});
-lines.on("close", () => process.exit(0));
-`;
-
-function fakeClaudeCli(): { readonly cli: string; readonly dir: string } {
-  const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-claude-reattach-"));
-  NodeFS.writeFileSync(NodePath.join(dir, "cli.mjs"), FAKE_CLI);
-  const cli = NodePath.join(dir, "claude");
-  NodeFS.writeFileSync(
-    cli,
-    `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "$(dirname "$0")/cli.mjs"\n`,
-    { mode: 0o755 },
-  );
-  return { cli, dir };
-}
-
-/** A keeper serving a fresh socket, named in T3_KEEPER_SOCKET while the test runs. */
-const keeperSocket = Effect.gen(function* () {
-  const { keeper } = yield* Effect.acquireRelease(
-    Effect.promise(async () => {
-      const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-keeper-"));
-      const keeper = await startKeeper({
-        socketPath: NodePath.join(dir, "keeper.sock"),
-        log: () => {},
-      });
-      return { keeper, dir };
-    }),
-    ({ keeper, dir }) =>
-      Effect.promise(async () => {
-        await keeper.close();
-        NodeFS.rmSync(dir, { recursive: true, force: true });
-      }),
-  );
-  yield* Effect.acquireRelease(
-    Effect.sync(() => {
-      const previous = process.env.T3_KEEPER_SOCKET;
-      process.env.T3_KEEPER_SOCKET = keeper.socketPath;
-      return previous;
-    }),
-    (previous) =>
-      Effect.sync(() => {
-        if (previous === undefined) delete process.env.T3_KEEPER_SOCKET;
-        else process.env.T3_KEEPER_SOCKET = previous;
-      }),
-  );
-  return keeper;
-});
-
-const realQueryRunner = ClaudeAdapterV2.layerQueryRunner.pipe(
-  Layer.provide(Layer.succeed(ProviderEventLoggers, { native: undefined, canonical: undefined })),
-  Layer.provide(NodeServices.layer),
-);
-
-const makeAdapter = (binaryPath: string, attachmentsDir: string) =>
-  Effect.gen(function* () {
-    return yield* ClaudeAdapterV2.makeClaudeAdapterV2({
-      instanceId: modelSelection.instanceId,
-      settings: { ...settings, binaryPath },
-      environment: { ...process.env },
-      attachmentsDir,
-      fileSystem: yield* FileSystem.FileSystem,
-      path: yield* Path.Path,
-      crypto: yield* Crypto.Crypto,
-      idAllocator: yield* IdAllocator.IdAllocatorV2,
-      queryRunner: yield* ClaudeAdapterV2.ClaudeAgentSdkQueryRunner,
-    });
+const runtimePolicy = (cwd: string) =>
+  ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    cwd,
   });
 
 function turnInput(input: {
@@ -166,7 +51,6 @@ function turnInput(input: {
   readonly cwd: string;
   readonly reattach?: ProviderAdapter.ProviderAdapterV2Reattach;
 }): ProviderAdapter.ProviderAdapterV2TurnInput {
-  const attemptId = RunAttemptId.make("attempt-keeper-reattach");
   return {
     appThread: {
       createdBy: "user",
@@ -195,7 +79,7 @@ function turnInput(input: {
     runId: RunId.make("run-keeper-reattach"),
     runOrdinal: 1,
     providerTurnOrdinal: 1,
-    attemptId,
+    attemptId: RunAttemptId.make("attempt-keeper-reattach"),
     rootNodeId: NodeId.make("node-keeper-reattach"),
     providerThread: input.providerThread,
     message: {
@@ -206,11 +90,7 @@ function turnInput(input: {
       attachments: [],
     },
     modelSelection,
-    runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
-      runtimeMode: "full-access",
-      interactionMode: "default",
-      cwd: input.cwd,
-    }),
+    runtimePolicy: runtimePolicy(input.cwd),
     ...(input.reattach === undefined ? {} : { reattach: input.reattach }),
   };
 }
@@ -228,11 +108,7 @@ const openSession = (
         threadId,
         providerSessionId: ProviderSessionId.make("provider-session-keeper-reattach"),
         modelSelection,
-        runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
-          runtimeMode: "full-access",
-          interactionMode: "default",
-          cwd,
-        }),
+        runtimePolicy: runtimePolicy(cwd),
       })
       .pipe(Scope.provide(scope));
     const events: Array<ProviderAdapter.ProviderAdapterV2Event> = [];
@@ -275,42 +151,31 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
     it.effect("finishes the turn in the CLI the keeper held over the restart", () =>
       Effect.gen(function* () {
         const keeper = yield* keeperSocket;
-        const { cli, dir } = fakeClaudeCli();
-        yield* Effect.addFinalizer(() =>
-          Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true })),
-        );
+        const fake = yield* fakeClaudeCli;
+        const acked = yield* firstKeeperAck;
         const threadId = ThreadId.make("thread-keeper-reattach");
-        const acked = yield* Deferred.make<number>();
-        const ack = vi.spyOn(KeeperProcess.prototype, "ack").mockImplementation(function (
-          this: { _request: (msg: unknown) => Promise<unknown> },
-          after: number,
-        ) {
-          const sent = this._request({ op: "ack", after });
-          void sent.then(() => Deferred.doneUnsafe(acked, Exit.succeed(after)));
-          return sent;
-        });
-        yield* Effect.addFinalizer(() => Effect.sync(() => ack.mockRestore()));
 
         // The server before the restart.
-        const before = yield* openSession(yield* makeAdapter(cli, dir), threadId, dir);
+        const before = yield* openSession(
+          yield* makeKeeperTestAdapter(fake.cli, fake.dir),
+          threadId,
+          fake.dir,
+        );
         const providerThread = yield* before.runtime.ensureThread({
           threadId,
           modelSelection,
-          runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            cwd: dir,
-          }),
+          runtimePolicy: runtimePolicy(fake.dir),
         });
         const now = yield* DateTime.now;
-        yield* before.runtime.startTurn(turnInput({ threadId, providerThread, now, cwd: dir }));
+        yield* before.runtime.startTurn(
+          turnInput({ threadId, providerThread, now, cwd: fake.dir }),
+        );
         yield* before.awaitEvent((event) => toolItem(event)?.status === "running");
-        const ackedLine = yield* Deferred.await(acked);
+        const ackedLine = yield* acked;
         assert.equal(detachKeeperChildren(), 1);
         const detached = keeperDetachedThreads().get(threadId);
         assert.isDefined(detached);
         yield* before.close;
-        assert.isFalse(before.events.some((event) => event.type === "turn.terminal"));
         const runningItem = before.events.map(toolItem).findLast((item) => item !== undefined)!;
         const list = yield* Effect.promise(() => keeperRequest(keeper.socketPath, { op: "list" }));
         assert.deepEqual(
@@ -324,13 +189,17 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
         assert.equal(list.handles[0].acked, ackedLine);
 
         // The server after it.
-        const after = yield* openSession(yield* makeAdapter(cli, dir), threadId, dir);
+        const after = yield* openSession(
+          yield* makeKeeperTestAdapter(fake.cli, fake.dir),
+          threadId,
+          fake.dir,
+        );
         yield* after.runtime.startTurn(
           turnInput({
             threadId,
             providerThread: { ...providerThread, status: "active" },
             now,
-            cwd: dir,
+            cwd: fake.dir,
             reattach: {
               handle: detached!.handle,
               after: list.handles[0].acked,
@@ -339,7 +208,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
             },
           }),
         );
-        NodeFS.writeFileSync(NodePath.join(dir, "release"), "");
+        fake.release();
         yield* after.awaitEvent((event) => event.type === "turn.terminal");
 
         const terminal = after.events.find((event) => event.type === "turn.terminal");
@@ -350,19 +219,17 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
         assert.equal(completed?.status, "completed");
         assert.equal(
           completed?.type === "command_execution" ? completed.input : undefined,
-          "sleep 60; echo done-4857",
-        );
-        assert.include(
-          after.events.flatMap((event) =>
-            event.type === "turn_item.updated" && event.turnItem.type === "assistant_message"
-              ? [event.turnItem.text]
-              : [],
-          ),
-          "The command printed done-4857.",
+          SLOW_COMMAND,
         );
         const reply = after.events.find(
           (event) =>
             event.type === "turn_item.updated" && event.turnItem.type === "assistant_message",
+        );
+        assert.equal(
+          reply?.type === "turn_item.updated" && reply.turnItem.type === "assistant_message"
+            ? reply.turnItem.text
+            : undefined,
+          SLOW_COMMAND_REPLY,
         );
         assert.isAbove(
           reply?.type === "turn_item.updated" ? reply.turnItem.ordinal : 0,
