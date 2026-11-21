@@ -144,6 +144,8 @@ class KeeperReattachAbandoned extends Schema.TaggedError<KeeperReattachAbandoned
   },
 ) {}
 
+const isKeeperReattachAbandoned = Schema.is(KeeperReattachAbandoned);
+
 /**
  * Claude refuses these before it reads the prompt: replacing a process running background work,
  * launch arguments whose appended system prompt or settings cannot be read, or MCP registration
@@ -2180,7 +2182,7 @@ export const layer: Layer.Layer<
         const { runId } = input;
         const error = Cause.squash(cause);
         const reason =
-          error instanceof KeeperReattachAbandoned
+          isKeeperReattachAbandoned(error)
             ? error.reason
             : "the reattach failed before the turn was running again.";
         yield* Effect.logWarning("t3-keeper reattach failed", { runId, reason, cause });
@@ -2468,10 +2470,9 @@ export const layer: Layer.Layer<
             : withWorkspaceLease(path.resolve(thread.worktreePath), reattach(input));
         }).pipe(
           // Whatever failed, the run is written off as a restart would have.
-          Effect.catchCause((cause) =>
-            Cause.hasInterruptsOnly(cause)
-              ? Effect.failCause(cause)
-              : writeOffReattach(input, cause),
+          Effect.catchCauseIf(
+            (cause) => !Cause.hasInterruptsOnly(cause),
+            (cause) => writeOffReattach(input, cause),
           ),
           Effect.mapError((cause) =>
             isProviderTurnStartError(cause)
