@@ -1613,7 +1613,7 @@ export const layerQueryRunner: Layer.Layer<
       const keeperSpawn =
         options.spawnClaudeCodeProcess !== undefined || platform === "win32"
           ? undefined
-          : keeperSpawnProcess(input.threadId);
+          : keeperSpawnProcess(input.threadId, { env: hostEnvironment, onStderr: appendStderr });
       const spawnProcess =
         options.spawnClaudeCodeProcess ??
         ((spawnOptions: ClaudeSpawnOptions) => {

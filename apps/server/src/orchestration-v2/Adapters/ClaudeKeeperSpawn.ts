@@ -35,7 +35,11 @@ function keeperSocketPath(env: NodeJS.ProcessEnv): string | undefined {
 /** The SDK's `spawnClaudeCodeProcess` for one thread, or undefined without a keeper socket. */
 export function keeperSpawnProcess(
   threadId: string,
-  options: { readonly env?: NodeJS.ProcessEnv; readonly connectRetryMs?: number } = {},
+  options: {
+    readonly env?: NodeJS.ProcessEnv;
+    readonly connectRetryMs?: number;
+    readonly onStderr?: (text: string) => void;
+  } = {},
 ): ((options: SpawnOptions) => SpawnedProcess) | undefined {
   const socketPath = keeperSocketPath(options.env ?? process.env);
   if (socketPath === undefined) return undefined;
@@ -43,6 +47,7 @@ export function keeperSpawnProcess(
     socketPath,
     name: threadId,
     group: true,
+    onStderr: options.onStderr,
     // nothing reattaches, so the keeper may drop each line once delivered
     autoAck: true,
     // a keeper that is restarting still gets the CLI
