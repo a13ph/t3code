@@ -7,7 +7,7 @@
  */
 
 // Cost: one RPC, and one line to the server's resolver, per visible link per 15 s.
-export const RESOLVED_LINK_REFRESH_MS = 15_000;
+const RESOLVED_LINK_REFRESH_MS = 15_000;
 // A focus right after a tick, or a burst of focus events, asks once.
 const MIN_GAP_MS = 1_000;
 

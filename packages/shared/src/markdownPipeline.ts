@@ -43,7 +43,7 @@ export { remarkEnableOrderedListNumbers } from "./markdownOrderedListNumbers.ts"
  * protocol, as `t3-resolved:<scheme>://<id>`, so the sanitizer never allows a scheme a server
  * names: a server could otherwise name an OS handler and make chat keep links to it.
  */
-export const RESOLVED_LINK_PROTOCOL = "t3-resolved";
+const RESOLVED_LINK_PROTOCOL = "t3-resolved";
 const RESOLVED_LINK_PREFIX = `${RESOLVED_LINK_PROTOCOL}:`;
 const SCHEME_OF_LINK = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//;
 

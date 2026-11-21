@@ -1,6 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
 import { Atom } from "effect/reactivity";
-import { useMemo } from "react";
 
 import { linkSchemesOf } from "../resolvedLinks";
 import { environmentPresentations } from "./presentation";
@@ -13,5 +12,5 @@ const linkSchemesKeyAtom = Atom.make((get) =>
 /** Every link scheme some connected server resolves. */
 export function useLinkSchemes(): ReadonlySet<string> {
   const key = useAtomValue(linkSchemesKeyAtom);
-  return useMemo(() => new Set(key === "" ? [] : key.split(",")), [key]);
+  return new Set(key === "" ? [] : key.split(","));
 }

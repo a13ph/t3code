@@ -2,29 +2,16 @@
 // child shared by every connection, read as raw bytes and timed per answer; called from a plain
 // Promise handler, outside any Effect runtime.
 /**
- * Resolves chat links of a configured scheme through an external program.
- *
- * The server starts the scheme's program once and keeps it running. Each lookup is one line of
- * JSON on its stdin, `{"id":"<what follows scheme://>"}`, and the program answers each with one
- * line on stdout, in order: `{"path","label","mark","tone","tooltip"}`, or `null` when it does not
- * know the link. A program that exits is started again on a later lookup, after a pause that
- * grows while it keeps failing. One that leaves a lookup unanswered for `answerTimeoutMs` is
- * stopped, since a late answer would be read as the answer to the next question.
- *
- * A lookup the program could not answer, because it failed, timed out, was waiting to be started
- * again or had too many lookups queued, answers `LINK_RESOLVER_UNAVAILABLE`, which is no answer
- * about the link. Answers are kept for `answerCacheMs`, and one id asked twice while its lookup is
- * in flight is asked once.
- *
- * Process I/O is bytes with explicit UTF-8 both ways, never the host's code page: requests are
- * written as ASCII JSON (anything else escaped as `\uXXXX`), and an answer line that is not valid
- * UTF-8 is logged and answers unavailable rather than being read with replacement characters.
+ * Resolves chat links of a scheme through one long-running program: a JSON line `{"id"}` per
+ * lookup on stdin, one answer line each on stdout in order, UTF-8 bytes both ways. A program that
+ * fails or is silent `answerTimeoutMs` is stopped, since a late answer would match the next lookup;
+ * until it runs again, lookups answer `LINK_RESOLVER_UNAVAILABLE`, which says nothing of the link.
  */
-import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import * as NodeChildProcess from "node:child_process";
 
 import type { LinkResolveResult, ResolvedLink, ResolvedLinkTone } from "@t3tools/contracts";
 
-export const LINK_RESOLVER_ANSWER_TIMEOUT_MS = 10_000;
+const LINK_RESOLVER_ANSWER_TIMEOUT_MS = 10_000;
 export const LINK_RESOLVER_UNAVAILABLE = { unavailable: true } as const;
 // A program that keeps dying before it answers is started again after 1 s, then 2 s, 4 s ... up
 // to a minute, so a broken setting cannot spin; a run that answers resets the pause.
@@ -38,12 +25,17 @@ const MAX_TOOLTIP_LENGTH = 4_000;
 const MAX_LINE_BYTES = 1024 * 1024;
 // stderr lines logged per minute; the rest are counted and the count logged once.
 const MAX_STDERR_LINES_PER_MINUTE = 20;
-const TONES: ReadonlySet<string> = new Set<ResolvedLinkTone>(["normal", "muted", "warning", "danger"]);
+const TONES: ReadonlySet<string> = new Set<ResolvedLinkTone>([
+  "normal",
+  "muted",
+  "warning",
+  "danger",
+]);
 
 export type LinkResolverSpawn = (
   command: string,
   args: ReadonlyArray<string>,
-) => ChildProcessWithoutNullStreams;
+) => NodeChildProcess.ChildProcessWithoutNullStreams;
 
 export interface LinkResolverOptions {
   readonly answerTimeoutMs?: number;
@@ -70,7 +62,7 @@ export function linkResolverEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 }
 
 const defaultSpawn: LinkResolverSpawn = (command, args) =>
-  nodeSpawn(command, [...args], {
+  NodeChildProcess.spawn(command, [...args], {
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
     env: linkResolverEnv(process.env),
@@ -89,10 +81,8 @@ export function asciiJson(value: unknown): string {
 function firstGrapheme(text: string): string {
   const trimmed = text.trim();
   if (trimmed === "") return "";
-  const segment = new Intl.Segmenter(undefined, { granularity: "grapheme" })
-    .segment(trimmed)
-    [Symbol.iterator]()
-    .next();
+  const segments = new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(trimmed);
+  const segment = segments[Symbol.iterator]().next();
   return segment.done ? "" : segment.value.segment;
 }
 
@@ -122,7 +112,7 @@ export function normalizeResolvedLink(raw: unknown): ResolvedLink | null {
 }
 
 export class LinkResolverProcess {
-  private child: ChildProcessWithoutNullStreams | null = null;
+  private child: NodeChildProcess.ChildProcessWithoutNullStreams | null = null;
   private readonly pending: Pending[] = [];
   private readonly inFlight = new Map<string, Promise<LinkResolveResult>>();
   private readonly cache = new Map<string, { readonly answer: Answer; readonly at: number }>();
@@ -192,7 +182,7 @@ export class LinkResolverProcess {
     });
   }
 
-  private ensureChild(): ChildProcessWithoutNullStreams | null {
+  private ensureChild(): NodeChildProcess.ChildProcessWithoutNullStreams | null {
     if (this.child !== null) return this.child;
     const [command, ...args] = this.argv;
     if (command === undefined || command.trim() === "") {
@@ -208,7 +198,7 @@ export class LinkResolverProcess {
     if (now - this.lastStartAt < restartGapMs) return null;
     this.lastStartAt = now;
     this.answeredSinceStart = false;
-    let child: ChildProcessWithoutNullStreams;
+    let child: NodeChildProcess.ChildProcessWithoutNullStreams;
     try {
       child = this.spawnChild(command, args);
     } catch (cause) {
@@ -233,7 +223,8 @@ export class LinkResolverProcess {
     const now = this.now();
     if (now - this.stderrWindowStart >= 60_000) {
       const muted = this.stderrLines - MAX_STDERR_LINES_PER_MINUTE;
-      if (muted > 0) this.log(`link resolver ${this.scheme}: ${muted} more stderr lines not logged`);
+      if (muted > 0)
+        this.log(`link resolver ${this.scheme}: ${muted} more stderr lines not logged`);
       this.stderrWindowStart = now;
       this.stderrLines = 0;
     }
@@ -247,7 +238,7 @@ export class LinkResolverProcess {
     }
   }
 
-  private onData(child: ChildProcessWithoutNullStreams, chunk: Buffer): void {
+  private onData(child: NodeChildProcess.ChildProcessWithoutNullStreams, chunk: Buffer): void {
     if (child !== this.child) return;
     let rest = chunk;
     for (let at = rest.indexOf(0x0a); at !== -1; at = rest.indexOf(0x0a)) {
@@ -306,7 +297,10 @@ export class LinkResolverProcess {
     }, this.answerTimeoutMs);
   }
 
-  private fail(child: ChildProcessWithoutNullStreams, reason: string | null): void {
+  private fail(
+    child: NodeChildProcess.ChildProcessWithoutNullStreams,
+    reason: string | null,
+  ): void {
     if (child !== this.child) return;
     this.child = null;
     this.buffered = [];
@@ -339,10 +333,7 @@ export function resolveLink(
 const processes = new Map<string, LinkResolverProcess>();
 
 /** The one running program for a scheme and argv, shared by every connection. */
-export function linkResolverFor(
-  scheme: string,
-  argv: ReadonlyArray<string>,
-): LinkResolverProcess {
+export function linkResolverFor(scheme: string, argv: ReadonlyArray<string>): LinkResolverProcess {
   const key = asciiJson([scheme, argv]);
   let resolver = processes.get(key);
   if (resolver === undefined) {
@@ -353,7 +344,7 @@ export function linkResolverFor(
   return resolver;
 }
 
-export function closeAllLinkResolvers(): void {
+function closeAllLinkResolvers(): void {
   for (const resolver of processes.values()) resolver.close();
   processes.clear();
 }

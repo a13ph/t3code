@@ -1,9 +1,8 @@
-// @vitest-environment jsdom
-
 import { EnvironmentId } from "@t3tools/contracts";
-import { act, useSyncExternalStore } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { useSyncExternalStore } from "react";
+import { describe, expect, it, vi } from "vite-plus/test";
+
+import { act, fakeTimers, render } from "../../../test/render";
 
 interface View {
   readonly data: unknown;
@@ -101,18 +100,31 @@ const environment = (environmentId: string, label: string, linkSchemes = ["notes
   connection: { phase: "connected" },
   serverConfig: { linkSchemes },
 });
+// Stamped with the fake clock, as the query atom stamps a success with the time it landed.
 const answer = (data: unknown): View => ({
   data,
-  dataUpdatedAt: Date.now(),
+  dataUpdatedAt: vi.getMockedSystemTime()?.getTime() ?? 0,
   error: null,
   failure: null,
   isPending: false,
   isSuccess: true,
 });
 
-let seen: ResolvedLinkResolution[];
-let root: Root;
-let container: HTMLDivElement;
+let seen: ResolvedLinkResolution[] = [];
+
+/** Starts a test with fresh server answers over `environments`, and clears them after it. */
+function serving(environments: ReadonlyArray<unknown> = [environment(OWN, "own")]): Disposable {
+  const reset = () => {
+    seen = [];
+    servers.state.views.clear();
+    servers.state.asked = [];
+    servers.state.inputs = [];
+    servers.state.refreshed = [];
+    servers.state.environments = environments;
+  };
+  reset();
+  return { [Symbol.dispose]: reset };
+}
 
 function Probe() {
   seen.push(useResolvedLink(LINK, OWN));
@@ -120,6 +132,7 @@ function Probe() {
 }
 
 const last = () => seen.at(-1)?._tag;
+const found = () => seen.at(-1) as Extract<ResolvedLinkResolution, { _tag: "found" }>;
 
 async function settle(update: () => void = () => {}) {
   await act(async () => {
@@ -134,38 +147,20 @@ async function advance(ms: number) {
   });
 }
 
-beforeEach(async () => {
-  vi.useFakeTimers();
-  seen = [];
-  servers.state.views.clear();
-  servers.state.asked = [];
-  servers.state.inputs = [];
-  servers.state.refreshed = [];
-  servers.state.environments = [environment(OWN, "own")];
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-  await act(async () => root.render(<Probe />));
-});
-
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  vi.useRealTimers();
-});
-
 describe("useResolvedLink", () => {
   it("asks with the link's scheme and id", async () => {
+    using _timers = fakeTimers();
+    using _servers = serving();
+    await using _screen = await render(<Probe />, { router: false });
     await settle(() => servers.state.views.set(OWN, answer(TARGET)));
     expect(servers.state.inputs.at(-1)).toEqual(LINK);
     expect(seen.at(-1)).toMatchObject({ _tag: "found", environmentId: OWN, target: TARGET });
   });
 
   it("never asks a server that does not announce the scheme", async () => {
-    servers.state.environments = [
-      environment(PLAIN, "aaa", ["other"]),
-      environment(OWN, "own"),
-    ];
+    using _timers = fakeTimers();
+    using _servers = serving([environment(PLAIN, "aaa", ["other"]), environment(OWN, "own")]);
+    await using _screen = await render(<Probe />, { router: false });
     await settle(() => servers.state.views.set(OWN, answer(null)));
     await advance(6_500);
     await settle(() => servers.state.views.set(OWN, answer(null)));
@@ -174,6 +169,9 @@ describe("useResolvedLink", () => {
   });
 
   it("is missing at once when no connected server announces the scheme", async () => {
+    using _timers = fakeTimers();
+    using _servers = serving();
+    await using _screen = await render(<Probe />, { router: false });
     await settle(() => {
       servers.state.environments = [environment(PLAIN, "plain", [])];
     });
@@ -182,6 +180,9 @@ describe("useResolvedLink", () => {
   });
 
   it("asks once more about 6 s after a miss, so a target made just then shows", async () => {
+    using _timers = fakeTimers();
+    using _servers = serving();
+    await using _screen = await render(<Probe />, { router: false });
     await settle(() => servers.state.views.set(OWN, answer(null)));
     expect(last()).toBe("missing");
 
@@ -193,6 +194,9 @@ describe("useResolvedLink", () => {
   });
 
   it("stays missing after the one re-run also misses", async () => {
+    using _timers = fakeTimers();
+    using _servers = serving();
+    await using _screen = await render(<Probe />, { router: false });
     await settle(() => servers.state.views.set(OWN, answer(null)));
     await advance(6_500);
     await settle(() => servers.state.views.set(OWN, answer(null)));
@@ -203,16 +207,21 @@ describe("useResolvedLink", () => {
   });
 
   it("gives up on a silent server even while the server list re-renders", async () => {
-    servers.state.environments = [environment(OWN, "own"), environment(OTHER, "other")];
+    using _timers = fakeTimers();
+    using _servers = serving([environment(OWN, "own"), environment(OTHER, "other")]);
+    await using _screen = await render(<Probe />, { router: false });
     await settle();
     expect(servers.state.asked.at(-1)).toBe(OWN);
-    for (let step = 0; step < 3; step += 1) {
-      await advance(3_000);
-      // A new array with the same servers, as each environments update makes.
-      await settle(() => {
-        servers.state.environments = [environment(OWN, "own"), environment(OTHER, "other")];
-      });
-    }
+    // A new array with the same servers every 3 s, as each environments update makes.
+    const sameServers = () => {
+      servers.state.environments = [environment(OWN, "own"), environment(OTHER, "other")];
+    };
+    await advance(3_000);
+    await settle(sameServers);
+    await advance(3_000);
+    await settle(sameServers);
+    await advance(3_000);
+    await settle(sameServers);
     // Not yet: 9 s is inside the timeout.
     expect(servers.state.asked.at(-1)).toBe(OWN);
     await advance(3_500);
@@ -220,19 +229,17 @@ describe("useResolvedLink", () => {
   });
 });
 
+/** Makes `document.visibilityState` read `state()` until disposed. */
+function visibility(state: () => DocumentVisibilityState): Disposable {
+  Object.defineProperty(document, "visibilityState", { configurable: true, get: state });
+  return { [Symbol.dispose]: () => void Reflect.deleteProperty(document, "visibilityState") };
+}
+
 describe("useResolvedLink live refresh", () => {
-  let visibility: DocumentVisibilityState = "visible";
-  const setVisibility = (state: DocumentVisibilityState) => {
-    visibility = state;
-  };
-  Object.defineProperty(document, "visibilityState", {
-    configurable: true,
-    get: () => visibility,
-  });
-
-  const found = () => seen.at(-1) as Extract<ResolvedLinkResolution, { _tag: "found" }>;
-
   it("shows a change after the 15 s refresh", async () => {
+    using _timers = fakeTimers();
+    using _servers = serving();
+    await using _screen = await render(<Probe />, { router: false });
     await settle(() => servers.state.views.set(OWN, answer(TARGET)));
     expect(found().target.mark).toBe("o");
 
@@ -247,14 +254,16 @@ describe("useResolvedLink live refresh", () => {
   });
 
   it("does not refresh while the page is hidden, and refreshes on focus", async () => {
+    let shown: DocumentVisibilityState = "visible";
+    using _visibility = visibility(() => shown);
+    using _timers = fakeTimers();
+    using _servers = serving();
+    await using _screen = await render(<Probe />, { router: false });
     await settle(() => servers.state.views.set(OWN, answer(TARGET)));
-    setVisibility("hidden");
-    try {
-      await advance(60_000);
-      expect(servers.state.refreshed).toEqual([]);
-    } finally {
-      setVisibility("visible");
-    }
+    shown = "hidden";
+    await advance(60_000);
+    expect(servers.state.refreshed).toEqual([]);
+    shown = "visible";
     await act(async () => {
       window.dispatchEvent(new Event("focus"));
     });
@@ -262,25 +271,28 @@ describe("useResolvedLink live refresh", () => {
   });
 
   it("shares one refresh among chips of one link and stops after unmount", async () => {
-    await act(async () =>
-      root.render(
-        <>
-          <Probe />
-          <Probe />
-          <Probe />
-        </>,
-      ),
+    using _timers = fakeTimers();
+    using _servers = serving();
+    await using screen = await render(
+      <>
+        <Probe />
+        <Probe />
+        <Probe />
+      </>,
+      { router: false },
     );
     await settle(() => servers.state.views.set(OWN, answer(TARGET)));
     await advance(15_000);
     expect(servers.state.refreshed).toEqual([OWN]);
-    await act(async () => root.render(<></>));
+    await screen.rerender(<></>);
     await advance(45_000);
     expect(servers.state.refreshed).toEqual([OWN]);
   });
 
   it("runs the chain again when the server that knew the link loses it", async () => {
-    servers.state.environments = [environment(OWN, "own"), environment(OTHER, "other")];
+    using _timers = fakeTimers();
+    using _servers = serving([environment(OWN, "own"), environment(OTHER, "other")]);
+    await using _screen = await render(<Probe />, { router: false });
     await settle(() => servers.state.views.set(OWN, answer(TARGET)));
     expect(found().environmentId).toBe(OWN);
 
@@ -294,7 +306,9 @@ describe("useResolvedLink live refresh", () => {
   });
 
   it("keeps the last target while the server's program is unavailable", async () => {
-    servers.state.environments = [environment(OWN, "own"), environment(OTHER, "other")];
+    using _timers = fakeTimers();
+    using _servers = serving([environment(OWN, "own"), environment(OTHER, "other")]);
+    await using _screen = await render(<Probe />, { router: false });
     await settle(() => servers.state.views.set(OWN, answer(TARGET)));
     await advance(15_000);
     await settle(() => servers.state.views.set(OWN, answer({ unavailable: true })));
@@ -308,7 +322,9 @@ describe("useResolvedLink live refresh", () => {
 
 describe("useResolvedLink unavailable", () => {
   it("asks the next server when the first one's program is unavailable before any answer", async () => {
-    servers.state.environments = [environment(OWN, "own"), environment(OTHER, "other")];
+    using _timers = fakeTimers();
+    using _servers = serving([environment(OWN, "own"), environment(OTHER, "other")]);
+    await using _screen = await render(<Probe />, { router: false });
     await settle(() => servers.state.views.set(OWN, answer({ unavailable: true })));
     expect(servers.state.asked.at(-1)).toBe(OTHER);
     await settle(() => servers.state.views.set(OTHER, answer(TARGET)));
