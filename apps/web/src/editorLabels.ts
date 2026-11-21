@@ -4,14 +4,18 @@ import { getLocalFileManagerName } from "~/lib/utils";
 import { msg } from "gt-react";
 
 import { m, type MessageResolver } from "./i18n/messages";
+import { isOpenInAppId, openInAppLabel, type OpenInTargetId } from "~/openInApps";
 
 const editorLabels = new Map<EditorId, string>(EDITORS.map((editor) => [editor.id, editor.label]));
 
 export function editorLabelForPlatform(
-  editorId: EditorId,
+  editorId: OpenInTargetId,
   platform: string,
   resolve: MessageResolver = m,
 ): string {
+  if (isOpenInAppId(editorId)) {
+    return openInAppLabel(editorId);
+  }
   if (editorId === "file-manager") {
     return getLocalFileManagerName(platform, resolve);
   }

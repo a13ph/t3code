@@ -110,3 +110,14 @@ it.each([
     });
   },
 );
+
+it("replaces a stored pick that no longer decodes with the first available editor", async () => {
+  state.allowed.add(secondary);
+  state.getPreference.mockImplementation(() => {
+    throw new Error("decode");
+  });
+  using _warnings = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const open = useOpenInPreferredEditor(secondary, ["vscode"]);
+  expect(await open("/work")).toMatchObject({ _tag: "Success", value: "vscode" });
+  expect(state.setPreference).toHaveBeenCalledTimes(1);
+});
