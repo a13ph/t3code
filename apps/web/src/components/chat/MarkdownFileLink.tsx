@@ -68,6 +68,8 @@ interface MarkdownFileLinkProps {
   leadingMark?: MarkdownFileLinkMark | undefined;
   /** Extra classes for the chip's label. */
   labelClassName?: string | undefined;
+  /** The href names something only the app reads, so a middle click does not open it. */
+  hrefIsInternal?: boolean | undefined;
 }
 
 export interface MarkdownFileLinkMark {
@@ -106,6 +108,7 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
   tooltipLines,
   leadingMark,
   labelClassName,
+  hrefIsInternal,
 }: MarkdownFileLinkProps) {
   const gt = useGT();
   const nativeDrag = useNativeFileDrag(environmentId, resolveDragPath);
@@ -397,6 +400,14 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
               render={<a href={href} />}
               className={MARKDOWN_FILE_LINK_CLASS_NAME}
               data-markdown-copy={copyMarkdown}
+              {...(hrefIsInternal
+                ? {
+                    // A middle click would hand the href to the browser or the OS.
+                    onAuxClick: (event: { button: number; preventDefault: () => void }) => {
+                      if (event.button === 1) event.preventDefault();
+                    },
+                  }
+                : {})}
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -499,7 +510,8 @@ function areMarkdownFileLinkPropsEqual(
     previous.leadingMark?.text === next.leadingMark?.text &&
     previous.leadingMark?.label === next.leadingMark?.label &&
     previous.leadingMark?.className === next.leadingMark?.className &&
-    previous.labelClassName === next.labelClassName
+    previous.labelClassName === next.labelClassName &&
+    previous.hrefIsInternal === next.hrefIsInternal
   );
 }
 

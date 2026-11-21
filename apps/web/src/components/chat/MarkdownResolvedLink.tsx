@@ -74,6 +74,7 @@ export function MarkdownResolvedLink(props: {
               }
         }
         labelClassName={muted ? "text-muted-foreground" : undefined}
+        hrefIsInternal
       />
     );
   }

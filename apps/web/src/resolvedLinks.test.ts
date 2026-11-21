@@ -47,6 +47,27 @@ describe("parseResolvedLinkHref", () => {
       expect(parseResolvedLinkHref(href, SCHEMES)).toBeNull();
     }
   });
+
+  it("reads the t3-resolved form the chat sanitizer hands on", () => {
+    expect(parseResolvedLinkHref(`t3-resolved:notes://${UUID}`, SCHEMES)).toEqual({
+      scheme: "notes",
+      id: UUID,
+    });
+    expect(parseResolvedLinkHref(`t3-resolved:other://${UUID}`, SCHEMES)).toBeNull();
+  });
+
+  it("refuses ids that would climb out of a path or carry control characters", () => {
+    for (const href of [
+      "notes://..%2F..%2Fsecret",
+      "notes://a%2F..%2Fb",
+      "notes://..",
+      "notes://a%5Cb",
+      "notes://a%0Ab",
+    ]) {
+      expect(parseResolvedLinkHref(href, SCHEMES)).toBeNull();
+    }
+    expect(parseResolvedLinkHref("notes://a%2Fb", SCHEMES)?.id).toBe("a/b");
+  });
 });
 
 describe("resolvedLinkHref and resolvedLinkPlaceholder", () => {

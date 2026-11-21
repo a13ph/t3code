@@ -31,6 +31,8 @@ describe("decodeLinkResolvers", () => {
         '{"Notes": ["prog"]}',
         '{"1notes": ["prog"]}',
         '{"notes": []}',
+        '{"notes": [""]}',
+        '{"notes": [" ", "arg"]}',
         '{"notes": "prog"}',
       ]) {
         expect(yield* decodeLinkResolvers(raw)).toBeUndefined();

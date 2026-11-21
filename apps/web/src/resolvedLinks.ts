@@ -1,3 +1,6 @@
+import { isResolvedLinkId } from "@t3tools/contracts";
+import { unwrapResolvedLinkHref } from "@t3tools/shared/markdownPipeline";
+
 /**
  * A chat link whose scheme a connected server resolves through an external program, such as
  * `notes://3f2b9c1e-7d4a-4e6b-9a8c-2d5f1b0e7c43`. The servers announce their schemes; the link is
@@ -20,7 +23,9 @@ export function parseResolvedLinkHref(
   schemes: ReadonlySet<string>,
 ): ResolvedLinkRef | null {
   if (!href || schemes.size === 0) return null;
-  const match = LINK.exec(href.trim().replace(/^<(.*)>$/, "$1"));
+  const written = href.trim().replace(/^<(.*)>$/, "$1");
+  // The chat sanitizer hands these links on as `t3-resolved:<scheme>://<id>`.
+  const match = LINK.exec(unwrapResolvedLinkHref(written) ?? written);
   if (!match) return null;
   const scheme = match[1]!.toLowerCase();
   if (!schemes.has(scheme)) return null;
@@ -31,7 +36,7 @@ export function parseResolvedLinkHref(
   } catch {
     // A lone `%` is part of the id as written.
   }
-  return id.trim() === "" ? null : { scheme, id };
+  return isResolvedLinkId(id) ? { scheme, id } : null;
 }
 
 // Schemes chat must never turn into resolved links, whatever a server announces: unsafe ones,

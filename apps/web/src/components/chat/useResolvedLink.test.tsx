@@ -292,4 +292,26 @@ describe("useResolvedLink live refresh", () => {
     await settle(() => servers.state.views.set(OTHER, answer({ ...TARGET, label: "Moved" })));
     expect(found()).toMatchObject({ environmentId: OTHER, target: { label: "Moved" } });
   });
+
+  it("keeps the last target while the server's program is unavailable", async () => {
+    servers.state.environments = [environment(OWN, "own"), environment(OTHER, "other")];
+    await settle(() => servers.state.views.set(OWN, answer(TARGET)));
+    await advance(15_000);
+    await settle(() => servers.state.views.set(OWN, answer({ unavailable: true })));
+    expect(found()).toMatchObject({ _tag: "found", environmentId: OWN, target: TARGET });
+    expect(servers.state.asked).not.toContain(OTHER);
+    await advance(15_000);
+    await settle(() => servers.state.views.set(OWN, answer({ ...TARGET, mark: "x" })));
+    expect(found()).toMatchObject({ environmentId: OWN, target: { mark: "x" } });
+  });
+});
+
+describe("useResolvedLink unavailable", () => {
+  it("asks the next server when the first one's program is unavailable before any answer", async () => {
+    servers.state.environments = [environment(OWN, "own"), environment(OTHER, "other")];
+    await settle(() => servers.state.views.set(OWN, answer({ unavailable: true })));
+    expect(servers.state.asked.at(-1)).toBe(OTHER);
+    await settle(() => servers.state.views.set(OTHER, answer(TARGET)));
+    expect(seen.at(-1)).toMatchObject({ _tag: "found", environmentId: OTHER });
+  });
 });
