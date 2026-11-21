@@ -1,4 +1,4 @@
-// t3-keeper: owns child processes (in production, `claude`) for clients that
+// t3-keeper: owns child processes (such as `claude`) for clients that
 // may die and come back. Each child's stdout is kept as numbered lines, so a
 // new client can attach and replay from the last line it saw.
 //
@@ -182,7 +182,7 @@ export async function startKeeper(options = {}) {
   // a `result` line on stdout, and a `control_request` from the child (a
   // permission prompt, a hook) is pending until a `control_response` with
   // its request_id goes back. claude starts a turn with nothing on stdin for
-  // a message another session sends it and for a background task's wake.
+  // a background task's wake.
 
   function noteStdout(rec, line) {
     const m = parseIfHas(line, '"result"');
