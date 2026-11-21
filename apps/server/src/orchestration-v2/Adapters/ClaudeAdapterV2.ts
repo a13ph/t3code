@@ -6,7 +6,7 @@ import {
 } from "@t3tools/shared/toolOutput";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import { claudeTaskOutputRoot, tailClaudeTaskOutput } from "./ClaudeTaskOutputTail.ts";
-import { keeperSpawnProcess } from "./ClaudeKeeperSpawn.ts";
+import { detachKeeperChildren, keeperSpawnProcess } from "./ClaudeKeeperSpawn.ts";
 import {
   dynamicToolTitle,
   formatReadToolLabel,
@@ -1502,6 +1502,19 @@ export const layerQueryRunner: Layer.Layer<
     const runFork = Effect.runForkWith(yield* Effect.context<never>());
     const hostEnvironment = yield* HostProcess.Environment;
     const portDiscovery = yield* PortScanner.PortDiscovery;
+    // Runs before the session scopes close, so their query.close() finds the
+    // keeper children detached and leaves them running.
+    yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        process.on("SIGINT", detachKeeperChildren);
+        process.on("SIGTERM", detachKeeperChildren);
+      }),
+      () =>
+        Effect.sync(() => {
+          process.off("SIGINT", detachKeeperChildren);
+          process.off("SIGTERM", detachKeeperChildren);
+        }),
+    );
     const processRunner = yield* ProcessRunner.make();
     const readProcessTable = processRunner
       .run({ command: "ps", args: ["-A", "-o", "pid=,ppid=,pgid=,lstart="], timeout: "5 seconds" })
