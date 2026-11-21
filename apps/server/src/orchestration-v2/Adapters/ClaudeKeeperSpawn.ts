@@ -38,7 +38,7 @@ export function keeperSpawnProcess(
 ): ((options: SpawnOptions) => SpawnedProcess) | undefined {
   const socketPath = keeperSocketPath(options.env ?? process.env);
   if (socketPath === undefined) return undefined;
-  return spawnNew({
+  const spawner = spawnNew({
     socketPath,
     name: threadId,
     group: true,
@@ -53,4 +53,10 @@ export function keeperSpawnProcess(
       );
     },
   });
+  // The CLI and its commands do not get the socket, so a T3 dev server or
+  // test started from a chat never spawns into this keeper.
+  return (spawnOptions) => {
+    const { T3_KEEPER_SOCKET: _, ...env } = spawnOptions.env;
+    return spawner({ ...spawnOptions, env });
+  };
 }
