@@ -84,8 +84,7 @@ const promptTurn = (): Scenario => {
 };
 
 // A turn the CLI starts itself, with no user line on its stdin, is in its
-// Bash call: the wake of a background command. A message another session
-// sends the CLI starts its turn the same way.
+// Bash call: the wake of a background command.
 const wakeTurn = (): Scenario => {
   const marker = `done-${tag()}`;
   return {
