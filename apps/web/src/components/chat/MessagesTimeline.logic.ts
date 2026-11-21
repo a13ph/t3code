@@ -1139,31 +1139,37 @@ function workEntryIsAskUserQuestionCall(entry: WorkLogEntry): boolean {
 
 /**
  * The text an agent wrote right before asking the user a question, and the question itself, stay
- * readable after the turn folds, since the user answered with that text in view. Reasoning and
- * the question's own tool call between the two keep the pair, and the call still folds so the
- * question is its own row; any other work breaks it.
+ * readable after the turn folds. Reasoning and the question's own tool call between the two keep
+ * the pair, and the call still folds; any other work breaks it. A refused question call's lead-in
+ * carries to the next question call when the agent writes no new text in between.
  */
 function questionContextEntryIds(entries: ReadonlyArray<TimelineEntry>): ReadonlySet<string> {
   const kept = new Set<string>();
   let leadIn: TimelineEntry[] = [];
   let inQuestion = false;
+  // A refused call asked nothing, so its lead-in folds, unless the agent
+  // retries the question without writing new text first.
+  let refusedLeadIn: TimelineEntry[] = [];
   for (const entry of entries) {
     if (entry.kind === "message" && entry.message.role === "assistant") {
       if (inQuestion) leadIn = [];
       inQuestion = false;
+      refusedLeadIn = [];
       leadIn.push(entry);
       continue;
     }
     if (entry.kind === "work" && entry.entry.itemType === "reasoning") continue;
-    if (
-      entry.kind === "work" &&
-      workEntryIsAskUserQuestionCall(entry.entry) &&
-      !workEntryDisplayIndicatesToolFailure(entry.entry)
-    ) {
-      // The call itself folds; its lead-in stays even if no request follows.
-      // A refused call asked nothing, so its lead-in folds like other work's.
-      for (const text of leadIn) kept.add(text.id);
-      inQuestion = inQuestion || leadIn.length > 0;
+    if (entry.kind === "work" && workEntryIsAskUserQuestionCall(entry.entry)) {
+      if (workEntryDisplayIndicatesToolFailure(entry.entry)) {
+        if (leadIn.length > 0) refusedLeadIn = leadIn;
+        inQuestion = false;
+      } else {
+        // The call itself folds; its lead-in stays even if no request follows.
+        const context = leadIn.length > 0 ? leadIn : refusedLeadIn;
+        for (const text of context) kept.add(text.id);
+        inQuestion = inQuestion || context.length > 0;
+        refusedLeadIn = [];
+      }
       leadIn = [];
       continue;
     }
@@ -1176,6 +1182,7 @@ function questionContextEntryIds(entries: ReadonlyArray<TimelineEntry>): Readonl
       leadIn = [];
       continue;
     }
+    if (entry.kind === "message") refusedLeadIn = [];
     leadIn = [];
     inQuestion = false;
   }
