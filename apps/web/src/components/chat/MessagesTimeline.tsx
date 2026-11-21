@@ -42,7 +42,6 @@ import {
   useContext,
   useEffect,
   useLayoutEffect,
-  useEffect,
   useEffectEvent,
   useRef,
   useState,
