@@ -62,6 +62,21 @@ interface MarkdownFileLinkProps {
         line: number | undefined,
       ) => void)
     | undefined;
+  /** The tooltip as lines of text, in place of the path. */
+  tooltipLines?: ReadonlyArray<string> | undefined;
+  /** One character in front of the chip, such as a resolved link's mark. */
+  leadingMark?: MarkdownFileLinkMark | undefined;
+  /** Extra classes for the chip's label. */
+  labelClassName?: string | undefined;
+  /** The href names something only the app reads, so a middle click does not open it. */
+  hrefIsInternal?: boolean | undefined;
+}
+
+export interface MarkdownFileLinkMark {
+  readonly text: string;
+  /** Read out in place of the character. */
+  readonly label: string;
+  readonly className: string;
 }
 
 const MARKDOWN_FILE_LINK_CLASS_NAME = "chat-markdown-file-link";
@@ -90,9 +105,26 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
   onOpenTarget,
   resolveCopyPaths,
   resolveDragPath,
+  tooltipLines,
+  leadingMark,
+  labelClassName,
+  hrefIsInternal,
 }: MarkdownFileLinkProps) {
   const gt = useGT();
   const nativeDrag = useNativeFileDrag(environmentId, resolveDragPath);
+  const leading = leadingMark ? (
+    <span
+      role="img"
+      aria-label={leadingMark.label}
+      data-link-mark={leadingMark.label}
+      className={cn(
+        "inline-flex w-[1.17em] shrink-0 items-center justify-center self-center leading-none",
+        leadingMark.className,
+      )}
+    >
+      {leadingMark.text}
+    </span>
+  ) : undefined;
   const handleOpenInEditor = () => {
     if (!onOpen) {
       return;
@@ -368,6 +400,14 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
               render={<a href={href} />}
               className={MARKDOWN_FILE_LINK_CLASS_NAME}
               data-markdown-copy={copyMarkdown}
+              {...(hrefIsInternal
+                ? {
+                    // A middle click would hand the href to the browser or the OS.
+                    onAuxClick: (event: { button: number; preventDefault: () => void }) => {
+                      if (event.button === 1) event.preventDefault();
+                    },
+                  }
+                : {})}
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -393,6 +433,8 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
                 environmentId={environmentId}
                 label={label}
                 theme={theme}
+                leading={leading}
+                labelClassName={labelClassName}
               />
             </ContextChip>
           ) : (
@@ -418,17 +460,33 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
                 environmentId={environmentId}
                 label={label}
                 theme={theme}
+                leading={leading}
+                labelClassName={labelClassName}
               />
             </ContextChip>
           )
         }
       />
       <TooltipPopup side="top" variant="code">
-        <WorkspaceEntryTooltip path={iconPath} label={targetPath} environmentId={environmentId} />
+        {tooltipLines ? (
+          keyedLines(tooltipLines).map((line) => <div key={line.key}>{line.text}</div>)
+        ) : (
+          <WorkspaceEntryTooltip path={iconPath} label={targetPath} environmentId={environmentId} />
+        )}
       </TooltipPopup>
     </Tooltip>
   );
 }, areMarkdownFileLinkPropsEqual);
+
+// Keyed by text, with a count for a line that repeats.
+function keyedLines(lines: ReadonlyArray<string>): ReadonlyArray<{ key: string; text: string }> {
+  const seen = new Map<string, number>();
+  return lines.map((text) => {
+    const occurrence = seen.get(text) ?? 0;
+    seen.set(text, occurrence + 1);
+    return { key: `${occurrence}:${text}`, text };
+  });
+}
 
 function areMarkdownFileLinkPropsEqual(
   previous: Readonly<MarkdownFileLinkProps>,
@@ -457,7 +515,13 @@ function areMarkdownFileLinkPropsEqual(
     previous.resolveDragPath === next.resolveDragPath &&
     previous.revealLabel === next.revealLabel &&
     previous.openTargets === next.openTargets &&
-    previous.onOpenTarget === next.onOpenTarget
+    previous.onOpenTarget === next.onOpenTarget &&
+    (previous.tooltipLines ?? []).join("\n") === (next.tooltipLines ?? []).join("\n") &&
+    previous.leadingMark?.text === next.leadingMark?.text &&
+    previous.leadingMark?.label === next.leadingMark?.label &&
+    previous.leadingMark?.className === next.leadingMark?.className &&
+    previous.labelClassName === next.labelClassName &&
+    previous.hrefIsInternal === next.hrefIsInternal
   );
 }
 

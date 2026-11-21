@@ -10,8 +10,10 @@ import {
   CHAT_MARKDOWN_REMARK_PLUGINS,
   CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS,
   CHAT_USER_MARKDOWN_REMARK_PLUGINS,
+  chatMarkdownRehypePlugins,
   remarkAssistantInsights,
   remarkEnableOrderedListNumbers,
+  unwrapResolvedLinkHref,
 } from "./markdownPipeline.ts";
 
 it.each([
@@ -405,6 +407,63 @@ it("preserves footnotes and original code positions across a callout", () => {
   const note = tree.children.find((node) => node.type === "blockquote");
   const block = note?.children[0];
   expect(markdown.slice(block?.position?.start.offset, block?.position?.end.offset)).toBe(code);
+});
+
+const hrefsAfterSanitizing = (markdown: string, plugins: typeof CHAT_MARKDOWN_REHYPE_PLUGINS) => {
+  const processor = unified()
+    .use(remarkParse)
+    .use(CHAT_MARKDOWN_REMARK_PLUGINS)
+    .use(remarkRehype, { allowDangerousHtml: true })
+    .use(plugins);
+  const hrefs: unknown[] = [];
+  const visit = (node: {
+    tagName?: string;
+    properties?: { href?: unknown };
+    children?: unknown[];
+  }) => {
+    if (node.tagName === "a") hrefs.push(node.properties?.href);
+    for (const child of node.children ?? []) visit(child as typeof node);
+  };
+  visit(processor.runSync(processor.parse(markdown)) as never);
+  return hrefs;
+};
+
+it("keeps links of the resolved schemes a caller passes as t3-resolved links, and only those", () => {
+  const markdown =
+    '[a](notes://n1) <NOTES://n2> [b](wiki://w1) [c](javascript:alert(1)) <a href="notes://n3">d</a>';
+  expect(hrefsAfterSanitizing(markdown, CHAT_MARKDOWN_REHYPE_PLUGINS)).toEqual([
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+  ]);
+  expect(hrefsAfterSanitizing(markdown, chatMarkdownRehypePlugins(["notes"]))).toEqual([
+    "t3-resolved:notes://n1",
+    "t3-resolved:NOTES://n2",
+    undefined,
+    undefined,
+    "t3-resolved:notes://n3",
+  ]);
+  expect(unwrapResolvedLinkHref("t3-resolved:notes://n1")).toBe("notes://n1");
+  expect(unwrapResolvedLinkHref("notes://n1")).toBeNull();
+});
+
+it("never lets a resolved scheme's other link forms through the sanitizer", () => {
+  // A server naming an OS handler as its scheme does not make chat keep links to that handler.
+  const markdown = '[a](ms-msdt:/id) [b](ms-msdt://id) <a href="ms-msdt:id">c</a>';
+  expect(hrefsAfterSanitizing(markdown, chatMarkdownRehypePlugins(["ms-msdt"]))).toEqual([
+    undefined,
+    "t3-resolved:ms-msdt://id",
+    undefined,
+  ]);
+});
+
+it("returns one plugin list per set of extra protocols", () => {
+  expect(chatMarkdownRehypePlugins([])).toBe(CHAT_MARKDOWN_REHYPE_PLUGINS);
+  expect(chatMarkdownRehypePlugins(["Bad Name"])).toBe(CHAT_MARKDOWN_REHYPE_PLUGINS);
+  expect(chatMarkdownRehypePlugins(["b", "a"])).toBe(chatMarkdownRehypePlugins(["a", "b", "a"]));
+  expect(chatMarkdownRehypePlugins(["a"])).not.toBe(chatMarkdownRehypePlugins(["b"]));
 });
 
 it("preserves in-app thread links through the shared Markdown sanitizer", () => {
