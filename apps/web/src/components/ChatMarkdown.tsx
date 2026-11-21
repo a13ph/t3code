@@ -561,6 +561,7 @@ function MarkdownRemoteFileLink(props: {
   readonly theme: "light" | "dark";
   readonly fallback: ReactNode;
 }) {
+  const gt = useGT();
   const { environments } = useEnvironments();
   const resolution = resolveRemoteFileServer(
     props.link,
@@ -576,10 +577,15 @@ function MarkdownRemoteFileLink(props: {
       <span
         title={
           resolution._tag === "ambiguous"
-            ? `More than one connected server is named ${props.link.server}: ${resolution.labels.join(", ")}`
+            ? gt("More than one connected server is named {server}: {labels}", {
+                server: props.link.server,
+                labels: resolution.labels.join(", "),
+              })
             : props.link.byEnvironmentId
-              ? `This client is not connected to the server with id ${props.link.server}`
-              : `No connected server is named ${props.link.server}`
+              ? gt("This client is not connected to the server with id {id}", {
+                  id: props.link.server,
+                })
+              : gt("No connected server is named {server}", { server: props.link.server })
         }
       >
         {props.fallback}
@@ -607,6 +613,7 @@ function MarkdownRemoteFileLink(props: {
         useRightPanelStore.getState().openFile(threadRef, panelPath, line, environmentId);
       }}
       resolveCopyPaths={() => Promise.resolve({ fullPath: targetPath, relativePath: targetPath })}
+      resolveDragPath={() => Promise.resolve(props.link.path)}
       openInEditorMenuLabel=""
     />
   );
