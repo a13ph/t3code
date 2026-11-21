@@ -323,6 +323,7 @@ export function AssistantCitationChip({
               side={activeSourceAnchor ? "bottom" : "top"}
               align="end"
               anchor={popupAnchor}
+              instantOpen={activeSourceAnchor !== undefined}
               initialFocus={() => {
                 const input = commentInputRef.current;
                 if (input) {
