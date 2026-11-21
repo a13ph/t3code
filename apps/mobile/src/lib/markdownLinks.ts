@@ -263,9 +263,7 @@ function parseRemoteFileLink(href: string) {
   const slash = rest.indexOf("/");
   if (slash <= 0) return null;
   const target = parseMarkdownFileLink(rest.slice(slash));
-  return target && target.path.length > 1
-    ? { environmentId: rest.slice(0, slash), target }
-    : null;
+  return target && target.path.length > 1 ? { environmentId: rest.slice(0, slash), target } : null;
 }
 
 export function resolveMarkdownLinkPresentation(href: string): MarkdownLinkPresentation {

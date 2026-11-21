@@ -94,7 +94,7 @@ function answers(record: Record<string, unknown>, request: LookupRequest): boole
 }
 
 /** The notes a backlinks answer lists, each as `normalizeResolvedLink` keeps it. */
-export function normalizeBacklinks(raw: unknown): ReadonlyArray<ResolvedLink> {
+function normalizeBacklinks(raw: unknown): ReadonlyArray<ResolvedLink> {
   if (!Array.isArray(raw)) return [];
   const links: ResolvedLink[] = [];
   for (const entry of raw.slice(0, MAX_BACKLINKS)) {
