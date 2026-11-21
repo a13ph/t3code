@@ -37,9 +37,7 @@ describe("buildOpenInAppUrl", () => {
       line: 3,
       threadId: "abc",
     });
-    expect(url).toBe(
-      "zed://ssh/host-a/home/user/docs/x%20y.md?app=nvim&line=3&thread=abc",
-    );
+    expect(url).toBe("zed://ssh/host-a/home/user/docs/x%20y.md?app=nvim&line=3&thread=abc");
     expect(passesDesktopAllowlist(url)).toBe(true);
     const parsed = new URL(url);
     expect(decodeURIComponent(parsed.pathname)).toBe("/host-a/home/user/docs/x y.md");

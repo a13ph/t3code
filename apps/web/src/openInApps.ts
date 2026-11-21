@@ -1,20 +1,15 @@
 /**
- * Open-in apps that are not editors the server can launch: Neovim and
- * Obsidian. Every open, on a local or a remote thread, goes out as a
- * `zed://ssh/<host><path>?app=<id>[&line=<n>][&thread=<id>]` link through
- * the desktop shell, whose external-URL allowlist already passes Zed's SSH
- * shape. The desktop shell hands the link to whatever handles `zed://` on the
- * client; this repo ships no handler. A handler reads `app` to pick the
- * program and may use `thread` to tie the open to its thread. These ids stay
- * out of the contracts' EDITORS list so the server never probes for them or
- * advertises them.
+ * Neovim and Obsidian open as `zed://ssh/<host><path>?app=<id>[&line=<n>][&thread=<id>]` links,
+ * a shape the desktop shell's external-URL allowlist already passes. The client's `zed://`
+ * handler, which this repo does not ship, picks the program by `app`. These ids stay out of the
+ * contracts' EDITORS list so the server never probes for them or advertises them.
  */
 import { EditorId, buildRemoteOpenUrl } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 import type { RemoteOpenMode, RemoteOpenState } from "./remoteOpen";
 
-export const OPEN_IN_APPS = [
+const OPEN_IN_APPS = [
   // oxlint-disable-next-line t3code/no-untranslated-copy -- product name, the same in every language
   { id: "nvim", label: "Neovim" },
   // oxlint-disable-next-line t3code/no-untranslated-copy -- product name, the same in every language
@@ -38,7 +33,7 @@ export function openInAppLabel(id: OpenInAppId): string {
 }
 
 /** Host segment for a client on the thread's own server. */
-export const LOCAL_OPEN_HOST = "local";
+const LOCAL_OPEN_HOST = "local";
 
 const WINDOWS_DRIVE_SEGMENT = /^[A-Za-z]:$/;
 
@@ -74,7 +69,7 @@ export function buildOpenInAppUrl(input: {
 }
 
 /** The host an app link names for a thread, or undefined when none exists. */
-export function openInAppHost(state: RemoteOpenState): string | null | undefined {
+function openInAppHost(state: RemoteOpenState): string | null | undefined {
   if (state.mode === "local-exec") return null;
   if (state.mode === "remote-links") return state.host.host;
   return undefined;
@@ -88,10 +83,9 @@ export function canOfferOpenInApps(): boolean {
 export type ChipOpenTarget = OpenInAppId | "vscodium";
 
 /**
- * "Open in <app>" items on a file chip's context menu. Offered on the desktop
- * for local and remote threads alike, once the thread's open mode is known
- * and it has a route; the path must be absolute to name a file over ssh.
- * VSCodium on a local thread is launched by the server, so it needs the
+ * "Open in <app>" items on a file chip's context menu, offered on the desktop for local and remote
+ * threads once the open mode is known and the thread has a route; the path must be absolute to
+ * name a file over ssh. VSCodium on a local thread is launched by the server, so it needs the
  * server's PATH probe and the right to operate the host.
  */
 export function resolveChipOpenTargets(input: {

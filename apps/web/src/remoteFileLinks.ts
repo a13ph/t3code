@@ -1,14 +1,10 @@
 import { splitFilePathPosition } from "@t3tools/shared/fileLinks";
 
 /**
- * A chat link to a file on another server the client is connected to. Two forms:
- *
- * - `<server>:<absolute path>`, as in `alpha:/home/user/docs.md` or `beta:C:/user/docs.md`.
- *   The server is named by the client's label for the connection or by the server's own label.
- * - `remote-file://v1/<environmentId>/<absolute path>`, naming the server by its environment id.
- *
- * Either may end in `:line` or `:line:column`. The path is absolute on the named server, so it is
- * read there as a host file, never as a path inside the message's workspace.
+ * A chat link to a file on a connected server: `<server>:<absolute path>` (`alpha:/home/user/x.md`,
+ * `beta:C:/user/x.md`), by the client's or the server's own label, or by environment id as
+ * `remote-file://v1/<environmentId>/<absolute path>`. Either may end in `:line` or `:line:column`;
+ * the path is read on that server as a host file, never inside the message's workspace.
  */
 export interface RemoteFileLink {
   /** The server as written: a label, or an environment id for the `remote-file` form. */
@@ -22,11 +18,12 @@ export interface RemoteFileLink {
 
 // Not `t3-file`: upstream may take that name, and a link of theirs must never
 // be read as this fork's.
-export const REMOTE_FILE_LINK_PROTOCOL = "remote-file";
+const REMOTE_FILE_LINK_PROTOCOL = "remote-file";
 const REMOTE_FILE_LINK_PREFIX = `${REMOTE_FILE_LINK_PROTOCOL}://v1/`;
 
 // Two characters at least, so a Windows drive (`C:/user`) never reads as a server name.
-const SERVER_PATH = /^(?<server>[A-Za-z0-9][A-Za-z0-9._-]+):(?<path>\/(?!\/)[^\n]*|[A-Za-z]:[/\\][^\n]*)$/;
+const SERVER_PATH =
+  /^(?<server>[A-Za-z0-9][A-Za-z0-9._-]+):(?<path>\/(?!\/)[^\n]*|[A-Za-z]:[/\\][^\n]*)$/;
 // Schemes whose `name:/path` shape would otherwise pass for a server and a path.
 const NOT_A_SERVER = new Set([
   "file",

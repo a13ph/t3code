@@ -102,17 +102,13 @@ it("searches displayed prose and file-chip labels without hidden paths", () => {
   ).toEqual(["important description. inline-example.ts · L42"]);
   // A labelled link's chip shows only its label.
   expect(assistantSegments("[label](src/main.ts#L3C2)", "/workspace/repo")).toEqual(["label"]);
-  expect(assistantSegments("[](src/main.ts#L3C2)", "/workspace/repo")).toEqual([
-    "main.ts · L3:C2",
-  ]);
+  expect(assistantSegments("[](src/main.ts#L3C2)", "/workspace/repo")).toEqual(["main.ts · L3:C2"]);
   expect(assistantSegments("[label](src/main.ts#L3C2)")).toEqual(["label"]);
   for (const text of [
     "[](/repo/app/(a)/page.tsx) and [](/repo/app/(b)/page.tsx)",
     String.raw`[](/repo/app/\(a\)/page.tsx) and [](/repo/app/\(b\)/page.tsx)`,
   ]) {
-    expect(assistantSegments(text, "/repo")).toEqual([
-      "page.tsx · app/(a) and page.tsx · app/(b)",
-    ]);
+    expect(assistantSegments(text, "/repo")).toEqual(["page.tsx · app/(a) and page.tsx · app/(b)"]);
   }
   expect(
     assistantSegments(
@@ -172,10 +168,7 @@ it.each([
       "`port:42-64`",
       "\n```text\n/tmp/notes.ts:42-64\n```",
     ].join(" "),
-    expected: [
-      "notes.ts · L42–64 relative web reverse port:42-64",
-      "/tmp/notes.ts:42-64\n",
-    ],
+    expected: ["notes.ts · L42–64 relative web reverse port:42-64", "/tmp/notes.ts:42-64\n"],
   },
   {
     source: "plan",
