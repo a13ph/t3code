@@ -1,4 +1,7 @@
 {
+  "596a87c3358f25b2": "No connected server knows {href}",
+  "17293c36a323aed9": "Looking up {href}",
+  "ec3c9cade81bd361": "on {server}",
   "fc7d613e3264439c": "More than one connected server is named {server}: {labels}",
   "364bb679dbb359e6": "This client is not connected to the server with id {id}",
   "3abe1d26c759282d": "No connected server is named {server}",

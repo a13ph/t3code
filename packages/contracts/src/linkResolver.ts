@@ -1,5 +1,6 @@
 import * as Schema from "effect/Schema";
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { LOCAL_FILE_LINK_SCHEMES } from "./editor.ts";
 
 // A link scheme a server resolves through an external program: lower case, RFC 3986 grammar.
 const LINK_RESOLVER_SCHEME_PATTERN = /^[a-z][a-z0-9+.-]*$/;
@@ -30,7 +31,7 @@ const RESERVED_LINK_SCHEMES: ReadonlySet<string> = new Set([
 
 /** Whether `scheme`, lower case, is one no link resolver may take. */
 export function isReservedLinkScheme(scheme: string): boolean {
-  return RESERVED_LINK_SCHEMES.has(scheme);
+  return RESERVED_LINK_SCHEMES.has(scheme) || LOCAL_FILE_LINK_SCHEMES.includes(scheme);
 }
 
 // No control characters or backslashes, and no `.` or `..` segment, so an id a program reads as

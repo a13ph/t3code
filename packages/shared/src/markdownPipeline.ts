@@ -420,8 +420,9 @@ export function chatMarkdownRehypePlugins(resolvedSchemes: Iterable<string>): Pl
   if (cached) return cached;
   const plugins: PluggableList = [
     rehypePreserveBareAnchorPlaceholders,
-    rehypeRaw,
+    rehypeRawWhenPresent,
     rehypePreserveImageSourceMeta,
+    rehypeNormalizeLocalEditorLinks,
     [rehypeWrapResolvedLinks, new Set(schemes)],
     [rehypeSanitize, CHAT_MARKDOWN_SANITIZE_SCHEMA],
   ];

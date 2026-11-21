@@ -1,5 +1,8 @@
 import { isReservedLinkScheme, isResolvedLinkId } from "@t3tools/contracts";
 import { unwrapResolvedLinkHref } from "@t3tools/shared/markdownPipeline";
+import { msg } from "gt-react";
+
+import { m } from "./i18n/messages";
 
 /**
  * A chat link whose scheme a connected server resolves through an external program, such as
@@ -67,7 +70,10 @@ export function resolvedLinkTooltipLines(
     .split("\n")
     .map((line) => line.trimEnd())
     .filter((line) => line !== "");
-  return [...(own.length > 0 ? own : [label, target.path]), `on ${serverLabel}`];
+  return [
+    ...(own.length > 0 ? own : [label, target.path]),
+    m(msg("on {server}", { server: serverLabel })),
+  ];
 }
 
 /** What the chip shows before an answer arrives, or when no server knows the link. */

@@ -1,5 +1,6 @@
 import type { EnvironmentId, ResolvedLinkTone, ScopedThreadRef } from "@t3tools/contracts";
 import { fileBasename } from "@t3tools/shared/path";
+import { useGT } from "gt-react";
 
 import {
   resolvedLinkHref,
@@ -34,6 +35,7 @@ export function MarkdownResolvedLink(props: {
   readonly threadRef: ScopedThreadRef | undefined;
   readonly theme: "light" | "dark";
 }) {
+  const gt = useGT();
   const resolution = useResolvedLink(props.link, props.environmentId);
   const { threadRef } = props;
   const fallbackLabel = props.label || resolvedLinkPlaceholder(props.link);
@@ -63,6 +65,7 @@ export function MarkdownResolvedLink(props: {
           Promise.resolve({ fullPath: target.path, relativePath: fileBasename(target.path) })
         }
         openInEditorMenuLabel=""
+        resolveDragPath={() => Promise.resolve(target.path)}
         tooltipLines={resolvedLinkTooltipLines(target, label, serverLabel)}
         leadingMark={
           target.mark === ""
@@ -87,7 +90,9 @@ export function MarkdownResolvedLink(props: {
         {fallbackLabel}
       </TooltipTrigger>
       <TooltipPopup side="top">
-        {missing ? `No connected server knows ${href}` : `Looking up ${href}`}
+        {missing
+          ? gt("No connected server knows {href}", { href })
+          : gt("Looking up {href}", { href })}
       </TooltipPopup>
     </Tooltip>
   );
