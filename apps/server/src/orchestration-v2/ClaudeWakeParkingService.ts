@@ -1,21 +1,7 @@
 /**
- * Keeps Claude Code's own wakeups (ScheduleWakeup, CronCreate) alive across an
- * idle release of the session and across a server restart.
- *
- * - Park: before a release, ProviderSessionManager hands over the wakeups the
- *   process holds, and they go into `claude_parked_wakes`. A wakeup due soon
- *   keeps the process instead (ProviderSessionManager pins it), so Claude Code
- *   fires it itself.
- * - Deliver: when a parked wakeup is due, its prompt is sent to the thread as
- *   one message ("/loop" for the placeholder `/loop` schedules), which resumes
- *   the Claude session. A recurring job moves on to its next due time.
- * - Adopt: a resumed Claude session restores its scheduled jobs by itself, so
- *   when a session opens for the thread, its parked jobs leave the table and
- *   go back to the adapter. Parked ScheduleWakeup calls are not restored by a
- *   resume and stay, unless the new process schedules or stops a wakeup.
- *
- * Nothing here touches Claude Code's own files. Pure parts are in
- * ClaudeWakeParking.ts.
+ * Keeps Claude Code's wakeups alive across an idle release and a restart: parks
+ * them in `claude_parked_wakes`, sends each due one as a message, and hands a
+ * resumed session back its jobs. Never touches Claude Code's own files.
  */
 import { ProviderDriverKind, ProviderThreadId, ThreadId } from "@t3tools/contracts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -164,7 +150,9 @@ export const layer = Layer.effect(
         )
         .pipe(Effect.mapError(sqlError("insert parked wakeups")));
 
-    const deleteRows = (wakeIds: ReadonlyArray<string>) =>
+    const deleteRows = (
+      wakeIds: ReadonlyArray<string>,
+    ): Effect.Effect<void, ClaudeWakeParkingError> =>
       wakeIds.length === 0
         ? Effect.void
         : sql`DELETE FROM claude_parked_wakes WHERE wake_id IN ${sql.in(wakeIds)}`.pipe(
@@ -178,23 +166,26 @@ export const layer = Layer.effect(
         Effect.mapError(sqlError("move a recurring wakeup")),
       );
 
-    const decodeRows = (rows: ReadonlyArray<Parking.ParkedWakeRow>) =>
-      Effect.gen(function* () {
-        const parked: Array<Parking.ParkedWake> = [];
-        for (const row of rows) {
-          const decoded = Parking.parkedWakeFromRow(row);
-          if (decoded === null) {
-            yield* Effect.logWarning("orchestration-v2.claude-wake.unreadable-row", {
-              wakeId: row.wake_id,
-            });
-          } else {
-            parked.push(decoded);
-          }
+    const decodeRows = Effect.fn("ClaudeWakeParking.decodeRows")(function* (
+      rows: ReadonlyArray<Parking.ParkedWakeRow>,
+    ) {
+      const parked: Array<Parking.ParkedWake> = [];
+      for (const row of rows) {
+        const decoded = Parking.parkedWakeFromRow(row);
+        if (decoded === null) {
+          yield* Effect.logWarning("orchestration-v2.claude-wake.unreadable-row", {
+            wakeId: row.wake_id,
+          });
+        } else {
+          parked.push(decoded);
         }
-        return parked;
-      });
+      }
+      return parked as ReadonlyArray<Parking.ParkedWake>;
+    });
 
-    const rowsForThreads = (threadIds: ReadonlyArray<string>) =>
+    const rowsForThreads = (
+      threadIds: ReadonlyArray<string>,
+    ): Effect.Effect<ReadonlyArray<Parking.ParkedWake>, ClaudeWakeParkingError> =>
       threadIds.length === 0
         ? Effect.succeed([] as ReadonlyArray<Parking.ParkedWake>)
         : sql<Parking.ParkedWakeRow>`
@@ -212,7 +203,9 @@ export const layer = Layer.effect(
           decodeRows(rows).pipe(
             Effect.tap((decoded) => {
               const readable = new Set(decoded.map((row) => row.wakeId));
-              return deleteRows(rows.flatMap((row) => (readable.has(row.wake_id) ? [] : [row.wake_id])));
+              return deleteRows(
+                rows.flatMap((row) => (readable.has(row.wake_id) ? [] : [row.wake_id])),
+              );
             }),
           ),
         ),
@@ -221,7 +214,9 @@ export const layer = Layer.effect(
     const earliestDue = sql<{ readonly due: number | null }>`
       SELECT MIN(due_at_ms) AS due FROM claude_parked_wakes
     `.pipe(
-      Effect.map((rows) => (rows[0]?.due === null || rows[0] === undefined ? null : Number(rows[0].due))),
+      Effect.map((rows) =>
+        rows[0]?.due === null || rows[0] === undefined ? null : Number(rows[0].due),
+      ),
       Effect.mapError(sqlError("read the next due time")),
     );
 
@@ -287,25 +282,27 @@ export const layer = Layer.effect(
       }
     });
 
-    const deliveryPass = lock.withPermits(1)(
-      deliverDue().pipe(Effect.andThen(earliestDue)),
-    ).pipe(
-      Effect.flatMap((next) =>
-        Clock.currentTimeMillis.pipe(
-          Effect.map((now) =>
-            next === null ? DELIVERY_MAX_SLEEP_MS : Math.min(Math.max(0, next - now), DELIVERY_MAX_SLEEP_MS),
+    const deliveryPass = lock
+      .withPermits(1)(deliverDue().pipe(Effect.andThen(earliestDue)))
+      .pipe(
+        Effect.flatMap((next) =>
+          Clock.currentTimeMillis.pipe(
+            Effect.map((now) =>
+              next === null
+                ? DELIVERY_MAX_SLEEP_MS
+                : Math.min(Math.max(0, next - now), DELIVERY_MAX_SLEEP_MS),
+            ),
           ),
         ),
-      ),
-      // Any failure but an interrupt, a defect included, retries later: the loop must not end.
-      Effect.catchCause((cause) =>
-        Cause.hasInterruptsOnly(cause)
-          ? Effect.failCause(cause)
-          : Effect.logWarning("orchestration-v2.claude-wake.delivery-failed", { cause }).pipe(
+        // Any failure but an interrupt, a defect included, retries later: the loop must not end.
+        Effect.catchCauseIf(
+          (cause) => !Cause.hasInterruptsOnly(cause),
+          (cause) =>
+            Effect.logWarning("orchestration-v2.claude-wake.delivery-failed", { cause }).pipe(
               Effect.as(DELIVERY_RETRY_MS),
             ),
-      ),
-    );
+        ),
+      );
 
     if (tableReady) {
       // Rows outlive a restart: the first pass sends what came due while the server was down.
@@ -387,7 +384,9 @@ export const layer = Layer.effect(
           // Without the table nothing can be parked: keep only a process that holds a wakeup.
           const now = yield* Clock.currentTimeMillis;
           const plan = Parking.planPark({ threads: input.threads, nowMs: now });
-          return plan.type === "none" ? { type: "none" as const } : pin("the parked-wakeups table is missing");
+          return plan.type === "none"
+            ? { type: "none" as const }
+            : pin("the parked-wakeups table is missing");
         }
         const outcome = yield* lock.withPermits(1)(parkLocked(input));
         if (outcome.type === "parked") {

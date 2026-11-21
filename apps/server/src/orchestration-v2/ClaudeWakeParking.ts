@@ -1,18 +1,8 @@
 // @effect-diagnostics globalDate:off - plain helpers outside the Effect runtime: cron needs local calendar fields.
 /**
- * Claude Code keeps the wakeups it schedules (ScheduleWakeup, CronCreate) in
- * its own process. When T3 releases an idle session, or restarts, that process
- * ends and the wakeups with it. This module holds the pure parts of keeping
- * them in T3 and sending each one as a message when it is due:
- *
- * - a tracker that reads the stream-json frames of one native session and
- *   keeps the wakeups it scheduled, and whether a self-started wake turn runs
- * - a five-field cron matcher in the server's local time
- * - the decisions: keep the process (pin) or park at release, and what a due
- *   parked wakeup becomes
- *
- * Durable CronCreate jobs are left alone: Claude Code keeps those in the
- * workspace's own file and fires them itself.
+ * Pure parts of keeping Claude Code's wakeups after its process ends: the frame
+ * tracker, a local-time cron matcher, and the pin, park and delivery decisions.
+ * Durable CronCreate jobs are left alone; Claude Code fires those itself.
  */
 import type {
   ProviderAdapterV2PendingWake,
@@ -36,9 +26,6 @@ export const CRON_DELETE_TOOL = "CronDelete";
 /** The prompt `/loop` without an interval schedules; sent back, it must be the command. */
 export const AUTONOMOUS_LOOP_PROMPT = "<<autonomous-loop-dynamic>>";
 
-// ---------------------------------------------------------------------------
-// Tool result parsing
-
 /** Seconds until the wakeup, from "Next wakeup scheduled for 10:10:00 (in 602s)". */
 export function parseScheduleWakeupDelaySeconds(text: string): number | null {
   const match = /Next wakeup scheduled for [^(]*\(in (\d+)s\)/u.exec(text);
@@ -51,7 +38,8 @@ export function parseScheduleWakeupDelaySeconds(text: string): number | null {
  * The job id from a CronCreate result: "Scheduled one-shot task f851d733 (...)"
  * or "Scheduled recurring job f851d733 (...)".
  */
-const CRON_CREATE_RESULT = /Scheduled (?:one-shot task|recurring job|[a-z-]+ (?:task|job)) ([\w-]+)/u;
+const CRON_CREATE_RESULT =
+  /Scheduled (?:one-shot task|recurring job|[a-z-]+ (?:task|job)) ([\w-]+)/u;
 
 export function parseCronCreateJobId(text: string): string | null {
   const match = CRON_CREATE_RESULT.exec(text);
@@ -93,9 +81,6 @@ function stringField(record: unknown, key: string): string | undefined {
   const value: unknown = Reflect.get(record, key);
   return typeof value === "string" ? value : undefined;
 }
-
-// ---------------------------------------------------------------------------
-// Cron
 
 interface CronSpec {
   readonly minutes: ReadonlySet<number>;
@@ -220,9 +205,6 @@ export function nextCronMatch(expression: string, afterMs: number): number | nul
   }
   return null;
 }
-
-// ---------------------------------------------------------------------------
-// Tracker
 
 export interface ClaudeWakeTracker {
   /** Reads one stream-json frame of the session; `nowMs` is when it arrived. */
@@ -407,9 +389,7 @@ export function makeClaudeWakeTracker(): ClaudeWakeTracker {
     wakeTurnActive: () => activeWakeCommand !== undefined,
     lastWakeupCallAtMs: () => lastWakeupCallAtMs,
     adopt: (wakes) => {
-      const listed = new Set(
-        pending.flatMap((wake) => (wake.kind === "cron" ? [wake.jobId] : [])),
-      );
+      const listed = new Set(pending.flatMap((wake) => (wake.kind === "cron" ? [wake.jobId] : [])));
       pending = [
         ...pending,
         ...wakes.filter((wake) => wake.kind === "cron" && !listed.has(wake.jobId)),
@@ -421,9 +401,6 @@ export function makeClaudeWakeTracker(): ClaudeWakeTracker {
     },
   };
 }
-
-// ---------------------------------------------------------------------------
-// Parking
 
 /** A wakeup T3 holds while the process that scheduled it is gone. */
 export interface ParkedWake {
@@ -572,9 +549,6 @@ export function adoptedWake(row: ParkedWake): ProviderAdapterV2PendingWake | nul
     dueAtMs: row.recurring ? null : row.dueAtMs,
   };
 }
-
-// ---------------------------------------------------------------------------
-// Table rows
 
 export interface ParkedWakeRow {
   readonly wake_id: string;
