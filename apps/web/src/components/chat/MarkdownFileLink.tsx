@@ -62,6 +62,19 @@ interface MarkdownFileLinkProps {
         line: number | undefined,
       ) => void)
     | undefined;
+  /** The tooltip as lines of text, in place of the path. */
+  tooltipLines?: ReadonlyArray<string> | undefined;
+  /** One character in front of the chip, such as a resolved link's mark. */
+  leadingMark?: MarkdownFileLinkMark | undefined;
+  /** Extra classes for the chip's label. */
+  labelClassName?: string | undefined;
+}
+
+export interface MarkdownFileLinkMark {
+  readonly text: string;
+  /** Read out in place of the character. */
+  readonly label: string;
+  readonly className: string;
 }
 
 const MARKDOWN_FILE_LINK_CLASS_NAME = "chat-markdown-file-link";
@@ -90,9 +103,25 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
   onOpenTarget,
   resolveCopyPaths,
   resolveDragPath,
+  tooltipLines,
+  leadingMark,
+  labelClassName,
 }: MarkdownFileLinkProps) {
   const gt = useGT();
   const nativeDrag = useNativeFileDrag(environmentId, resolveDragPath);
+  const leading = leadingMark ? (
+    <span
+      role="img"
+      aria-label={leadingMark.label}
+      data-link-mark={leadingMark.label}
+      className={cn(
+        "inline-flex w-[1.17em] shrink-0 items-center justify-center self-center leading-none",
+        leadingMark.className,
+      )}
+    >
+      {leadingMark.text}
+    </span>
+  ) : undefined;
   const handleOpenInEditor = () => {
     if (!onOpen) {
       return;
@@ -393,6 +422,8 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
                 environmentId={environmentId}
                 label={label}
                 theme={theme}
+                leading={leading}
+                labelClassName={labelClassName}
               />
             </ContextChip>
           ) : (
@@ -418,13 +449,19 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
                 environmentId={environmentId}
                 label={label}
                 theme={theme}
+                leading={leading}
+                labelClassName={labelClassName}
               />
             </ContextChip>
           )
         }
       />
       <TooltipPopup side="top" variant="code">
-        <WorkspaceEntryTooltip path={iconPath} label={targetPath} environmentId={environmentId} />
+        {tooltipLines ? (
+          tooltipLines.map((tooltipLine, index) => <div key={index}>{tooltipLine}</div>)
+        ) : (
+          <WorkspaceEntryTooltip path={iconPath} label={targetPath} environmentId={environmentId} />
+        )}
       </TooltipPopup>
     </Tooltip>
   );
@@ -457,7 +494,12 @@ function areMarkdownFileLinkPropsEqual(
     previous.resolveDragPath === next.resolveDragPath &&
     previous.revealLabel === next.revealLabel &&
     previous.openTargets === next.openTargets &&
-    previous.onOpenTarget === next.onOpenTarget
+    previous.onOpenTarget === next.onOpenTarget &&
+    (previous.tooltipLines ?? []).join("\n") === (next.tooltipLines ?? []).join("\n") &&
+    previous.leadingMark?.text === next.leadingMark?.text &&
+    previous.leadingMark?.label === next.leadingMark?.label &&
+    previous.leadingMark?.className === next.leadingMark?.className &&
+    previous.labelClassName === next.labelClassName
   );
 }
 

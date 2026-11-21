@@ -6,7 +6,7 @@ import {
 } from "@t3tools/shared/observability";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import { parsePersistedServerObservabilitySettings } from "@t3tools/shared/serverSettings";
-import { DesktopBackendBootstrap, PortSchema } from "@t3tools/contracts";
+import { DesktopBackendBootstrap, LinkResolverScheme, PortSchema } from "@t3tools/contracts";
 import * as Config from "effect/Config";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -101,6 +101,24 @@ export const traceMaxFilesConfig = Config.Int("T3CODE_TRACE_MAX_FILES").pipe(
   Config.withDefault(10),
 );
 
+// `{"<scheme>": ["<program>", "<arg>", ...]}`: each scheme's links resolve through its program.
+export const LinkResolversFromJson = Schema.fromJsonString(
+  Schema.Record(LinkResolverScheme, Schema.Array(Schema.String).check(Schema.isMinLength(1))),
+);
+
+export const decodeLinkResolvers = Effect.fn("config.decodeLinkResolvers")(function* (
+  raw: string | undefined,
+) {
+  if (raw === undefined || raw.trim() === "") return undefined;
+  return yield* Schema.decodeUnknownEffect(LinkResolversFromJson)(raw).pipe(
+    Effect.catch((issue) =>
+      Effect.logWarning(`T3CODE_LINK_RESOLVERS ignored: ${String(issue)}`).pipe(
+        Effect.as(undefined),
+      ),
+    ),
+  );
+});
+
 const EnvServerConfig = Config.all({
   logLevel: Config.LogLevel("T3CODE_LOG_LEVEL").pipe(Config.withDefault("Info")),
   traceMinLevel: Config.LogLevel("T3CODE_TRACE_MIN_LEVEL").pipe(Config.withDefault("Info")),
@@ -173,6 +191,11 @@ const EnvServerConfig = Config.all({
     Config.map(Option.getOrUndefined),
   ),
   lan: Config.Boolean("T3CODE_LAN").pipe(Config.option, Config.map(Option.getOrUndefined)),
+  // Decoded in resolveServerConfig: a bad value is logged and ignored, never a failed start.
+  linkResolversJson: Config.String("T3CODE_LINK_RESOLVERS").pipe(
+    Config.option,
+    Config.map(Option.getOrUndefined),
+  ),
 });
 
 const DevAuthTokenConfig = Config.Redacted("T3CODE_DEV_AUTH_TOKEN").pipe(
@@ -425,6 +448,7 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     ),
     () => 443,
   );
+  const linkResolvers = yield* decodeLinkResolvers(env.linkResolversJson);
   const staticDir = devUrl ? undefined : yield* ServerConfig.resolveStaticDir();
   const explicitHost = resolveOptionPrecedence(
     normalizedFlags.host,
@@ -531,6 +555,7 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     logWebSocketEvents,
     tailscaleServeEnabled,
     tailscaleServePort,
+    ...(linkResolvers === undefined ? {} : { linkResolvers }),
   };
 
   return config;
