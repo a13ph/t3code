@@ -90,6 +90,7 @@ export function ResolvedTargetChip(props: {
         Promise.resolve({ fullPath: target.path, relativePath: fileBasename(target.path) })
       }
       openInEditorMenuLabel=""
+      resolveDragPath={() => Promise.resolve(target.path)}
       tooltipLines={resolvedLinkTooltipLines(target, props.label, noteLinks.serverLabel, messages)}
       leadingMark={
         target.mark === ""

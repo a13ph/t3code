@@ -1395,8 +1395,7 @@ export default function FilePreviewPanel({
     !isDocument;
   const mayOpenEditor =
     previewPath !== null &&
-    !isHostFile &&
-    canWriteFiles &&
+    canEditFile &&
     file.error === null &&
     !file.data?.truncated &&
     !isMedia &&
@@ -1577,14 +1576,14 @@ export default function FilePreviewPanel({
           {history !== undefined && (history.canGoBack || history.canGoForward) ? (
             <>
               <FileSurfaceAction
-                label="Back (Alt+Left)"
+                label={gt("Back (Alt+Left)")}
                 disabled={!history.canGoBack}
                 onPress={() => history.step(-1)}
               >
                 <ArrowLeft className="size-3.5" />
               </FileSurfaceAction>
               <FileSurfaceAction
-                label="Forward (Alt+Right)"
+                label={gt("Forward (Alt+Right)")}
                 disabled={!history.canGoForward}
                 onPress={() => history.step(1)}
               >
@@ -1687,8 +1686,10 @@ export default function FilePreviewPanel({
       ) : null}
       {previewPath && !attachment && isHostFile && !canEditFile && !fileAccess.isPending ? (
         <div className="shrink-0 border-b px-3 py-1.5 text-2xs text-muted-foreground">
-          Read-only: editing a file outside the project needs file write and terminal access on this
-          server.
+          <T>
+            Read-only: editing a file outside the project needs file write and terminal access on
+            this server.
+          </T>
         </div>
       ) : null}
       {previewPath &&

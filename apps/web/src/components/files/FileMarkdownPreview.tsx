@@ -8,6 +8,7 @@ import {
 import { workspaceRelativeFilePath } from "@t3tools/shared/path";
 import { remarkWikilinks } from "@t3tools/shared/wikilinks";
 import * as Schema from "effect/Schema";
+import { useGT } from "gt-react";
 import { ChevronRight } from "lucide-react";
 import type { ReactNode } from "react";
 
@@ -122,6 +123,7 @@ function NoteProperties(props: {
   readonly noteLinks: NoteLinks;
   readonly renderValue: (markdown: string) => ReactNode;
 }) {
+  const gt = useGT();
   const [open, setOpen] = useLocalStorage(PROPERTIES_OPEN_STORAGE_KEY, false, Schema.Boolean);
   const backlinks = useNoteBacklinks(props.noteLinks);
   const { resolvedTheme } = useTheme();
@@ -137,8 +139,12 @@ function NoteProperties(props: {
       <summary className="flex cursor-pointer list-none items-center gap-1.5 px-3 py-1.5 text-muted-foreground select-none">
         <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" />
         <span>
-          Properties ({shown.length})
-          {linkedFrom.length > 0 ? `, linked from ${linkedFrom.length}` : ""}
+          {linkedFrom.length > 0
+            ? gt("Properties ({count}), linked from {linkedCount}", {
+                count: shown.length,
+                linkedCount: linkedFrom.length,
+              })
+            : gt("Properties ({count})", { count: shown.length })}
         </span>
       </summary>
       <dl className="grid grid-cols-[minmax(6rem,max-content)_1fr] gap-x-3 gap-y-1 border-t border-border/60 px-3 py-2">
@@ -152,7 +158,7 @@ function NoteProperties(props: {
         ))}
         {linkedFrom.length > 0 ? (
           <div className="contents" data-note-linked-from>
-            <dt className="pt-0.5 text-muted-foreground">linked from</dt>
+            <dt className="pt-0.5 text-muted-foreground">{gt("linked from")}</dt>
             <dd className="flex min-w-0 flex-col items-start gap-0.5">
               {withOccurrenceKeys(linkedFrom, (link) => link.path).map(([rowKey, link]) => (
                 <ResolvedTargetChip
