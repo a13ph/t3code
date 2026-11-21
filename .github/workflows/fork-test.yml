@@ -1,0 +1,89 @@
+name: Fork tests
+
+# Runs upstream's changed-files checks (format, lint, knip, typecheck, tests
+# beside changes) against the upstream release the branch sits on, plus the
+# i18n catalog check, on GitHub's free runners. A dispatch with test files
+# runs just those, so a failure can be tried on a branch at plain upstream.
+on:
+  push:
+    branches: ["ci/**"]
+  workflow_dispatch:
+    inputs:
+      web_tests:
+        description: Web test files to run instead of the checks, space separated
+        required: false
+        default: ""
+      server_tests:
+        description: Server test files to run instead of the checks, space separated
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-test-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UPSTREAM_BASE: 59651c1761f6c63e9b6056839067066968e6a406
+
+jobs:
+  test:
+    name: Checks and tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          sparse-checkout: |
+            /*
+            !/.repos/
+            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: ./.github/actions/setup-ci-deps
+
+      - name: Resolve Playwright version
+        id: playwright_version
+        run: echo "version=$(node -p "require('./apps/web/node_modules/playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Chromium
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-shell-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright_version.outputs.version }}
+
+      - name: Install Chromium for web browser tests
+        run: |
+          node apps/web/node_modules/playwright/cli.js install --only-shell chromium
+          browser=$(find "$HOME/.cache/ms-playwright" -name chrome-headless-shell -type f -print -quit)
+          test -n "$browser"
+          if ldd "$browser" | grep '=> not found'; then
+            node apps/web/node_modules/playwright/cli.js install-deps chromium
+          fi
+
+      - name: Changed-files checks
+        if: ${{ inputs.web_tests == '' && inputs.server_tests == '' }}
+        run: vp run check:changed "$UPSTREAM_BASE"
+
+      - name: Check i18n catalogs
+        if: ${{ !cancelled() && inputs.web_tests == '' && inputs.server_tests == '' }}
+        run: vp run i18n:check
+
+      - name: Web tests
+        if: ${{ !cancelled() && inputs.web_tests != '' }}
+        working-directory: apps/web
+        env:
+          TESTS: ${{ inputs.web_tests }}
+        run: vp test run --passWithNoTests --project unit --project browser $TESTS
+
+      - name: Server tests
+        if: ${{ !cancelled() && inputs.server_tests != '' }}
+        working-directory: apps/server
+        env:
+          TESTS: ${{ inputs.server_tests }}
+        run: vp test run --passWithNoTests $TESTS
