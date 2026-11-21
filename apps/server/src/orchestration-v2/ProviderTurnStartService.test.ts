@@ -3462,6 +3462,11 @@ async function reattachToKeptTurn(input: {
     turnItems: [
       { id: "item-kept-tool", runId, status: "running", ordinal: 3, type: "command_execution" },
     ],
+    // A subagent the kept turn runs, and one of another run.
+    subagents: [
+      { id: "subagent-kept", runId, status: "running", childThreadId: null },
+      { id: "subagent-other", runId: "run-other", status: "running", childThreadId: null },
+    ],
   } as unknown as OrchestrationV2ThreadProjection;
 
   const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-keeper-write-off-"));
@@ -3524,7 +3529,10 @@ async function reattachToKeptTurn(input: {
   }
 }
 
-/** What a failed reattach wrote: the run's status, its open tool item's, and the effects. */
+/**
+ * What a failed reattach wrote: the run's status, its open tool item's, the
+ * subagents it ended, and the effects.
+ */
 function writtenOff(writeIfRunCurrent: ReturnType<typeof vi.fn>) {
   const write = writeIfRunCurrent.mock.calls[0]?.[0] as
     | Parameters<EventSink.EventSinkV2Shape["writeIfRunCurrent"]>[0]
@@ -3538,6 +3546,12 @@ function writtenOff(writeIfRunCurrent: ReturnType<typeof vi.fn>) {
     writes: writeIfRunCurrent.mock.calls.length,
     run: status("run.updated", "run-keeper-reattach-write-off"),
     tool: status("turn-item.updated", "item-kept-tool"),
+    subagents: events
+      .filter((event) => event.type === "subagent.updated")
+      .map((event) => [
+        (event.payload as { id: string }).id,
+        (event.payload as { status: string }).status,
+      ]),
     effects: (write?.effects ?? []).map((effect) => effect.request),
   };
 }
@@ -3556,6 +3570,7 @@ keeperWriteOffIt("writes a reattach off when a later step fails", async () => {
     writes: 1,
     run: ["cancelled"],
     tool: ["cancelled"],
+    subagents: [["subagent-kept", "cancelled"]],
     effects: [{ type: "provider-runtime.continue", sourceRunId: result.runId }],
   });
 });
@@ -3572,6 +3587,7 @@ keeperWriteOffIt("continues a reattach it had to give up", async () => {
     writes: 1,
     run: ["cancelled"],
     tool: ["cancelled"],
+    subagents: [["subagent-kept", "cancelled"]],
     effects: [{ type: "provider-runtime.continue", sourceRunId: result.runId }],
   });
   expect(result.listed.handles.map((entry: { handle: string }) => entry.handle)).not.toContain(
