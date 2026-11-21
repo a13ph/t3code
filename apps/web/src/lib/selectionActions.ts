@@ -1,6 +1,8 @@
 export type SelectionActionPoint = { x: number; y: number };
 
 export const SELECTION_MULTI_CLICK_INTERVAL_MS = 500;
+// How long a double click waits for a third click before its selection is acted on.
+const SELECTION_MULTI_CLICK_SETTLE_MS = 200;
 const SELECTION_SCROLL_SETTLE_MS = 150;
 
 export function resolveSelectionActionPosition(options: {
@@ -133,7 +135,7 @@ export function observeSelectionActions({
     if (!gestureActive) return;
     gestureActive = false;
     pointer = { x: event.clientX, y: event.clientY };
-    schedule(event.detail >= 2 ? SELECTION_MULTI_CLICK_INTERVAL_MS : 0);
+    schedule(event.detail >= 2 ? SELECTION_MULTI_CLICK_SETTLE_MS : 0);
   };
   const onKeyDown = (event: KeyboardEvent) => {
     if (isActionTarget(event.target) && event.key !== "Escape") return;
