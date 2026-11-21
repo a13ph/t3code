@@ -136,6 +136,7 @@ const fakeClaudeCliWith = (turn: string, everyPrompt = false) =>
       const cli = NodePath.join(dir, "claude");
       NodeFS.writeFileSync(
         cli,
+        // @effect-diagnostics-next-line preferSchemaOverJson:off - quotes the node path into a shell script.
         `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "$(dirname "$0")/cli.mjs"\n`,
         { mode: 0o755 },
       );
@@ -229,6 +230,22 @@ export const keeperSocketWith = (options: { readonly orphans?: "hold" | "drain" 
 
 /** A keeper serving a fresh socket, holding orphans. */
 export const keeperSocket = keeperSocketWith();
+
+/** One process in the keeper's reply to `list`. */
+export interface KeeperListEntry {
+  readonly handle: string;
+  readonly name: string;
+  readonly alive: boolean;
+  readonly attached: boolean;
+  readonly acked: number;
+}
+
+/** The processes the keeper at `socketPath` holds. */
+export const listKeeper = (socketPath: string) =>
+  Effect.promise(
+    (): Promise<{ readonly handles: ReadonlyArray<KeeperListEntry> }> =>
+      keeperRequest(socketPath, { op: "list" }),
+  );
 
 /** Resolves with the first line number the keeper confirmed as acknowledged. */
 export const firstKeeperAck = Effect.gen(function* () {

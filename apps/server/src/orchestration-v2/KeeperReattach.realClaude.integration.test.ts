@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- the real CLI, the keeper and an MCP stub are real processes and sockets.
+// @effect-diagnostics globalRandom:off globalDate:off -- prompt markers and the wall-clock progress log are plain helpers outside Effect.
 import * as NodeFS from "node:fs";
 import * as NodeHttp from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -234,7 +235,7 @@ const layerFixedMcpSession = Layer.succeed(
     read: (id) => Effect.sync(() => (id === threadId ? mcpCredential : undefined)),
     clear: () => Effect.void,
     recordHtmlRender: () => Effect.void,
-    takeHtmlRender: () => Effect.succeed(undefined),
+    takeHtmlRender: () => Effect.undefined,
   }),
 );
 
