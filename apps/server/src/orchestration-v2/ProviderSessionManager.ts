@@ -1,4 +1,5 @@
 import { AgentScope } from "@t3tools/shared/AgentScope";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
@@ -553,7 +554,9 @@ export const layerWithOptions = (
       }) => `${input.providerSessionId}\u0000${input.threadId}`;
       const idleTimeoutMs = Math.max(
         1,
-        options.idleTimeoutMs ?? idleTimeoutMsFromEnv(process.env) ?? DEFAULT_IDLE_TIMEOUT_MS,
+        options.idleTimeoutMs ??
+          idleTimeoutMsFromEnv(yield* HostProcess.Environment) ??
+          DEFAULT_IDLE_TIMEOUT_MS,
       );
       const maxIdlePinMs = Math.max(0, options.maxIdlePinMs ?? DEFAULT_MAX_IDLE_PIN_MS);
       interface PreparedMcpCredential {
