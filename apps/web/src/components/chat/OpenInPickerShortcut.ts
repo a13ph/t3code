@@ -7,7 +7,7 @@ import {
 import { msg } from "gt-react";
 import { useEffect } from "react";
 
-import { usePreferredEditor } from "../../editorPreferences";
+import { isPreferredOpenInApp, usePreferredEditor } from "../../editorPreferences";
 import { editorLabelForPlatform } from "../../editorLabels";
 import { isOpenFavoriteEditorShortcut } from "../../keybindings";
 import { m } from "../../i18n/messages";
@@ -74,6 +74,8 @@ export function useOpenFavoriteEditorShortcut({
       )
         return;
       if (!openInCwd || !preferredEditor) return;
+      // A Neovim or Obsidian pick opens from the picker's own shortcut.
+      if (isPreferredOpenInApp()) return;
 
       event.preventDefault();
       const label = editorLabelForPlatform(preferredEditor, navigator.platform);

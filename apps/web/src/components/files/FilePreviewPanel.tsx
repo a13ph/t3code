@@ -1563,6 +1563,7 @@ export default function FilePreviewPanel({
               enableShortcut={openInShortcutEnabled}
               openInCwd={absolutePath}
               openInCwdIsFile={file.isFile}
+              threadId={threadRef.threadId}
               compact
               revealFileManager={revealsInFileManager}
             />
