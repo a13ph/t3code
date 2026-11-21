@@ -303,6 +303,17 @@ describe("wake tracker", () => {
     tracker.observe(lifecycle("started", { wakeup_source: "schedule_wakeup" }), NOW + MINUTE);
     expect(tracker.takeWakeups()).toEqual([]);
     expect(tracker.wakes().map((wake) => wake.kind)).toEqual(["cron", "wakeup"]);
+    // A crash cut the turn short: its wakeup is handed over too, to be sent again.
+    expect(tracker.takeWakeups({ includeFiring: true })).toEqual([
+      {
+        kind: "wakeup",
+        toolUseId: "toolu_2",
+        dueAtMs: NOW + MINUTE,
+        prompt: "<<autonomous-loop-dynamic>>",
+        firing: true,
+      },
+    ]);
+    expect(tracker.wakes().map((wake) => wake.kind)).toEqual(["cron"]);
   });
 
   it("ends a wake turn on its result frame when no completed frame comes", () => {

@@ -219,10 +219,13 @@ export interface ClaudeWakeTracker {
    */
   readonly processEnded: () => void;
   /**
-   * Removes and returns the ScheduleWakeup calls no turn is firing: a resumed
-   * process does not restore them, so T3 takes them over.
+   * Removes and returns the ScheduleWakeup calls, the one a turn is firing only
+   * with `includeFiring`: a resumed process does not restore them, so T3 takes
+   * them over.
    */
-  readonly takeWakeups: () => ReadonlyArray<ProviderAdapterV2PendingWake>;
+  readonly takeWakeups: (options?: {
+    readonly includeFiring?: boolean;
+  }) => ReadonlyArray<ProviderAdapterV2PendingWake>;
 }
 
 const MAX_SETTLED_TOOL_USES = 2_000;
@@ -425,8 +428,11 @@ export function makeClaudeWakeTracker(): ClaudeWakeTracker {
       endWakeTurn();
       openToolUses.clear();
     },
-    takeWakeups: () => {
-      const taken = pending.filter((wake) => wake.kind === "wakeup" && wake.firing !== true);
+    takeWakeups: (options) => {
+      const taken = pending.filter(
+        (wake) =>
+          wake.kind === "wakeup" && (wake.firing !== true || options?.includeFiring === true),
+      );
       pending = pending.filter((wake) => !taken.includes(wake));
       return taken;
     },
