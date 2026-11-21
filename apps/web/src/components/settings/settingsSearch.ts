@@ -797,9 +797,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "cite-on-selection",
     title: msg("Cite on selection"),
     to: "/settings/chat",
-    searchTerms: [
-      msg("quote citation select highlight assistant text comment automatic instant"),
-    ],
+    searchTerms: [msg("quote citation select highlight assistant text comment automatic instant")],
   },
   {
     id: "send-shortcut",
