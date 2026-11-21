@@ -164,7 +164,18 @@ import { readLocalApi } from "../localApi";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { hostEnvironmentIdAtom } from "../state/primaryEnvironment";
 import { cn } from "../lib/utils";
-import { resolveRemoteOpenState, useRemoteOpenResolution } from "../remoteOpen";
+import {
+  openRemoteEditorUrl,
+  resolveRemoteOpenState,
+  useRemoteOpenResolution,
+} from "../remoteOpen";
+import {
+  buildChipOpenUrl,
+  canOfferOpenInApps,
+  resolveChipOpenTargets,
+  type ChipOpenTarget,
+} from "../openInApps";
+import { isAbsolutePath } from "@t3tools/shared/path";
 import { rightPanelHostRef, useRightPanelStore } from "../rightPanelStore";
 import { useOpenIssueLink } from "../lib/openIssueLink";
 import { issueTrackerEnvironment } from "../state/issueTrackers";
@@ -698,6 +709,52 @@ function useChatMarkdownState({
   const openInEditor = useAtomCommand(shellEnvironment.openInEditor, {
     reportFailure: false,
   });
+  const chipOpenTargets = resolveChipOpenTargets({
+    isDesktop: canOfferOpenInApps(),
+    isRemoteOpenResolved: remoteOpen.isResolved,
+    remoteOpenMode: remoteOpen.state.mode,
+    canUseShellActions,
+    availableEditors,
+  });
+  const openChipTarget = (
+    target: ChipOpenTarget,
+    filePath: string,
+    targetPath: string,
+    line: number | undefined,
+  ) => {
+    const showFailure = (description: string) =>
+      toastManager.add(
+        stackedThreadToast({ type: "error", title: gt("Unable to open file"), description }),
+      );
+    // Local VSCodium keeps the stock route: the server launches `codium`.
+    if (target === "vscodium" && remoteOpen.state.mode === "local-exec") {
+      if (environmentId === null) return;
+      void openInEditor({
+        environmentId,
+        input: { cwd: targetPath, editor: "vscodium" },
+      }).then((result) => {
+        if (result._tag === "Success" || isAtomCommandInterrupted(result)) return;
+        const error = squashAtomCommandFailure(result);
+        showFailure(thrownErrorMessage(error, m) ?? gt("An error occurred."));
+      });
+      return;
+    }
+    if (!isAbsolutePath(filePath)) {
+      showFailure(gt("{path} is not an absolute path.", { path: filePath }));
+      return;
+    }
+    const url = buildChipOpenUrl({
+      target,
+      state: remoteOpen.state,
+      absolutePath: filePath,
+      line,
+      threadId: threadRef?.threadId ?? null,
+    });
+    if (url === undefined) return;
+    void openRemoteEditorUrl(url).then((opened) => {
+      if (!opened) showFailure(gt("The desktop app refused the link."));
+    });
+  };
   const revealFileInFileManager = (filePath: string) => {
     if (environmentId === null) {
       return Promise.resolve(
@@ -1005,6 +1062,8 @@ function useChatMarkdownState({
             : undefined
         }
         revealLabel={revealInFileManagerLabel}
+        openTargets={chipOpenTargets}
+        onOpenTarget={chipOpenTargets.length > 0 ? openChipTarget : undefined}
         onOpenInBrowser={
           threadRef &&
           canOperatePreview &&
