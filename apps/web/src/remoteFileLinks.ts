@@ -28,7 +28,20 @@ const REMOTE_FILE_LINK_PREFIX = `${REMOTE_FILE_LINK_PROTOCOL}://v1/`;
 // Two characters at least, so a Windows drive (`C:/user`) never reads as a server name.
 const SERVER_PATH = /^(?<server>[A-Za-z0-9][A-Za-z0-9._-]+):(?<path>\/(?!\/)[^\n]*|[A-Za-z]:[/\\][^\n]*)$/;
 // Schemes whose `name:/path` shape would otherwise pass for a server and a path.
-const NOT_A_SERVER = new Set(["file", "http", "https", "ftp", "mailto", "data", "blob", "about"]);
+const NOT_A_SERVER = new Set([
+  "file",
+  "http",
+  "https",
+  "ftp",
+  "mailto",
+  "data",
+  "blob",
+  "about",
+  "javascript",
+  "vbscript",
+]);
+// `#L12` or `#L12C3` after the path, as GitHub writes a line.
+const LINE_HASH = /#L\d+(?:C\d+)?$/i;
 
 function decodePath(path: string): string | null {
   try {
@@ -45,7 +58,11 @@ function withPosition(
 ): RemoteFileLink | null {
   const decoded = decodePath(rawPath);
   if (decoded === null) return null;
-  const { path, line, column } = splitFilePathPosition(decoded);
+  const hash = LINE_HASH.exec(decoded)?.[0] ?? "";
+  const { path, line, column } = splitFilePathPosition(
+    hash ? decoded.slice(0, -hash.length) : decoded,
+    hash,
+  );
   if (path.length <= 1) return null;
   return {
     server,
