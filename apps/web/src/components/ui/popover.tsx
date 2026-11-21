@@ -44,6 +44,7 @@ function PopoverPopup({
   keepMounted = false,
   anchor,
   touchBackdrop = false,
+  instantOpen = false,
   ...props
 }: PopoverPrimitive.Popup.Props & {
   padding?: keyof typeof popoverViewportPaddingClassName;
@@ -58,6 +59,8 @@ function PopoverPopup({
   anchor?: PopoverPrimitive.Positioner.Props["anchor"];
   width?: keyof typeof popoverPopupWidthClassName;
   touchBackdrop?: boolean;
+  /** Shows the popup at full size and opacity on its first frame; closing still fades. */
+  instantOpen?: boolean;
 }) {
   // Viewport rekeys on close; persistent single-trigger forms need stable containers for drafts and submit
   // guards.
@@ -98,6 +101,7 @@ function PopoverPopup({
             "will-change-[scale]",
             // Electron drag hit-testing ignores z-index; popups over a drag region would swallow hover.
             "[-webkit-app-region:no-drag]",
+            instantOpen && "data-starting-style:scale-100 data-starting-style:opacity-100",
             tooltipStyle &&
               "w-fit rounded-md text-xs shadow-md/5 before:rounded-[calc(var(--radius-md)-1px)]",
             !tooltipStyle &&
