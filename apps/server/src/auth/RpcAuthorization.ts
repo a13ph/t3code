@@ -11,6 +11,7 @@ import {
   requiredScopesForServerSettingsPatch,
   requiredScopesForProjectMutation,
   ProjectMutation,
+  ProjectWriteFileInput,
   AuthSettingsWriteScope,
   AuthProvidersManageScope,
   AuthEnvironmentMaintainScope,
@@ -33,6 +34,7 @@ import {
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
+import { isHostPath } from "@t3tools/shared/path";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
@@ -175,6 +177,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.filesystemBrowse]: AuthFilesystemReadScope,
   [WS_METHODS.filesystemGetMetadata]: AuthFilesystemReadScope,
   [WS_METHODS.linksResolve]: AuthFilesystemReadScope,
+  [WS_METHODS.linksBacklinks]: AuthFilesystemReadScope,
   [WS_METHODS.agentSessionsScan]: AuthOrchestrationReadScope,
   [WS_METHODS.agentSessionsImport]: AuthOrchestrationOperateScope,
   [WS_METHODS.assetsCreateUrl]: AuthOrchestrationReadScope,
@@ -268,6 +271,7 @@ const requiredScopesForSettingsUpdate = (payload: unknown) => {
 
 const decodeProjectMutation = Schema.decodeUnknownSync(ProjectMutation);
 const decodeAssetCreateUrlInput = Schema.decodeUnknownSync(AssetCreateUrlInput);
+const decodeProjectWriteFileInput = Schema.decodeUnknownSync(ProjectWriteFileInput);
 
 /**
  * A queued edit that omits `attachments` keeps the queued ones, which a payload cannot show;
@@ -312,6 +316,13 @@ const requiredScopesForRpcCall = (
         ? AuthFilesystemReadScope
         : AuthOrchestrationReadScope,
     ];
+  }
+  // A host file can be any file the server's user owns; only a shell already reaches those.
+  if (
+    method === WS_METHODS.projectsWriteFile &&
+    isHostPath(decodeProjectWriteFileInput(payload).relativePath)
+  ) {
+    return [AuthFilesystemWriteScope, AuthTerminalOperateScope];
   }
   if (method === WS_METHODS.serverUpdateSettings) return requiredScopesForSettingsUpdate(payload);
   // These send the credential they are given to a URL the caller names, as a saved setting would.

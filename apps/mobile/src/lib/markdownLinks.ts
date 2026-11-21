@@ -26,6 +26,8 @@ export type MarkdownLinkPresentation =
       readonly path: string;
       readonly line?: number;
       readonly column?: number;
+      /** Set for a `remote-file://v1/` link: the environment holding the absolute `path`. */
+      readonly environmentId?: string;
     }
   | {
       readonly kind: "link";
@@ -252,8 +254,35 @@ export function resolveMarkdownFileIcon(value: string): MarkdownFileIcon {
   return "default";
 }
 
+// `remote-file://v1/<environmentId>/<absolute path>`, as apps/web/src/remoteFileLinks.ts reads it.
+const REMOTE_FILE_LINK_PREFIX = "remote-file://v1/";
+
+function parseRemoteFileLink(href: string) {
+  if (!href.startsWith(REMOTE_FILE_LINK_PREFIX)) return null;
+  const rest = href.slice(REMOTE_FILE_LINK_PREFIX.length);
+  const slash = rest.indexOf("/");
+  if (slash <= 0) return null;
+  const target = parseMarkdownFileLink(rest.slice(slash));
+  return target && target.path.length > 1
+    ? { environmentId: rest.slice(0, slash), target }
+    : null;
+}
+
 export function resolveMarkdownLinkPresentation(href: string): MarkdownLinkPresentation {
   const normalized = normalizeMarkdownLinkDestination(href);
+  const remote = parseRemoteFileLink(normalized);
+  if (remote) {
+    return {
+      kind: "file",
+      href: normalized,
+      icon: resolveMarkdownFileIcon(remote.target.path),
+      label: fileLinkLabel(remote.target, new Map()),
+      path: remote.target.path,
+      environmentId: remote.environmentId,
+      ...(remote.target.line ? { line: remote.target.line } : {}),
+      ...(remote.target.column ? { column: remote.target.column } : {}),
+    };
+  }
   try {
     const parsed = new URL(normalizeNativeMarkdownUrl(normalized));
     if (parsed.protocol === "http:" || parsed.protocol === "https:") {

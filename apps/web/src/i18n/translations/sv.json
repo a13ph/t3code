@@ -12234,5 +12234,11 @@
   "df802481a8fbeacd": "After settle or snooze",
   "32752d3ded23a923": "Reset after settle or snooze to default",
   "2592bf72065ce9c3": "next oldest waiting thread open advance inbox queue settle snooze",
-  "0228426d82d6c7d4": "Which thread opens after you settle or snooze the open one. Oldest waiting opens the inbox thread that has waited longest for you, also from the thread's own menu while the sidebar is shown."
+  "0228426d82d6c7d4": "Which thread opens after you settle or snooze the open one. Oldest waiting opens the inbox thread that has waited longest for you, also from the thread's own menu while the sidebar is shown.",
+  "e310f08035b14205": "Back (Alt+Left)",
+  "8bd74fd335b15e9c": "Forward (Alt+Right)",
+  "2311f959a069e24e": "Properties ({count}), linked from {linkedCount}",
+  "cec1b0ca316b8c44": "Properties ({count})",
+  "1c7cb21322f5b981": "linked from",
+  "d530dbf2f3a56a2a": "Read-only: editing a file outside the project needs file write and terminal access on this server."
 }
