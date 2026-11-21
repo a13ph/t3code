@@ -29,7 +29,7 @@ describe("buildOpenInAppUrl", () => {
     expect(passesDesktopAllowlist(url)).toBe(true);
   });
 
-  it("encodes a remote linux note path with its line and thread", () => {
+  it("encodes a remote linux file path with its line and thread", () => {
     const url = buildOpenInAppUrl({
       app: "nvim",
       host: "host-a",

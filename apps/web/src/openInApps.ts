@@ -3,10 +3,11 @@
  * Obsidian. Every open, on a local or a remote thread, goes out as a
  * `zed://ssh/<host><path>?app=<id>[&line=<n>][&thread=<id>]` link through
  * the desktop shell, whose external-URL allowlist already passes Zed's SSH
- * shape. These links need an external handler for `zed://` on the client
- * machine that reads `app` and starts that program; none ships here. These
- * ids stay out of the contracts' EDITORS list so the server never probes for
- * them or advertises them.
+ * shape. The desktop shell hands the link to whatever handles `zed://` on the
+ * client; this repo ships no handler. A handler reads `app` to pick the
+ * program and may use `thread` to tie the open to its thread. These ids stay
+ * out of the contracts' EDITORS list so the server never probes for them or
+ * advertises them.
  */
 import { EditorId, buildRemoteOpenUrl } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
