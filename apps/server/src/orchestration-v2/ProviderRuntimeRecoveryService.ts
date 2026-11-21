@@ -227,7 +227,7 @@ export async function closeUnrecordedKeeperThreads(
  * with nothing waiting on an answer. Its own subagents go on in the same CLI. A subagent of another
  * run, such as a background one an earlier run left, would not be routed to it, so it refuses.
  */
-export function keeperReattachableRun(projection: ProjectionStore.ProjectionRuntimeRecoveryState) {
+function keeperReattachableRun(projection: ProjectionStore.ProjectionRuntimeRecoveryState) {
   const unfinished = nonterminalRuns(projection);
   const run = unfinished[0];
   if (unfinished.length !== 1 || run === undefined || run.status !== "running") return undefined;
