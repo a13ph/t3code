@@ -174,6 +174,19 @@ function JumpHintBadge(props: { label: string }) {
 const JUMP_HINT_SLOT_CLASS_NAME =
   "[&>:not([data-jump-hint])]:invisible [&>:not([data-jump-hint])]:absolute";
 
+// The always-on jump number: a muted digit in the row's left gutter, where it
+// covers no label, so the first nine threads read like numbered tabs.
+function JumpNumberMark(props: { label: string }) {
+  return (
+    <span
+      aria-hidden
+      className="pointer-events-none absolute left-0 top-1/2 z-10 -translate-y-1/2 font-mono text-3xs leading-none text-muted-foreground/70"
+    >
+      {props.label}
+    </span>
+  );
+}
+
 function WorkingDuration(props: { environmentId: EnvironmentId; startedAt: string | null }) {
   const startedMs = props.startedAt !== null ? Date.parse(props.startedAt) : Number.NaN;
   if (Number.isNaN(startedMs)) return null;
@@ -598,6 +611,8 @@ type SidebarThreadRowProps = {
   // Read at click time; a prop would re-render every row on entering or leaving a thread route.
   readOpensPullRequestsInRightPanel: () => boolean;
   jumpLabel: string | null;
+  /** The row's jump number, shown at all times when "Always show thread numbers" is on. */
+  jumpNumber: string | null;
   currentEnvironmentId: string | null;
   environmentLabel: string | null;
   environmentMachine: EnvironmentMachineKind;
@@ -1523,6 +1538,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               {props.sweepAction !== null ? dragDestination : null}
             </div>
             {multiline ? metaLine : null}
+            {props.jumpNumber ? <JumpNumberMark label={props.jumpNumber} /> : null}
           </TooltipTrigger>
           {detailsTooltip}
         </Tooltip>
@@ -1738,6 +1754,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             </div>
             {metaLine}
           </div>
+          {props.jumpNumber ? <JumpNumberMark label={props.jumpNumber} /> : null}
         </TooltipTrigger>
         {detailsTooltip}
       </Tooltip>

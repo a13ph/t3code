@@ -134,7 +134,8 @@ import { useOrderWhileOpen } from "../hooks/useOrderWhileOpen";
 import { useProjectPin } from "../hooks/useProjectGroupUpdate";
 import { useSidebarProjectGroups } from "../hooks/useSidebarProjectGroups";
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
-import { registerSettleAndAdvance } from "../settleAndAdvance";
+import { registerSettleAndAdvance, registerSnoozeAndAdvance } from "../settleAndAdvance";
+import { registerJumpToLastThread } from "../jumpToLastThread";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { useClientSettings } from "../hooks/useSettings";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
@@ -196,6 +197,8 @@ import {
   planSidebarThreadDrop,
   reduceSidebarProjectScopeMenuState,
   resolveAdjacentThreadId,
+  buildThreadJumpNumbers,
+  resolveLastQueueThreadKey,
   resolveSidebarSweepKeys,
   resolveSidebarDropTarget,
   resolveSidebarDropVerb,
@@ -1451,6 +1454,15 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     }
     return mapping;
   })();
+  const alwaysShowJumpHints = useClientSettings((s) => s.sidebarAlwaysShowJumpHints);
+  const jumpNumberByKey = buildThreadJumpNumbers(
+    alwaysShowJumpHints ? orderedThreadKeys : [],
+    jumpLabelByKey,
+  );
+  // The cards waiting on the user, top to bottom; the last-chat shortcuts
+  // open the bottom one.
+  const queueThreadKeys = [...pinnedKeys, ...activeKeys];
+  const queueThreadKeysRef = useRef(queueThreadKeys);
 
   const navigateToThread = (threadRef: ScopedThreadRef) => {
     if (useThreadSelectionStore.getState().selectedThreadKeys.size > 0) {
@@ -1465,6 +1477,19 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       params: buildThreadRouteParams(threadRef),
     });
   };
+  const openLastQueueThread = (leavingThreadKey: string | null) => {
+    const targetKey = resolveLastQueueThreadKey({
+      queueThreadKeys: queueThreadKeysRef.current,
+      leavingThreadKey,
+    });
+    const target = targetKey ? threadByKeyRef.current.get(targetKey) : undefined;
+    if (!target) return false;
+    void navigateToThread(scopeThreadRef(target.environmentId, target.id));
+    return true;
+  };
+  // The composer's send-and-jump shortcut opens the last chat through this.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- registers this sidebar's last-thread jump in the module-level jumpToLastThread registry
+  useEffect(() => registerJumpToLastThread(openLastQueueThread), [openLastQueueThread]);
 
   const handleThreadFileDrop = async (threadRef: ScopedThreadRef, files: File[]) => {
     const dropId = queuePendingFileDrop({ threadRef, files });
@@ -1814,6 +1839,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   useLayoutEffect(() => {
     projectGroupsRef.current = projectGroups;
     orderedThreadKeysRef.current = orderedThreadKeys;
+    queueThreadKeysRef.current = queueThreadKeys;
     threadByKeyRef.current = threadByKey;
     settledThreadKeysRef.current = settledThreadKeys;
     snoozedThreadKeysRef.current = snoozedThreadKeys;
@@ -2296,6 +2322,15 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         }
       })();
     },
+  );
+  // The thread.snooze shortcut parks the open thread through this same path.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- registers this sidebar's snooze handler in the module-level snoozeAndAdvance registry
+  useEffect(
+    () =>
+      registerSnoozeAndAdvance((threadRef, snoozedUntil) =>
+        attemptSnooze(threadRef, { snoozedUntil }),
+      ),
+    [attemptSnooze],
   );
 
   const handleMultiSelectContextMenu = useStableCallback(
@@ -2946,6 +2981,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         );
         return;
       }
+      if (command === "thread.jumpLast") {
+        navigateToThreadKey(
+          resolveLastQueueThreadKey({ queueThreadKeys, leavingThreadKey: routeRowThreadKey }),
+        );
+        return;
+      }
       const jumpIndex = threadJumpIndexFromCommand(command ?? "");
       if (jumpIndex === null) return;
       navigateToThreadKey(orderedThreadKeys[jumpIndex] ?? null);
@@ -2956,6 +2997,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     keybindings,
     navigateToThread,
     orderedThreadKeys,
+    queueThreadKeys,
     routeRowThreadKey,
     routeThreadRef,
     threadByKey,
@@ -3488,6 +3530,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             jumpLabel={
                               showJumpHints ? (jumpLabelByKey.get(threadKey) ?? null) : null
                             }
+                            jumpNumber={jumpNumberByKey.get(threadKey) ?? null}
                             currentEnvironmentId={primaryEnvironmentId}
                             environmentLabel={
                               environmentLabelById.get(thread.environmentId) ?? null

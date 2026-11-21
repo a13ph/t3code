@@ -45,6 +45,8 @@ const THREAD_KEYBINDING_COMMANDS = [
   "thread.pin",
   "thread.regenerateTitle",
   "thread.undo",
+  "thread.jumpLast",
+  "thread.snooze",
   ...THREAD_JUMP_KEYBINDING_COMMANDS,
 ] as const;
 
@@ -93,6 +95,7 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "composer.sendBackground",
   "composer.sendAndNewThread",
   "composer.dictation",
+  "composer.sendAndJumpLast",
   "composer.host",
   "composer.cycleHost",
   "composer.effort",
@@ -106,6 +109,10 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "chat.newLocal",
   "chat.newWithoutProject",
   "chat.find",
+  "chat.turn.previous",
+  "chat.turn.next",
+  "chat.turn.first",
+  "chat.turn.last",
   "editor.openFavorite",
   "usage.cost",
   "usage.tokens",

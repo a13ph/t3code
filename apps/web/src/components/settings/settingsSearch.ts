@@ -532,6 +532,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     ],
   },
   {
+    id: "always-show-jump-numbers",
+    title: msg("Always show thread numbers"),
+    to: "/settings/general",
+    searchTerms: [msg("jump hints shortcut keyboard sidebar badge pinned 1-9 modifier")],
+  },
+  {
     id: "guest-links",
     title: msg("Guest links"),
     to: "/settings/labs",

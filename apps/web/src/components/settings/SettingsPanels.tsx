@@ -532,6 +532,9 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.sidebarWorkingShelfEnabled !== DEFAULT_UNIFIED_SETTINGS.sidebarWorkingShelfEnabled
       ? [gt("Working section")]
       : []),
+    ...(settings.sidebarAlwaysShowJumpHints !== DEFAULT_UNIFIED_SETTINGS.sidebarAlwaysShowJumpHints
+      ? [gt("Thread numbers")]
+      : []),
     ...(settings.sidebarAutoSettleAfterDays !== DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays
       ? [gt("Auto-settle inactive threads")]
       : []),
@@ -719,6 +722,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       sidebarProjectGroupingMode: DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode,
       sidebarProjectSortOrder: DEFAULT_UNIFIED_SETTINGS.sidebarProjectSortOrder,
       sidebarWorkingShelfEnabled: DEFAULT_UNIFIED_SETTINGS.sidebarWorkingShelfEnabled,
+      sidebarAlwaysShowJumpHints: DEFAULT_UNIFIED_SETTINGS.sidebarAlwaysShowJumpHints,
       sidebarAutoSettleAfterDays: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays,
       sidebarAutoSettleKeepPullRequests: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleKeepPullRequests,
       sidebarAutoSettleOnMerge: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge,
@@ -962,6 +966,34 @@ export function GeneralSettingsPanel() {
                 updateSettings({ sidebarWorkingShelfEnabled: Boolean(checked) })
               }
               aria-label={gt("Working section")}
+            />
+          }
+        />
+        <SettingsRow
+          {...setting("always-show-jump-numbers")}
+          description={gt(
+            "Keep the jump shortcut on the first nine sidebar threads, so you can jump without holding the modifier first.",
+          )}
+          resetAction={
+            settings.sidebarAlwaysShowJumpHints !==
+            DEFAULT_UNIFIED_SETTINGS.sidebarAlwaysShowJumpHints ? (
+              <SettingResetButton
+                ariaLabel={gt("Reset thread numbers to default")}
+                onClick={() =>
+                  updateSettings({
+                    sidebarAlwaysShowJumpHints: DEFAULT_UNIFIED_SETTINGS.sidebarAlwaysShowJumpHints,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.sidebarAlwaysShowJumpHints}
+              onCheckedChange={(checked) =>
+                updateSettings({ sidebarAlwaysShowJumpHints: Boolean(checked) })
+              }
+              aria-label={gt("Always show thread numbers")}
             />
           }
         />

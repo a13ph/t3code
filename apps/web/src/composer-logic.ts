@@ -27,7 +27,7 @@ import {
 
 export type ComposerTriggerKind = "path" | "pull-request" | "slash-command" | "skill";
 export type ComposerSlashCommand = "model" | "side" | "btw" | "clear";
-export type ComposerSubmissionIntent = "foreground" | "background" | "alternate";
+export type ComposerSubmissionIntent = "foreground" | "background" | "alternate" | "jumpLast";
 
 export interface ComposerTrigger {
   kind: ComposerTriggerKind;
@@ -93,6 +93,7 @@ export function composerSubmissionIntentForKey(input: {
   if (command === "composer.sendAlternate" && input.isRunning) return "alternate";
   if (command === "composer.sendBackground" && input.isDraftThread) return "background";
   if (command === "composer.sendAndNewThread" && !input.isDraftThread) return "background";
+  if (command === "composer.sendAndJumpLast" && !input.isDraftThread) return "jumpLast";
   if (command !== null || event.key !== "Enter" || event.shiftKey || event.altKey) return null;
   if (
     composerRequiresModifier(input.sendShortcut, input.prompt ?? "") &&

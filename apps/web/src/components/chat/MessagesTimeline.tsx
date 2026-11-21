@@ -10,6 +10,7 @@ import { useChatCanvas } from "./ChatCanvasContext";
 import { WorkLogBlock } from "./WorkLog";
 import { TimelinePendingApprovalRow } from "./TimelinePendingApprovalRow";
 import type { WorktreeSetupSnapshot } from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
 import { deriveTimelineMinimapItems } from "./timelineMinimapItems";
 import {
   type AssistantCitation,
@@ -39,8 +40,8 @@ import {
   memo,
   use,
   useContext,
-  useLayoutEffect,
   useEffect,
+  useLayoutEffect,
   useEffectEvent,
   useRef,
   useState,
@@ -87,12 +88,18 @@ import {
   resolveTimelineMinimapVisibleRange,
   resolveTimelineMinimapHitStripWidth,
   TIMELINE_MINIMAP_TARGET_OFFSET,
+  resolveTimelineTurnNavigationIndex,
+  timelineTurnNavigationFromCommand,
   timelineTurnFoldRunIdsByEntryId,
   liveAnswerPreview,
   type MessagesTimelineRow,
   type TimelineLatestRun,
 } from "./MessagesTimeline.logic";
 import { type ThreadFindMatch } from "./threadFind";
+import { resolveShortcutCommand } from "../../keybindings";
+import { isEditableFocused } from "../../lib/editableFocus";
+import { isTerminalFocused } from "../../lib/terminalFocus";
+import { primaryServerKeybindingsAtom } from "../../state/server";
 import { useThreadFindNavigation } from "./useThreadFindNavigation";
 import { TooltipScrollDismissArea } from "../ui/tooltip";
 import { WorktreeSetupCard } from "./WorktreeSetupCard";
@@ -891,6 +898,41 @@ const ConversationTimeline = memo(function ConversationTimeline({
   const [minimapHitStripWidth, setMinimapHitStripWidth] = useState(0);
   const [minimapCurrentIndex, setMinimapCurrentIndex] = useState<number | null>(null);
   const [minimapAtEnd, setMinimapAtEnd] = useState(false);
+  // The turn navigation keys move between the minimap's turns, as its
+  // buttons do. An effect event keeps the listener from re-binding on every scroll tick.
+  const keybindings = useAtomValue(primaryServerKeybindingsAtom);
+  const navigateTurnFromKey = useEffectEvent((event: globalThis.KeyboardEvent) => {
+    if (event.defaultPrevented) return;
+    const command = resolveShortcutCommand(event, keybindings, {
+      context: {
+        terminalFocus: isTerminalFocused(),
+        editableFocus: isEditableFocused(event.target),
+      },
+    });
+    const direction = timelineTurnNavigationFromCommand(command);
+    if (direction === null) return;
+    const targetIndex = resolveTimelineTurnNavigationIndex({
+      itemCount: minimapItems.length,
+      currentIndex: minimapCurrentIndex,
+      direction,
+    });
+    const target = targetIndex === null ? undefined : minimapItems[targetIndex];
+    if (!target) return;
+    event.preventDefault();
+    event.stopPropagation();
+    navigateTimeline();
+    void listRef.current?.scrollToIndex({
+      index: target.rowIndex,
+      animated: !window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+      viewOffset: TIMELINE_MINIMAP_TARGET_OFFSET,
+    });
+  });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- subscribes to window keydown for the turn navigation shortcuts while the timeline is mounted
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => navigateTurnFromKey(event);
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
   const handleAnchorReady = (info: { anchorIndex: number | undefined }) => {
     if (anchorMessageId !== null && info.anchorIndex !== undefined) {
       onAnchorReady(anchorMessageId, info.anchorIndex);
