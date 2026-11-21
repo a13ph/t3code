@@ -330,4 +330,44 @@ describe("useResolvedLink unavailable", () => {
     await settle(() => servers.state.views.set(OTHER, answer(TARGET)));
     expect(seen.at(-1)).toMatchObject({ _tag: "found", environmentId: OTHER });
   });
+
+  it("keeps resolving while every server's program is unavailable, and asks again each 15 s", async () => {
+    using _timers = fakeTimers();
+    using _servers = serving([environment(OWN, "own"), environment(OTHER, "other")]);
+    await using _screen = await render(<Probe />, { router: false });
+    const unavailableEverywhere = async () => {
+      await settle(() => servers.state.views.set(OWN, answer({ unavailable: true })));
+      await settle(() => servers.state.views.set(OTHER, answer({ unavailable: true })));
+    };
+    await unavailableEverywhere();
+    expect(last()).toBe("resolving");
+    await advance(6_500);
+    await unavailableEverywhere();
+    expect(servers.state.refreshed).toEqual([OWN, OTHER]);
+    expect(last()).toBe("resolving");
+    await advance(14_000);
+    expect(servers.state.refreshed).toEqual([OWN, OTHER]);
+    await advance(1_000);
+    expect(servers.state.refreshed).toEqual([OWN, OTHER, OWN]);
+    expect(last()).toBe("resolving");
+    await settle(() => servers.state.views.set(OWN, answer(TARGET)));
+    expect(found()).toMatchObject({ _tag: "found", environmentId: OWN, target: TARGET });
+  });
+
+  it("is missing as before once a server says the link is not there, though another is unavailable", async () => {
+    using _timers = fakeTimers();
+    using _servers = serving([environment(OWN, "own"), environment(OTHER, "other")]);
+    await using _screen = await render(<Probe />, { router: false });
+    const oneMissOneUnavailable = async () => {
+      await settle(() => servers.state.views.set(OWN, answer({ unavailable: true })));
+      await settle(() => servers.state.views.set(OTHER, answer(null)));
+    };
+    await oneMissOneUnavailable();
+    await advance(6_500);
+    await oneMissOneUnavailable();
+    expect(last()).toBe("missing");
+    await advance(60_000);
+    expect(servers.state.refreshed).toEqual([OWN, OTHER]);
+    expect(last()).toBe("missing");
+  });
 });
