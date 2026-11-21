@@ -50,6 +50,7 @@ import {
 } from "@t3tools/client-runtime/environment";
 import { createModelSelection } from "@t3tools/shared/model";
 import { type SetStateAction, useLayoutEffect, useRef } from "react";
+import { jumpToLastThread } from "../../jumpToLastThread";
 import { useNavigate } from "@tanstack/react-router";
 import {
   isAtomCommandInterrupted,
@@ -417,6 +418,9 @@ export function useComposerSend(input: ComposerSendInput) {
     },
   ) => {
     e?.preventDefault();
+    // Send-and-jump sends like a plain send, then opens the last chat.
+    const jumpLastAfterSend = submissionIntent === "jumpLast";
+    if (jumpLastAfterSend) submissionIntent = "foreground";
     // What the user pressed send on; uploads below can take a while, and a redirect must not
     // decline approvals for a draft that changed meanwhile.
     const promptAtSend = promptRef.current;
@@ -1543,6 +1547,10 @@ export function useComposerSend(input: ComposerSendInput) {
           releaseDraftAttachments(composerAttachmentsSnapshot);
         }
         acknowledgeActiveThreadWoke();
+        // Only if the user is still on the thread they replied in.
+        if (jumpLastAfterSend && currentRouteThreadKeyRef.current === routeThreadKey) {
+          jumpToLastThread(routeThreadKey);
+        }
         // A draft still on screen finalizes once its thread route takes over.
         if (sentDraftThreadRef) {
           if (backgroundDraftOpened || currentRouteThreadKeyRef.current !== routeThreadKey) {

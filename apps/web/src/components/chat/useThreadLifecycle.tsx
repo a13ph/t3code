@@ -37,7 +37,9 @@ import {
   isBackgroundWorkStopPending,
 } from "@t3tools/client-runtime/state/thread-execution";
 import { useAcknowledgeThreadWoke, useThreadActions } from "../../hooks/useThreadActions";
-import { settleAndAdvance } from "../../settleAndAdvance";
+import { settleAndAdvance, snoozeAndAdvance } from "../../settleAndAdvance";
+import { pickSnoozePreset } from "../snoozeShortcut";
+import { useClientSettings } from "../../hooks/useSettings";
 import type { ChatShortcutCommands } from "./useChatShortcuts";
 import { resolveThreadLastVisitedAt } from "../Sidebar.logic";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
@@ -276,6 +278,10 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
   const unsnoozeThreadMutation = useOrchestrationCommand(threadEnvironment.unsnooze, {
     reportFailure: false,
   });
+  const snoozeThreadMutation = useOrchestrationCommand(threadEnvironment.snooze, {
+    reportFailure: false,
+  });
+  const timestampFormat = useClientSettings((s) => s.timestampFormat);
   const [unsnoozingThreadKey, setUnsnoozingThreadKey] = useState<string | null>(null);
   const isUnsnoozing = unsnoozingThreadKey !== null && unsnoozingThreadKey === activeThreadKey;
   const handleUnsnoozeActiveThread = async () => {
@@ -729,6 +735,33 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
       }).then((result) => {
         const toast = titleRegenerationToast([result]);
         if (toast) toastManager.add(toast);
+      });
+    },
+    "thread.snooze": ({ event }) => {
+      if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return false;
+      if (event.repeat || !activeThreadShell || !activeThreadRef || !supportsSnooze) return;
+      // Snoozed: the same key wakes it, as the thread menu's Wake item does.
+      if (activeThreadSnoozed) {
+        void handleUnsnoozeActiveThread();
+        return;
+      }
+      const threadRef = activeThreadRef;
+      const headerRect = document
+        .querySelector("[data-thread-title-chevron]")
+        ?.getBoundingClientRect();
+      void pickSnoozePreset(
+        headerRect
+          ? { x: headerRect.left, y: headerRect.bottom + 4 }
+          : { x: Math.round(window.innerWidth / 2), y: 64 },
+        timestampFormat,
+      ).then((preset) => {
+        if (!preset) return;
+        // Same as the sidebar's Snooze: snooze, then open the next thread.
+        if (snoozeAndAdvance(threadRef, preset.snoozedUntil)) return;
+        void snoozeThreadMutation({
+          environmentId: threadRef.environmentId,
+          input: { threadId: threadRef.threadId, snoozedUntil: preset.snoozedUntil },
+        }).then(toastThreadActionFailure("Failed to snooze thread"));
       });
     },
   } satisfies ChatShortcutCommands;
