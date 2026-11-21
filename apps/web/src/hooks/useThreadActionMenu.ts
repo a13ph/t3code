@@ -183,7 +183,10 @@ export function useThreadActionMenu(input: {
                 threadRef.environmentId,
               );
         if (!preset) return;
-        if (afterSettleOrSnooze === "oldest_waiting" && snoozeAndAdvance(threadRef, preset)) {
+        if (
+          afterSettleOrSnooze === "oldest_waiting" &&
+          snoozeAndAdvance(threadRef, preset.snoozedUntil)
+        ) {
           return;
         }
         const result = await snoozeThread(threadRef, preset.snoozedUntil);
