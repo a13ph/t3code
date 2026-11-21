@@ -1682,12 +1682,15 @@ function ReplacedReplyHeader(props: {
   readonly onToggle: () => void;
   readonly iconSubtleColor: ColorValue;
 }) {
+  const gt = useGT();
   const summary = firstLine(props.text) ?? "";
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`Replaced reply: ${summary}`}
-      accessibilityHint={`Double tap to ${props.expanded ? "hide" : "show"} the reply.`}
+      accessibilityLabel={gt("Replaced reply: {summary}", { summary })}
+      accessibilityHint={
+        props.expanded ? gt("Double tap to hide the reply.") : gt("Double tap to show the reply.")
+      }
       accessibilityState={{ expanded: props.expanded }}
       hitSlop={4}
       className="min-h-9 flex-row items-center gap-1.5 py-1.5"
@@ -1704,7 +1707,7 @@ function ReplacedReplyHeader(props: {
         type="monochrome"
       />
       <Text numberOfLines={1} className="shrink-0 font-t3-medium text-sm text-foreground-muted">
-        Replaced reply
+        {gt("Replaced reply")}
       </Text>
       <Text numberOfLines={1} className="min-w-0 shrink text-sm text-foreground-muted">
         {summary}

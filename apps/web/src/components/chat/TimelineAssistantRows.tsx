@@ -48,6 +48,7 @@ function ReplacedReplyToggle({
   replacedReply: NonNullable<Extract<TimelineRow, { kind: "message" }>["replacedReply"]>;
 }) {
   const ctx = use(TimelineRowCtx);
+  const gt = useGT();
   const summary = firstLine(row.message.text) ?? "";
   return (
     <button
@@ -58,7 +59,7 @@ function ReplacedReplyToggle({
       className="flex w-full min-w-0 cursor-pointer select-none items-center gap-2 rounded-md px-1 py-1 text-left text-xs transition-colors hover:bg-muted/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
     >
       <MessageSquareXIcon className="size-3.5 shrink-0 text-muted-foreground" />
-      <span className="shrink-0 font-medium text-foreground/80">Replaced reply</span>
+      <span className="shrink-0 font-medium text-foreground/80">{gt("Replaced reply")}</span>
       <span className="min-w-0 truncate text-muted-foreground">{summary}</span>
     </button>
   );
