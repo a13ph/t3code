@@ -33,7 +33,11 @@ import {
   SLOW_COMMAND,
   SLOW_COMMAND_REPLY,
 } from "./ClaudeKeeper.testkit.ts";
-import { detachKeeperChildren, keeperDetachedThreads } from "./ClaudeKeeperSpawn.ts";
+import {
+  detachKeeperChildren,
+  keeperDetachedThreads,
+  keeperTurnStateThreads,
+} from "./ClaudeKeeperSpawn.ts";
 // @ts-ignore - plain ESM without types
 import { request as keeperRequest } from "../../t3Keeper/shim.mjs";
 
@@ -236,6 +240,56 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
           runningItem.ordinal,
         );
         yield* after.close;
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            realQueryRunner,
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+          ),
+        ),
+      ),
+    );
+
+    // The turn state a shutdown records is kept per thread only for a CLI
+    // in the keeper, and only while its query runs.
+    it.effect("keeps a thread's turn state only while its CLI runs in the keeper", () =>
+      Effect.gen(function* () {
+        const runTurn = (threadId: ThreadId) =>
+          Effect.gen(function* () {
+            const fake = yield* fakeClaudeCli;
+            const session = yield* openSession(
+              yield* makeKeeperTestAdapter(fake.cli, fake.dir),
+              threadId,
+              fake.dir,
+            );
+            const providerThread = yield* session.runtime.ensureThread({
+              threadId,
+              modelSelection,
+              runtimePolicy: runtimePolicy(fake.dir),
+            });
+            const now = yield* DateTime.now;
+            yield* session.runtime.startTurn(
+              turnInput({ threadId, providerThread, now, cwd: fake.dir }),
+            );
+            yield* session.awaitEvent((event) => toolItem(event)?.status === "running");
+            const whileRunning = keeperTurnStateThreads().includes(threadId);
+            fake.release();
+            yield* session.awaitEvent((event) => event.type === "turn.terminal");
+            yield* session.close;
+            return { whileRunning, afterClose: keeperTurnStateThreads().includes(threadId) };
+          }).pipe(Effect.scoped);
+
+        const plain = yield* runTurn(ThreadId.make("thread-turn-state-plain"));
+        assert.deepEqual(plain, { whileRunning: false, afterClose: false });
+        const kept = yield* Effect.scoped(
+          Effect.gen(function* () {
+            yield* keeperSocket;
+            return yield* runTurn(ThreadId.make("thread-turn-state-kept"));
+          }),
+        );
+        assert.deepEqual(kept, { whileRunning: true, afterClose: false });
       }).pipe(
         Effect.provide(
           Layer.mergeAll(
