@@ -1,0 +1,47 @@
+name: Fork format diff
+
+# Prints the formatter's and the lint fixer's changes to the files the fork's
+# changed-files check flagged, on a ci/ branch, and keeps them as a patch.
+on:
+  push:
+    branches: ["ci/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  fmt:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
+          sparse-checkout-cone-mode: false
+      - uses: ./.github/actions/setup-ci-deps
+      - run: |
+          vp fmt \
+            apps/mobile/src/lib/markdownLinks.ts \
+            apps/server/src/orchestration-v2/Adapters/ClaudeAgentSdkQueryRunner.test.ts \
+            apps/server/src/orchestration-v2/Adapters/ClaudeKeeper.testkit.ts \
+            apps/server/src/orchestration-v2/ProviderTurnStartService.ts \
+            apps/server/src/orchestration-v2/RunExecutionService.ts \
+            apps/server/src/t3Keeper/keeper.mjs \
+            apps/server/src/t3Keeper/lines.mjs \
+            apps/server/src/t3Keeper/shim.mjs \
+            apps/web/src/components/settings/settingsSearch.ts \
+            apps/web/src/openInApps.test.ts \
+            apps/web/src/remoteFileLinks.test.ts \
+            apps/web/src/remoteFileLinks.ts \
+            packages/shared/src/threadFindText.test.ts
+      - run: git diff > fmt.patch; cat fmt.patch
+      - run: vp run --filter t3 --filter @t3tools/web typecheck > tsc.log 2>&1 || true
+      - uses: actions/upload-artifact@v6
+        with:
+          name: fmt-patch
+          path: |
+            fmt.patch
+            tsc.log
