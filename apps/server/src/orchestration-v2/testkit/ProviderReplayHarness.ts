@@ -282,6 +282,14 @@ export function layerWithRegistry<Error>(
     >;
     readonly runEffectWorker?: boolean;
     readonly runContinuationWorker?: boolean;
+    // The queue the worker drains, when an adapter built outside this layer
+    // offers its wake turns to it.
+    readonly continuationRequests?: {
+      readonly offer: (
+        request: ProviderContinuationRequests.ProviderContinuationRequest,
+      ) => Effect.Effect<void>;
+      readonly take: Effect.Effect<ProviderContinuationRequests.ProviderContinuationRequest>;
+    };
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
     /** Lets a test hold a projection read open to order concurrent dispatches. */
@@ -313,7 +321,14 @@ export function layerWithRegistry<Error>(
   const layerDatabase = options.databaseLayer ?? SqlitePersistence.layerMemory;
   // Share one continuation queue across adapters, orchestrator, and worker through layer memoization.
   const layerContinuationRequests =
-    options.runContinuationWorker === true ? ProviderContinuationRequests.layer : Layer.empty;
+    options.runContinuationWorker !== true
+      ? Layer.empty
+      : options.continuationRequests === undefined
+        ? ProviderContinuationRequests.layer
+        : Layer.succeed(
+            ProviderContinuationRequests.ProviderContinuationRequests,
+            options.continuationRequests,
+          );
   const layerProvidedRegistry = registryLayer.pipe(
     Layer.provide(Layer.merge(layerContinuationRequests, McpProviderSessions.layer)),
   );
