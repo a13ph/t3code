@@ -26,7 +26,7 @@ const DELIVERY_RETRY_MS = 60_000;
 /** The delivery loop wakes at least this often, so a clock jump cannot strand a row. */
 const DELIVERY_MAX_SLEEP_MS = 60 * 60_000;
 /** The notification summary every delivered wakeup carries. */
-export const DELIVERY_SUMMARY = "Scheduled wakeup";
+const DELIVERY_SUMMARY = "Scheduled wakeup";
 
 export class ClaudeWakeParkingError extends Schema.TaggedError<ClaudeWakeParkingError>()(
   "ClaudeWakeParkingError",

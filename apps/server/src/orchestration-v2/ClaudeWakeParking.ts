@@ -13,16 +13,16 @@ const MINUTE_MS = 60_000;
 /** A wakeup due before the next idle check plus this lead keeps its process. */
 export const WAKE_LEAD_MS = 2 * MINUTE_MS;
 /** A wake turn this close to a one-shot's due time is taken as its firing. */
-export const WAKE_MATCH_WINDOW_MS = 90_000;
+const WAKE_MATCH_WINDOW_MS = 90_000;
 /** Claude Code expires a recurring job this long after its creation. */
 export const RECURRING_JOB_MAX_AGE_MS = 7 * 24 * 60 * MINUTE_MS;
 
-export const SCHEDULE_WAKEUP_TOOL = "ScheduleWakeup";
-export const CRON_CREATE_TOOL = "CronCreate";
-export const CRON_DELETE_TOOL = "CronDelete";
+const SCHEDULE_WAKEUP_TOOL = "ScheduleWakeup";
+const CRON_CREATE_TOOL = "CronCreate";
+const CRON_DELETE_TOOL = "CronDelete";
 
 /** The prompt `/loop` without an interval schedules; sent back, it must be the command. */
-export const AUTONOMOUS_LOOP_PROMPT = "<<autonomous-loop-dynamic>>";
+const AUTONOMOUS_LOOP_PROMPT = "<<autonomous-loop-dynamic>>";
 
 /** Seconds until the wakeup, from "Next wakeup scheduled for 10:10:00 (in 602s)". */
 export function parseScheduleWakeupDelaySeconds(text: string): number | null {
@@ -120,7 +120,7 @@ function parseCronField(text: string, min: number, max: number): Set<number> | n
 }
 
 /** Parses a five-field cron expression; null when it is not one this matcher reads. */
-export function parseCron(expression: string): CronSpec | null {
+function parseCron(expression: string): CronSpec | null {
   const fields = expression.trim().split(/\s+/u);
   if (fields.length !== 5) return null;
   const [minuteText, hourText, dayOfMonthText, monthText, dayOfWeekText] = fields as [

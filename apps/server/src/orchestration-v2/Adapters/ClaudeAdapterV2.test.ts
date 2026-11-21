@@ -16221,7 +16221,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     }
     return { orphaned, started, orphanSeen };
   });
-  const scheduleWakeupFrames = (toolUseId: string, delaySeconds: number) => [
+  const loopWakeupFrames = (toolUseId: string, delaySeconds: number) => [
     claudeSdkFrame({
       type: "assistant",
       message: {
@@ -16293,7 +16293,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           attachments: [],
         });
         yield* harness.runtime.startTurn(input);
-        for (const frame of scheduleWakeupFrames("toolu_stop_000000000001", 600)) {
+        for (const frame of loopWakeupFrames("toolu_stop_000000000001", 600)) {
           yield* harness.offerAndWait(frame);
         }
         yield* harness.runtime.interruptTurn({
@@ -16320,7 +16320,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
         ),
       ),
     ),
@@ -16343,7 +16348,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           attachments: [],
         });
         yield* harness.runtime.startTurn(input);
-        for (const frame of scheduleWakeupFrames("toolu_stop_000000000002", 60)) {
+        for (const frame of loopWakeupFrames("toolu_stop_000000000002", 60)) {
           yield* harness.offerAndWait(frame);
         }
         yield* harness.offerAndWait(wakeTurnStartedFrame);
@@ -16357,7 +16362,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.deepEqual(recorded.orphaned, []);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
         ),
       ),
     ),
@@ -16383,7 +16393,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               attachments: [],
             }),
           );
-          for (const frame of scheduleWakeupFrames("toolu_restart_000000001", 60)) {
+          for (const frame of loopWakeupFrames("toolu_restart_000000001", 60)) {
             yield* harness.offerAndWait(frame);
           }
           yield* harness.offerAndWait(
@@ -16405,7 +16415,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           );
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              NodeCrypto.layer,
+            ),
           ),
         ),
       ),
@@ -16428,7 +16443,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           }),
         );
         assert.deepEqual(recorded.started, []);
-        for (const frame of scheduleWakeupFrames("toolu_crash_00000000001", 60)) {
+        for (const frame of loopWakeupFrames("toolu_crash_00000000001", 60)) {
           yield* harness.offerAndWait(frame);
         }
         yield* harness.offerAndWait(wakeTurnStartedFrame);
@@ -16462,7 +16477,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         ]);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
         ),
       ),
     ),
@@ -16491,7 +16511,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               attachments: [],
             }),
           );
-          for (const frame of scheduleWakeupFrames("toolu_release_000000001", 600)) {
+          for (const frame of loopWakeupFrames("toolu_release_000000001", 600)) {
             yield* harness.offerAndWait(frame);
           }
           const wakeThreads = harness.runtime.wakeThreads;
@@ -16503,7 +16523,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       assert.deepEqual(recordedOutside, []);
     }).pipe(
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
       ),
     ),
   );

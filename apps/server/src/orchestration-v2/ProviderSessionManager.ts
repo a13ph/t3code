@@ -1373,6 +1373,7 @@ export const layerWithOptions = (
         readonly keepIfBusyOtherThan?: OwnBusyTurns;
         readonly keepIf?: Effect.Effect<boolean>;
         readonly gracefulSubscribers?: boolean;
+        readonly eventStreamCause?: Cause.Cause<ProviderAdapter.ProviderAdapterV2Error>;
       }) =>
         Effect.acquireUseRelease(
           removeLiveEntry(input),
