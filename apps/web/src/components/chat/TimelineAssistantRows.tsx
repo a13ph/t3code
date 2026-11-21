@@ -3,6 +3,7 @@ import { MessageId, type RunId, type TurnItemId } from "@t3tools/contracts";
 import { canForkProjectedAssistantItem } from "@t3tools/client-runtime/state/thread-workflows";
 import { agentWorkingDirectories } from "@t3tools/client-runtime/workspace-basename-lookup";
 import { T, useGT, useMessages } from "gt-react";
+import { firstLine } from "@t3tools/client-runtime/work-log/replaced-replies";
 import { memo, use, useState } from "react";
 import { type ChatMessage, type TurnDiffSummary } from "../../types";
 import ChatMarkdown from "../ChatMarkdown";
@@ -47,7 +48,7 @@ function ReplacedReplyToggle({
   replacedReply: NonNullable<Extract<TimelineRow, { kind: "message" }>["replacedReply"]>;
 }) {
   const ctx = use(TimelineRowCtx);
-  const firstLine = row.message.text.split("\n").find((line) => line.trim() !== "") ?? "";
+  const summary = firstLine(row.message.text) ?? "";
   return (
     <button
       type="button"
@@ -58,7 +59,7 @@ function ReplacedReplyToggle({
     >
       <MessageSquareXIcon className="size-3.5 shrink-0 text-muted-foreground" />
       <span className="shrink-0 font-medium text-foreground/80">Replaced reply</span>
-      <span className="min-w-0 truncate text-muted-foreground">{firstLine.trim()}</span>
+      <span className="min-w-0 truncate text-muted-foreground">{summary}</span>
     </button>
   );
 }
