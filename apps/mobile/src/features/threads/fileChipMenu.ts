@@ -18,6 +18,8 @@ import {
 export interface FileChipTarget {
   readonly fullPath?: string;
   readonly relativePath?: string;
+  /** On another environment, which this thread cannot read to share. */
+  readonly remote?: boolean;
 }
 
 export function fileChipClipboardPath(
@@ -34,6 +36,7 @@ export function resolveFileChipTarget(
 ): FileChipTarget | null {
   const presentation = resolveMarkdownLinkPresentation(href);
   if (presentation.kind !== "file") return null;
+  if (presentation.environmentId) return { fullPath: presentation.path, remote: true };
   const path = resolveFileLinkPath(workspaceRoot, presentation.path);
   if (path === null) return null;
   const relativePath = resolveWorkspaceRelativeFilePath(workspaceRoot, path);
@@ -82,7 +85,7 @@ export function fileChipMenu(
         ? [{ id: "copy-relative-path", title: resolve(msg("Copy relative path")) }]
         : []),
       { id: "open-file", title: resolve(msg("Open in file viewer")) },
-      ...(fileChipMetadata(target)
+      ...(!target.remote && fileChipMetadata(target)
         ? [
             {
               id: "save",

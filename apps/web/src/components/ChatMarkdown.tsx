@@ -13,10 +13,15 @@ import {
   resolveRemoteFileServer,
   type RemoteFileLink,
 } from "../remoteFileLinks";
-import { parseResolvedLinkHref, resolvedLinkHref, type ResolvedLinkRef } from "../resolvedLinks";
+import {
+  parseResolvedLinkHref,
+  resolvedLinkHref,
+  type ResolvedLinkRef,
+} from "@t3tools/client-runtime/resolved-links";
 import { useEnvironments } from "../state/environments";
 import { useLinkSchemes } from "../state/linkSchemes";
 import { MarkdownResolvedLink } from "./chat/MarkdownResolvedLink";
+import { MarkdownWikilink, NoteLinksContext } from "./files/noteLinks";
 import {
   isMarkdownFileLinkLabel,
   isWindowsDrivePathHref,
@@ -699,6 +704,8 @@ function useChatMarkdownState({
   const gt = useGT();
   const messages = useMessages();
   const resolvedTheme = useRenderedAppearance();
+  // Inside a note in the files panel, a followed file link stays in the note's tab.
+  const noteLinks = use(NoteLinksContext);
   const markdownRef = useRef<HTMLElement>(null);
   const mediaRequestId = useRef(0);
   const mediaScopeKey = [
@@ -1093,7 +1100,9 @@ function useChatMarkdownState({
   const openFileInPanel = (fileLinkMeta: MarkdownFileLinkMeta, panelPath: string) => {
     if (!threadRef) return;
     const openAt = (path: string) =>
-      useRightPanelStore.getState().openFile(threadRef, path, fileLinkMeta.line);
+      noteLinks
+        ? noteLinks.open(path, fileLinkMeta.line)
+        : useRightPanelStore.getState().openFile(threadRef, path, fileLinkMeta.line);
     if (
       fileLinkMeta.workspaceLookupPath === null ||
       !cwd ||
@@ -1436,6 +1445,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
       linkSchemes,
     } = use(ChatMarkdownRendererContext);
     const text = use(ChatMarkdownTextContext);
+    const noteLinks = use(NoteLinksContext);
     const citation = href ? parseAssistantCitationHref(href) : null;
     const before = node?.position?.start.offset;
     const after = node?.position?.end.offset;
@@ -1492,9 +1502,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
           threadRef={threadRef}
           theme={resolvedTheme}
           // An id the client cannot resolve says nothing to a reader; the path does.
-          fallback={
-            label || <code>{remoteFile.byEnvironmentId ? remoteFile.path : href}</code>
-          }
+          fallback={label || <code>{remoteFile.byEnvironmentId ? remoteFile.path : href}</code>}
         />
       );
     }
@@ -1754,15 +1762,31 @@ const CHAT_MARKDOWN_COMPONENTS = {
     const start = node?.position?.start.offset;
     const end = node?.position?.end.offset;
     const source = start !== undefined && end !== undefined ? text.slice(start, end) : "";
+    const wikilinkTarget = (props as Record<string, unknown>)["data-wikilink"];
+    const hasWikilinkAlias = "data-wikilink-alias" in props;
     const copyMarkdown =
-      source.startsWith("[") && source.includes("](")
-        ? source
-        : `[${(label || fileLinkMeta.basename).replace(/[\\[\]]/g, "\\$&")}](${normalizedHref})`;
-    return fileLinkChip(
+      typeof wikilinkTarget === "string"
+        ? `[[${wikilinkTarget}${hasWikilinkAlias ? `|${label.trim()}` : ""}]]`
+        : source.startsWith("[") && source.includes("](")
+          ? source
+          : `[${(label || fileLinkMeta.basename).replace(/[\\[\]]/g, "\\$&")}](${normalizedHref})`;
+    const chip = fileLinkChip(
       fileLinkMeta,
       copyMarkdown,
       normalizedHref,
       isMarkdownFileLinkLabel(label, normalizedHref) ? undefined : label.trim(),
+    );
+    if (typeof wikilinkTarget !== "string" || noteLinks === null) return chip;
+    return (
+      <MarkdownWikilink
+        target={wikilinkTarget}
+        written={label.trim()}
+        hasAlias={hasWikilinkAlias}
+        fallback={chip}
+        copyMarkdown={copyMarkdown}
+        threadRef={threadRef}
+        theme={resolvedTheme}
+      />
     );
   },
   code: function MarkdownCode({ node, children, className, ...props }) {

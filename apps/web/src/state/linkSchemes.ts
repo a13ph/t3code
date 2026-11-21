@@ -1,7 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { Atom } from "effect/reactivity";
 
-import { linkSchemesOf } from "../resolvedLinks";
+import { linkSchemesOf } from "@t3tools/client-runtime/resolved-links";
 import { environmentPresentations } from "./presentation";
 
 // A joined string, so a config snapshot that changes nothing here re-renders nothing.
