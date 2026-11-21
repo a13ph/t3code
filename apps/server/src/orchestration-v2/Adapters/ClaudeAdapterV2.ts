@@ -5314,6 +5314,9 @@ interface ClaudeLiveQueryContext {
   stopping: boolean;
   // A turn that had not attached when the CLI exited fails its start with this cause.
   exitCause: Cause.Cause<ClaudeAgentSdkQueryRunnerError> | undefined;
+  // Set when the CLI is ended inside a live session (a Stop, a restart for new
+  // settings): its ScheduleWakeup calls are parked as it exits.
+  orphanWakesOnExit: boolean;
   readonly subagentsFromEarlierProcesses: ReadonlySet<ActiveClaudeSubagent>;
   // Subagents this process still ran when a replacement took over; only its exit can end them.
   handedOffSubagents: ReadonlySet<ActiveClaudeSubagent>;
@@ -6471,6 +6474,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             readonly providerThreadId: ProviderThreadId;
           }
         >();
+        // The session manager's handlers for a CLI starting or ending outside a release.
+        let wakeEvents: ProviderAdapter.ProviderAdapterV2WakeEvents | null = null;
         const wakeTrackerFor = (nativeThreadId: string) => {
           const existing = wakeTrackers.get(nativeThreadId);
           if (existing !== undefined) return existing;
@@ -13439,6 +13444,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const closedExistingNativeThreadId = existing !== null ? existing.nativeThreadId : null;
           clearedNativeSessions.delete(nativeThreadId);
           if (existing !== null) {
+            existing.orphanWakesOnExit = true;
             yield* existing.query.close.pipe(Effect.ignore);
             if (existing.nativeThreadId !== nativeThreadId) {
               yield* clearWakeStateForNativeThread(existing.nativeThreadId);
@@ -13571,6 +13577,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             stopping: false,
             exitCause: undefined,
             handedOffSubagents: new Set(),
+            orphanWakesOnExit: false,
             subagentsFromEarlierProcesses: new Set(
               [...(yield* Ref.get(sessionSubagentsByTaskId)).values()].filter(
                 (subagent) => subagent.task.status === "running",
@@ -13599,6 +13606,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             threadId: turnInput.threadId,
             providerThreadId: turnInput.providerThread.id,
           });
+          // A resumed CLI restores its scheduled jobs; a fresh one has none.
+          if (shouldResume && wakeEvents !== null) {
+            yield* wakeEvents.processStarted({
+              threadId: turnInput.threadId,
+              providerThreadId: turnInput.providerThread.id,
+              nativeSessionId: nativeThreadId,
+            });
+          }
           // Read when a shutdown leaves this CLI in t3-keeper: what the next
           // server needs to tell this turn's result from another turn's.
           // Dropped when this query ends.
@@ -13726,10 +13741,24 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               }),
             ),
             Effect.ensuring(
-              Effect.sync(() => {
+              Effect.gen(function* () {
                 unregisterKeeperTurnState(turnInput.threadId, readKeeperTurnState);
-                // A wake turn the CLI ran ends with it; its wakeups stay listed for parking.
-                wakeTrackers.get(context.nativeThreadId)?.processEnded();
+                const tracker = wakeTrackers.get(context.nativeThreadId);
+                // A resumed CLI does not restore ScheduleWakeup calls, so a CLI
+                // ended inside a live session hands them to T3 now.
+                const orphans =
+                  context.orphanWakesOnExit && tracker !== undefined ? tracker.takeWakeups() : [];
+                // A wake turn the CLI ran ends with it; its other wakeups stay listed for parking.
+                tracker?.processEnded();
+                if (orphans.length > 0 && wakeEvents !== null) {
+                  yield* wakeEvents.orphaned({
+                    threadId: turnInput.threadId,
+                    providerThreadId: turnInput.providerThread.id,
+                    nativeSessionId: context.nativeThreadId,
+                    wakes: orphans,
+                    lastWakeupCallAtMs: tracker?.lastWakeupCallAtMs() ?? null,
+                  });
+                }
               }).pipe(Effect.andThen(Deferred.succeed(closed, undefined))),
             ),
             Effect.forkIn(sessionScope),
@@ -14303,6 +14332,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               next.add(turnInput.providerTurnId);
               return next;
             });
+            existing.orphanWakesOnExit = true;
             if (!(yield* Deferred.isDone(existing.closed))) {
               yield* existing.query.interrupt.pipe(
                 Effect.timeoutOption("10 seconds"),
@@ -14696,6 +14726,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           ),
           adoptWakes: (nativeSessionId, wakes) =>
             Effect.sync(() => wakeTrackerFor(nativeSessionId).adopt(wakes)),
+          setWakeEvents: (events) =>
+            Effect.sync(() => {
+              wakeEvents = events;
+            }),
           hasActiveSelfStartedTurn: Effect.sync(() =>
             [...wakeTrackers.values()].some((tracker) => tracker.wakeTurnActive()),
           ),

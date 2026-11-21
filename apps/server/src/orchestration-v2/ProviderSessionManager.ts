@@ -1528,17 +1528,18 @@ export const layerWithOptions = (
       };
 
       /**
-       * The thread's next process resumes its provider session, which restores
-       * its scheduled jobs by itself: they leave the parked table and go back
-       * to the runtime, so the next release parks them again.
+       * A process started and resumed its provider session, which restores its
+       * scheduled jobs by itself: they leave the parked table and go back to
+       * the runtime, so the next release parks them again.
        */
       const adoptParkedWakes = (
         runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime,
-        threadId: ThreadId,
+        route: ProviderAdapter.ProviderAdapterV2WakeRoute,
       ): Effect.Effect<void> => {
         const adopt = runtime.adoptWakes;
+        const threadId = route.threadId;
         if (Option.isNone(wakeParking) || adopt === undefined) return Effect.void;
-        return wakeParking.value.threadOpened(String(threadId)).pipe(
+        return wakeParking.value.processStarted(route).pipe(
           Effect.flatMap((rows) => {
             const bySession = new Map<
               string,
@@ -1567,6 +1568,19 @@ export const layerWithOptions = (
             }),
           ),
         );
+      };
+
+      /** Parks what an ended process held and hands a started one its jobs. */
+      const wireWakeEvents = (
+        runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime,
+      ): Effect.Effect<void> => {
+        const setWakeEvents = runtime.setWakeEvents;
+        if (Option.isNone(wakeParking) || setWakeEvents === undefined) return Effect.void;
+        const parking = wakeParking.value;
+        return setWakeEvents({
+          orphaned: (thread) => parking.parkOrphaned(thread),
+          processStarted: (route) => adoptParkedWakes(runtime, route),
+        });
       };
 
       // What a thread's live process holds now, for the parked-wakeup delivery.
@@ -3203,7 +3217,6 @@ export const layerWithOptions = (
                   threadId: input.threadId,
                   providerInstanceId: existing.runtime.instanceId,
                 });
-                if (!attached) yield* adoptParkedWakes(existing.runtime, input.threadId);
                 yield* touchActivity(input.providerSessionId);
                 return existing.exposedRuntime;
               }
@@ -3351,7 +3364,7 @@ export const layerWithOptions = (
               );
               yield* startEventPump(entry, sessionClosed);
               yield* scheduleIdleRelease(input.providerSessionId);
-              yield* adoptParkedWakes(runtime, input.threadId);
+              yield* wireWakeEvents(runtime);
               return exposedRuntime;
             }),
           ),

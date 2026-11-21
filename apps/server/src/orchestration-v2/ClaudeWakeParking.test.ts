@@ -5,19 +5,19 @@ import type { ProviderAdapterV2WakeThread } from "@t3tools/provider-core/server/
 
 import {
   type ParkedWake,
-  LATE_DELIVERY_LIMIT_MS,
   RECURRING_JOB_MAX_AGE_MS,
   WAKE_LEAD_MS,
   adoptedWake,
   decideIdleRelease,
   deliveryText,
+  heldByLiveProcess,
   makeClaudeWakeTracker,
   nextCronMatch,
+  nextDueAfterDelivery,
   parseCronCreateJobId,
   parseCronDeleteJobId,
   parseScheduleWakeupDelaySeconds,
   parkedWakeFromRow,
-  planDelivery,
   planPark,
   supersededWakeups,
 } from "./ClaudeWakeParking.ts";
@@ -231,7 +231,7 @@ describe("wake tracker", () => {
     expect(tracker.wakes()).toEqual([]);
   });
 
-  it("marks a self-started wake turn busy until it completes, and drops the one-shot it fired", () => {
+  it("marks a self-started wake turn busy until it completes, and drops the one-shot it fired then", () => {
     const tracker = makeClaudeWakeTracker();
     scheduleWakeup(tracker, "toolu_1", 600, NOW);
     tracker.observe(
@@ -239,9 +239,70 @@ describe("wake tracker", () => {
       NOW + 10 * MINUTE,
     );
     expect(tracker.wakeTurnActive()).toBe(true);
-    expect(tracker.wakes()).toEqual([]);
+    expect(tracker.wakes()).toEqual([
+      {
+        kind: "wakeup",
+        toolUseId: "toolu_1",
+        dueAtMs: NOW + 10 * MINUTE,
+        prompt: "<<autonomous-loop-dynamic>>",
+        firing: true,
+      },
+    ]);
     tracker.observe(lifecycle("completed", { command_uuid: "c1" }), NOW + 11 * MINUTE);
     expect(tracker.wakeTurnActive()).toBe(false);
+    expect(tracker.wakes()).toEqual([]);
+  });
+
+  it("drops the fired one-shot when its turn ends on a result frame or with the process", () => {
+    const byResult = makeClaudeWakeTracker();
+    scheduleWakeup(byResult, "toolu_1", 600, NOW);
+    byResult.observe(lifecycle("started", { wakeup_source: "schedule_wakeup" }), NOW + 10 * MINUTE);
+    byResult.observe({ type: "result", subtype: "success" }, NOW + 11 * MINUTE);
+    expect(byResult.wakes()).toEqual([]);
+    const byExit = makeClaudeWakeTracker();
+    scheduleWakeup(byExit, "toolu_1", 600, NOW);
+    byExit.observe(lifecycle("started", { wakeup_source: "schedule_wakeup" }), NOW + 10 * MINUTE);
+    byExit.processEnded();
+    expect(byExit.wakes()).toEqual([]);
+  });
+
+  it("keeps the wakeup a firing turn schedules, so its loop goes on", () => {
+    const tracker = makeClaudeWakeTracker();
+    scheduleWakeup(tracker, "toolu_1", 600, NOW);
+    tracker.observe(
+      lifecycle("started", { command_uuid: "c1", wakeup_source: "schedule_wakeup" }),
+      NOW + 10 * MINUTE,
+    );
+    scheduleWakeup(tracker, "toolu_2", 600, NOW + 11 * MINUTE);
+    tracker.observe(lifecycle("completed", { command_uuid: "c1" }), NOW + 12 * MINUTE);
+    expect(tracker.wakes()).toEqual([
+      {
+        kind: "wakeup",
+        toolUseId: "toolu_2",
+        dueAtMs: NOW + 21 * MINUTE,
+        prompt: "<<autonomous-loop-dynamic>>",
+      },
+    ]);
+  });
+
+  it("hands over its ScheduleWakeup calls but neither a firing one nor a job", () => {
+    const tracker = makeClaudeWakeTracker();
+    tracker.observe(toolUse("toolu_c", "CronCreate", { cron: "0 3 * * *", prompt: "poll" }), NOW);
+    tracker.observe(toolResult("toolu_c", "Scheduled recurring job 0a1b2c3d (daily)."), NOW);
+    scheduleWakeup(tracker, "toolu_1", 600, NOW);
+    expect(tracker.takeWakeups()).toEqual([
+      {
+        kind: "wakeup",
+        toolUseId: "toolu_1",
+        dueAtMs: NOW + 10 * MINUTE,
+        prompt: "<<autonomous-loop-dynamic>>",
+      },
+    ]);
+    expect(tracker.wakes().map((wake) => wake.kind)).toEqual(["cron"]);
+    scheduleWakeup(tracker, "toolu_2", 60, NOW);
+    tracker.observe(lifecycle("started", { wakeup_source: "schedule_wakeup" }), NOW + MINUTE);
+    expect(tracker.takeWakeups()).toEqual([]);
+    expect(tracker.wakes().map((wake) => wake.kind)).toEqual(["cron", "wakeup"]);
   });
 
   it("ends a wake turn on its result frame when no completed frame comes", () => {
@@ -399,6 +460,59 @@ describe("parking", () => {
     expect(due.type).toBe("none");
   });
 
+  it("parks a one-shot whose turn runs now as due now, and an overdue one when no process held it", () => {
+    const overdueJob = {
+      kind: "cron" as const,
+      jobId: "b2",
+      cron: "59 9 15 6 *",
+      prompt: "late",
+      recurring: false,
+      createdAtMs: NOW - 10 * MINUTE,
+      dueAtMs: NOW - MINUTE,
+    };
+    const firing = planPark({
+      nowMs: NOW,
+      threads: [
+        thread([
+          {
+            kind: "wakeup",
+            toolUseId: "toolu_1",
+            dueAtMs: NOW - MINUTE,
+            prompt: "p",
+            firing: true,
+          },
+          overdueJob,
+        ]),
+      ],
+    });
+    expect(
+      firing.type === "park" ? firing.rows.map((row) => [row.wakeId, row.dueAtMs]) : firing.type,
+    ).toEqual([["session-a:wakeup:toolu_1", NOW]]);
+    const firingJob = planPark({
+      nowMs: NOW,
+      threads: [thread([{ ...overdueJob, firing: true }])],
+    });
+    expect(
+      firingJob.type === "park" ? firingJob.rows.map((row) => [row.wakeId, row.dueAtMs]) : [],
+    ).toEqual([["session-a:cron:b2", NOW]]);
+    const orphaned = planPark({
+      nowMs: NOW,
+      sendOverdue: true,
+      threads: [
+        thread([
+          { kind: "wakeup", toolUseId: "toolu_2", dueAtMs: NOW - MINUTE, prompt: "p" },
+          overdueJob,
+        ]),
+      ],
+    });
+    expect(
+      orphaned.type === "park" ? orphaned.rows.map((row) => [row.wakeId, row.dueAtMs]) : [],
+    ).toEqual([
+      ["session-a:wakeup:toolu_2", NOW],
+      ["session-a:cron:b2", NOW],
+    ]);
+  });
+
   it("refuses a schedule it cannot read but keeps the rest, and skips an expired recurring job", () => {
     const unreadable = planPark({
       nowMs: NOW,
@@ -452,6 +566,35 @@ describe("parking", () => {
     expect(supersededWakeups([row, job], NOW - 1)).toEqual([]);
     expect(supersededWakeups([row, job], NOW + MINUTE)).toEqual([row]);
   });
+
+  it("finds a parked wakeup or job that a live process of its session still holds", () => {
+    const row = parked({});
+    const job = parked({
+      wakeId: "session-a:cron:a1",
+      kind: "cron",
+      jobId: "a1",
+      cron: "*/5 * * * *",
+    });
+    const cron = {
+      kind: "cron" as const,
+      jobId: "a1",
+      cron: "*/5 * * * *",
+      prompt: "p",
+      recurring: true,
+      createdAtMs: NOW,
+      dueAtMs: null,
+    };
+    const wakeup = { kind: "wakeup" as const, toolUseId: "toolu_1", dueAtMs: NOW, prompt: "p" };
+    expect(heldByLiveProcess(row, thread([wakeup]))).toBe(true);
+    expect(heldByLiveProcess(job, thread([cron]))).toBe(true);
+    expect(heldByLiveProcess(row, thread([cron]))).toBe(false);
+    expect(heldByLiveProcess(job, thread([wakeup]))).toBe(false);
+    expect(heldByLiveProcess(row, thread([{ ...wakeup, toolUseId: "toolu_2" }]))).toBe(false);
+    expect(heldByLiveProcess(job, thread([{ ...cron, jobId: "b2" }]))).toBe(false);
+    expect(heldByLiveProcess(row, { ...thread([wakeup]), nativeSessionId: "session-b" })).toBe(
+      false,
+    );
+  });
 });
 
 describe("delivery", () => {
@@ -462,7 +605,7 @@ describe("delivery", () => {
   });
 
   it("removes a one-shot and moves a recurring job on to its next match", () => {
-    expect(planDelivery(parked({}), NOW + 30 * MINUTE)).toEqual({ send: true, nextDueAtMs: null });
+    expect(nextDueAfterDelivery(parked({}), NOW + 30 * MINUTE)).toBeNull();
     const oneShotJob = parked({
       wakeId: "session-a:cron:b2",
       kind: "cron",
@@ -471,10 +614,7 @@ describe("delivery", () => {
       recurring: false,
       dueAtMs: local(2026, 6, 15, 10, 15),
     });
-    expect(planDelivery(oneShotJob, local(2026, 6, 15, 10, 15))).toEqual({
-      send: true,
-      nextDueAtMs: null,
-    });
+    expect(nextDueAfterDelivery(oneShotJob, local(2026, 6, 15, 10, 15))).toBeNull();
     const job = parked({
       kind: "cron",
       jobId: "a1",
@@ -482,20 +622,21 @@ describe("delivery", () => {
       recurring: true,
       dueAtMs: local(2026, 6, 15, 10, 15),
     });
-    expect(planDelivery(job, local(2026, 6, 15, 10, 15))).toEqual({
-      send: true,
-      nextDueAtMs: local(2026, 6, 15, 10, 30),
-    });
-    expect(planDelivery({ ...job, createdAtMs: NOW - RECURRING_JOB_MAX_AGE_MS }, NOW)).toEqual({
-      send: true,
-      nextDueAtMs: null,
-    });
+    expect(nextDueAfterDelivery(job, local(2026, 6, 15, 10, 15))).toBe(local(2026, 6, 15, 10, 30));
+    expect(
+      nextDueAfterDelivery({ ...job, createdAtMs: NOW - RECURRING_JOB_MAX_AGE_MS }, NOW),
+    ).toBeNull();
   });
 
-  it("drops a wakeup found long overdue instead of sending it", () => {
-    const row = parked({ dueAtMs: NOW });
-    expect(planDelivery(row, NOW + LATE_DELIVERY_LIMIT_MS).send).toBe(true);
-    expect(planDelivery(row, NOW + LATE_DELIVERY_LIMIT_MS + 1).send).toBe(false);
+  it("moves a recurring job that missed several matches past the delivery time", () => {
+    const job = parked({
+      kind: "cron",
+      jobId: "a1",
+      cron: "*/15 * * * *",
+      recurring: true,
+      dueAtMs: local(2026, 6, 15, 10, 15),
+    });
+    expect(nextDueAfterDelivery(job, local(2026, 6, 15, 12, 7))).toBe(local(2026, 6, 15, 12, 15));
   });
 
   it("hands back parked jobs as wakeups a resumed process holds, never a ScheduleWakeup", () => {

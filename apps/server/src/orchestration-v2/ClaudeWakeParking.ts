@@ -14,8 +14,6 @@ const MINUTE_MS = 60_000;
 export const WAKE_LEAD_MS = 2 * MINUTE_MS;
 /** A wake turn this close to a one-shot's due time is taken as its firing. */
 export const WAKE_MATCH_WINDOW_MS = 90_000;
-/** A parked wakeup found more than this overdue (T3 was down) is dropped, not sent. */
-export const LATE_DELIVERY_LIMIT_MS = 15 * MINUTE_MS;
 /** Claude Code expires a recurring job this long after its creation. */
 export const RECURRING_JOB_MAX_AGE_MS = 7 * 24 * 60 * MINUTE_MS;
 
@@ -215,8 +213,16 @@ export interface ClaudeWakeTracker {
   readonly lastWakeupCallAtMs: () => number | null;
   /** Jobs a resumed process restored by itself; a job id already listed is kept as is. */
   readonly adopt: (wakes: ReadonlyArray<ProviderAdapterV2PendingWake>) => void;
-  /** The process ended: any wake turn it ran ended with it. Its wakeups stay listed. */
+  /**
+   * The process ended: any wake turn it ran ended with it, and so did the
+   * wakeup that turn fired. Its other wakeups stay listed.
+   */
   readonly processEnded: () => void;
+  /**
+   * Removes and returns the ScheduleWakeup calls no turn is firing: a resumed
+   * process does not restore them, so T3 takes them over.
+   */
+  readonly takeWakeups: () => ReadonlyArray<ProviderAdapterV2PendingWake>;
 }
 
 const MAX_SETTLED_TOOL_USES = 2_000;
@@ -294,11 +300,12 @@ export function makeClaudeWakeTracker(): ClaudeWakeTracker {
     }
   };
 
-  // A wake turn fired a one-shot: drop the earliest one due by now, so it is
-  // not parked and sent again. The frame does not say which job fired:
-  // Claude Code 2.1.319 marks a recurring job's turn "schedule_wakeup" too.
-  const dropFired = (nowMs: number) => {
-    // A recurring job due now may be the one that fired; then nothing is dropped.
+  // A wake turn fired a one-shot: mark the earliest one due by now as firing,
+  // so a release does not send it again and a turn cut short sends it once.
+  // The frame does not say which job fired: Claude Code 2.1.319 marks a
+  // recurring job's turn "schedule_wakeup" too.
+  const markFired = (nowMs: number) => {
+    // A recurring job due now may be the one that fired; then nothing is marked.
     const recurringDueNow = pending.some((wake) => {
       if (wake.kind !== "cron" || !wake.recurring) return false;
       const match = nextCronMatch(wake.cron, nowMs - WAKE_MATCH_WINDOW_MS);
@@ -309,13 +316,23 @@ export function makeClaudeWakeTracker(): ClaudeWakeTracker {
     let firedIndex = -1;
     let firedDue = Number.POSITIVE_INFINITY;
     pending.forEach((wake, index) => {
+      if (wake.firing === true) return;
       const due = wake.kind === "wakeup" ? wake.dueAtMs : wake.recurring ? null : wake.dueAtMs;
       if (due !== null && due <= limit && due < firedDue) {
         firedIndex = index;
         firedDue = due;
       }
     });
-    if (firedIndex >= 0) pending = pending.filter((_, index) => index !== firedIndex);
+    if (firedIndex >= 0) {
+      pending = pending.map((wake, index) =>
+        index === firedIndex ? { ...wake, firing: true as const } : wake,
+      );
+    }
+  };
+
+  const endWakeTurn = () => {
+    activeWakeCommand = undefined;
+    pending = pending.filter((wake) => wake.firing !== true);
   };
 
   const observe = (message: unknown, nowMs: number): void => {
@@ -363,7 +380,7 @@ export function makeClaudeWakeTracker(): ClaudeWakeTracker {
     }
     if (type === "result") {
       // Every turn ends with a result frame, a wake turn whose completion went unseen too.
-      activeWakeCommand = undefined;
+      endWakeTurn();
       return;
     }
     if (type === "command_lifecycle") {
@@ -377,7 +394,7 @@ export function makeClaudeWakeTracker(): ClaudeWakeTracker {
           seenWakeCommands.add(commandUuid);
         }
         activeWakeCommand = commandUuid ?? null;
-        dropFired(nowMs);
+        markFired(nowMs);
         return;
       }
       if (
@@ -387,7 +404,7 @@ export function makeClaudeWakeTracker(): ClaudeWakeTracker {
           commandUuid === undefined ||
           commandUuid === activeWakeCommand)
       ) {
-        activeWakeCommand = undefined;
+        endWakeTurn();
       }
     }
   };
@@ -405,8 +422,13 @@ export function makeClaudeWakeTracker(): ClaudeWakeTracker {
       ];
     },
     processEnded: () => {
-      activeWakeCommand = undefined;
+      endWakeTurn();
       openToolUses.clear();
+    },
+    takeWakeups: () => {
+      const taken = pending.filter((wake) => wake.kind === "wakeup" && wake.firing !== true);
+      pending = pending.filter((wake) => !taken.includes(wake));
+      return taken;
     },
   };
 }
@@ -444,15 +466,22 @@ function recurringExpired(createdAtMs: number, dueAtMs: number): boolean {
 }
 
 /**
- * What to park for the threads of one session. A one-shot already due stays
- * behind: its live process had its chance to fire it, and sending it again
- * could run it twice.
+ * What to park for the threads of one session. A one-shot whose turn runs now
+ * is parked due now: the process ends before that turn does. Any other one-shot
+ * already due stays behind, since its live process had its chance to fire it,
+ * unless `sendOverdue` says no process held it.
  */
 export function planPark(input: {
   readonly threads: ReadonlyArray<ProviderAdapterV2WakeThread>;
   readonly nowMs: number;
+  readonly sendOverdue?: boolean;
 }): ParkPlan {
   const { nowMs } = input;
+  const oneShotDue = (wake: { readonly firing?: true }, dueAtMs: number): number | null => {
+    if (wake.firing === true) return nowMs;
+    if (dueAtMs > nowMs) return dueAtMs;
+    return input.sendOverdue === true ? nowMs : null;
+  };
   const rows: Array<ParkedWake> = [];
   let unreadable: string | null = null;
   for (const thread of input.threads) {
@@ -464,7 +493,8 @@ export function planPark(input: {
     };
     for (const wake of thread.wakes) {
       if (wake.kind === "wakeup") {
-        if (wake.dueAtMs <= nowMs) continue;
+        const dueAtMs = oneShotDue(wake, wake.dueAtMs);
+        if (dueAtMs === null) continue;
         rows.push({
           ...base,
           wakeId: `${thread.nativeSessionId}:wakeup:${wake.toolUseId}`,
@@ -474,16 +504,17 @@ export function planPark(input: {
           prompt: wake.prompt,
           recurring: false,
           createdAtMs: nowMs,
-          dueAtMs: wake.dueAtMs,
+          dueAtMs,
         });
         continue;
       }
-      const due = wake.recurring ? nextCronMatch(wake.cron, nowMs) : wake.dueAtMs;
-      if (due === null) {
+      const scheduled = wake.recurring ? nextCronMatch(wake.cron, nowMs) : wake.dueAtMs;
+      if (scheduled === null) {
         unreadable ??= `cannot read the schedule of job ${wake.jobId}`;
         continue;
       }
-      if (!wake.recurring && due <= nowMs) continue;
+      const due = wake.recurring ? scheduled : oneShotDue(wake, scheduled);
+      if (due === null) continue;
       if (wake.recurring && recurringExpired(wake.createdAtMs, due)) continue;
       rows.push({
         ...base,
@@ -532,25 +563,35 @@ export function supersededWakeups(
   return rows.filter((row) => row.kind === "wakeup" && row.parkedAtMs <= lastWakeupCallAtMs);
 }
 
+/**
+ * A parked wakeup that a live process of its native session still holds: an
+ * undone park or a failed handback left it in both places, and that process
+ * fires it itself.
+ */
+export function heldByLiveProcess(row: ParkedWake, live: ProviderAdapterV2WakeThread): boolean {
+  if (live.nativeSessionId !== row.nativeSessionId) return false;
+  return live.wakes.some((wake) =>
+    wake.kind === "wakeup"
+      ? row.kind === "wakeup" && row.wakeId === `${row.nativeSessionId}:wakeup:${wake.toolUseId}`
+      : row.kind === "cron" && row.jobId === wake.jobId,
+  );
+}
+
 /** The message text that makes Claude run a wakeup's prompt. */
 export function deliveryText(prompt: string): string {
   return prompt.trim() === AUTONOMOUS_LOOP_PROMPT ? "/loop" : prompt;
 }
 
-export type DeliveryPlan = {
-  /** Send the prompt now; false when it is too late to be useful. */
-  readonly send: boolean;
-  /** The next due time of a recurring job; null removes the row. */
-  readonly nextDueAtMs: number | null;
-};
-
-/** What a due parked wakeup becomes at `nowMs`. */
-export function planDelivery(row: ParkedWake, nowMs: number): DeliveryPlan {
-  const send = row.dueAtMs >= nowMs - LATE_DELIVERY_LIMIT_MS;
-  if (!row.recurring || row.cron === null) return { send, nextDueAtMs: null };
+/**
+ * The next due time of a due parked wakeup, sent at `nowMs`; null removes the
+ * row. A wakeup is sent however late, and a recurring job that missed several
+ * matches is sent once and moves on past `nowMs`.
+ */
+export function nextDueAfterDelivery(row: ParkedWake, nowMs: number): number | null {
+  if (!row.recurring || row.cron === null) return null;
   const next = nextCronMatch(row.cron, nowMs);
-  if (next === null || recurringExpired(row.createdAtMs, next)) return { send, nextDueAtMs: null };
-  return { send, nextDueAtMs: next };
+  if (next === null || recurringExpired(row.createdAtMs, next)) return null;
+  return next;
 }
 
 /** A parked scheduled job, as the wakeup a resumed process holds again. */
