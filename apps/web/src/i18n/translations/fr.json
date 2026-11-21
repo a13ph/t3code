@@ -12221,5 +12221,11 @@
   "e07119e47a04354d": "Cite on selection",
   "baf4d40a35c6221a": "Reset cite on selection to default",
   "5d65a18fb5edc77f": "quote citation select highlight assistant text comment automatic instant",
-  "4b423b62819aed95": "Selecting assistant text with the mouse cites it and opens its comment. Selecting more text keeps a commented citation and drops an empty one."
+  "4b423b62819aed95": "Selecting assistant text with the mouse cites it and opens its comment. Selecting more text keeps a commented citation and drops an empty one.",
+  "bbe006c34c7324a2": "Next thread",
+  "52b57870b5f9fe04": "Oldest waiting",
+  "df802481a8fbeacd": "After settle or snooze",
+  "32752d3ded23a923": "Reset after settle or snooze to default",
+  "2592bf72065ce9c3": "next oldest waiting thread open advance inbox queue settle snooze",
+  "0228426d82d6c7d4": "Which thread opens after you settle or snooze the open one. Oldest waiting opens the inbox thread that has waited longest for you, also from the thread's own menu while the sidebar is shown."
 }
