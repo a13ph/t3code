@@ -628,23 +628,20 @@ function MarkdownRemoteFileLink(props: {
   );
   const { threadRef } = props;
   if (resolution._tag !== "found") {
+    const reason =
+      resolution._tag === "ambiguous"
+        ? gt("More than one connected server is named {server}: {labels}", {
+            server: props.link.server,
+            labels: resolution.labels.join(", "),
+          })
+        : props.link.byEnvironmentId
+          ? gt("This client is not connected to the server with id {id}", { id: props.link.server })
+          : gt("No connected server is named {server}", { server: props.link.server });
     return (
-      <span
-        title={
-          resolution._tag === "ambiguous"
-            ? gt("More than one connected server is named {server}: {labels}", {
-                server: props.link.server,
-                labels: resolution.labels.join(", "),
-              })
-            : props.link.byEnvironmentId
-              ? gt("This client is not connected to the server with id {id}", {
-                  id: props.link.server,
-                })
-              : gt("No connected server is named {server}", { server: props.link.server })
-        }
-      >
-        {props.fallback}
-      </span>
+      <Tooltip>
+        <TooltipTrigger render={<span />}>{props.fallback}</TooltipTrigger>
+        <TooltipPopup side="top">{reason}</TooltipPopup>
+      </Tooltip>
     );
   }
   const { environmentId } = resolution;

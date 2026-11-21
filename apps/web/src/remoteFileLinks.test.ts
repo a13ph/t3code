@@ -12,9 +12,7 @@ describe("parseRemoteFileHref", () => {
   });
 
   it("reads a Windows path after a server name", () => {
-    expect(parseRemoteFileHref("beta:C:/user/docs/x.md")?.path).toBe(
-      "C:/user/docs/x.md",
-    );
+    expect(parseRemoteFileHref("beta:C:/user/docs/x.md")?.path).toBe("C:/user/docs/x.md");
   });
 
   it("keeps spaces, decodes escapes and splits a line suffix", () => {
