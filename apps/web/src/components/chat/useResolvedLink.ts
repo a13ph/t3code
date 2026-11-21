@@ -47,7 +47,7 @@ interface Walk {
   readonly kept: ResolvedLink | null;
   /** Every server passed this round answered that its program is unavailable, not a miss. */
   readonly allUnavailable: boolean;
-  /** A re-ask of a link already shown missing, which stays shown missing until a server knows it. */
+  /** A pass ended with a server saying the link is not there; shown missing until one knows it. */
   readonly wasMissing: boolean;
 }
 
@@ -92,6 +92,7 @@ function advanceWalk(walk: Walk, count: number, now: () => number, unavailable: 
   const startedAt = now();
   const wait =
     index < count ? SERVER_ANSWER_TIMEOUT_MS : walk.round === 0 ? RETRY_AFTER_MISS_MS : null;
+  const allUnavailable = walk.allUnavailable && unavailable;
   return {
     ...walk,
     index,
@@ -99,8 +100,14 @@ function advanceWalk(walk: Walk, count: number, now: () => number, unavailable: 
     deadline: wait === null ? null : startedAt + wait,
     pendingSeen: false,
     kept: null,
-    allUnavailable: walk.allUnavailable && unavailable,
+    allUnavailable,
+    wasMissing: walk.wasMissing || (index >= count && !allUnavailable),
   };
+}
+
+/** The `<scheme>://<id>` part of a walk key, without its server list. */
+function linkOfKey(key: string): string {
+  return key.slice(0, key.lastIndexOf("|"));
 }
 
 /**
@@ -108,10 +115,14 @@ function advanceWalk(walk: Walk, count: number, now: () => number, unavailable: 
  * stamp a new deadline; it is a function so the React Compiler cannot cache a stale clock reading.
  */
 function stepWalk(walk: Walk, input: WalkInput, now: () => number): Walk {
-  if (walk.key !== input.key) return startWalk(input.key, walk.run, 0, now);
+  if (walk.key !== input.key) {
+    // A server joining or leaving asks again, still shown missing if it was.
+    const sameLink = linkOfKey(walk.key) === linkOfKey(input.key);
+    return startWalk(input.key, walk.run, 0, now, sameLink && walk.wasMissing);
+  }
   if (walk.index >= input.count) {
     if (input.count === 0 || walk.round > 0 || !input.deadlinePassed) return walk;
-    return startWalk(walk.key, walk.run + 1, 1, now);
+    return startWalk(walk.key, walk.run + 1, 1, now, walk.wasMissing);
   }
   const kept = input.fresh ?? walk.kept;
   if (input.answered) {
@@ -159,11 +170,10 @@ function askingOrder(
 }
 
 /**
- * Asks the chat's own server, then each other server announcing the scheme in label order; the
- * first that knows the link wins, and a failure or `SERVER_ANSWER_TIMEOUT_MS` of silence is a miss.
- * After a full miss it runs once more, then again on each `resolvedLinkLiveRefresh` tick, so a link
- * written before its target exists shows once it does; a found link stays live by that tick and
- * losing it reruns.
+ * Asks the chat's own server, then the others announcing the scheme in label order; the first that
+ * knows the link wins, and a failure or `SERVER_ANSWER_TIMEOUT_MS` of silence is a miss. After a
+ * full miss it runs again 6 s later and on each `resolvedLinkLiveRefresh` tick; a found link stays
+ * live by that tick and losing it reruns.
  */
 export function useResolvedLink(
   link: ResolvedLinkRef,
@@ -241,7 +251,7 @@ export function useResolvedLink(
   const askAgain = useEffectEvent(() =>
     setWalk((latest) =>
       latest.key === key && latest.index >= candidates.length
-        ? startWalk(key, latest.run + 1, 1, Date.now, latest.wasMissing || !latest.allUnavailable)
+        ? startWalk(key, latest.run + 1, 1, Date.now, latest.wasMissing)
         : latest,
     ),
   );

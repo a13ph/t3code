@@ -20,7 +20,7 @@ const ANSWER_CACHE_MS = 5_000;
 const MAX_PENDING = 64;
 const MAX_LABEL_LENGTH = 500;
 const MAX_TOOLTIP_LENGTH = 4_000;
-// Enough for any one grapheme a mark is meant to be; a longer one is cut before it is split.
+// Code points enough for any one grapheme a mark is meant to be; a longer one is cut first.
 const MAX_MARK_LENGTH = 32;
 // An answer line longer than this is not an answer; the program is stopped.
 const MAX_LINE_BYTES = 1024 * 1024;
@@ -83,20 +83,28 @@ const defaultSpawn: LinkResolverSpawn = (command, args) =>
 function stopProcessTree(child: NodeChildProcess.ChildProcessWithoutNullStreams): void {
   child.stdin.destroy();
   const pid = child.pid;
-  if (pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
-  if (IS_WINDOWS) {
-    const result = NodeChildProcess.spawnSync("taskkill", ["/T", "/F", "/PID", String(pid)], {
-      stdio: "ignore",
-      windowsHide: true,
-      timeout: 5_000,
-    });
-    if (result.status !== 0) child.kill();
+  if (pid === undefined) return;
+  const running = child.exitCode === null && child.signalCode === null;
+  if (!IS_WINDOWS) {
+    // The group outlives its leader, so it is killed even after the program itself exited.
+    if (!killProcessGroup(pid) && running) child.kill("SIGKILL");
     return;
   }
+  if (!running) return;
+  const result = NodeChildProcess.spawnSync("taskkill", ["/T", "/F", "/PID", String(pid)], {
+    stdio: "ignore",
+    windowsHide: true,
+    timeout: 5_000,
+  });
+  if (result.status !== 0) child.kill();
+}
+
+function killProcessGroup(pid: number): boolean {
   try {
     process.kill(-pid, "SIGKILL");
+    return true;
   } catch {
-    child.kill("SIGKILL");
+    return false;
   }
 }
 
@@ -139,7 +147,13 @@ export function normalizeResolvedLink(raw: unknown): ResolvedLink | null {
     path,
     label: text(record.label, MAX_LABEL_LENGTH).trim(),
     mark:
-      typeof record.mark === "string" ? firstGrapheme(record.mark.slice(0, MAX_MARK_LENGTH)) : "",
+      typeof record.mark === "string"
+        ? firstGrapheme(
+            Array.from(record.mark.slice(0, MAX_MARK_LENGTH * 2))
+              .slice(0, MAX_MARK_LENGTH)
+              .join(""),
+          )
+        : "",
     tone: tone as ResolvedLinkTone,
     tooltip: text(record.tooltip, MAX_TOOLTIP_LENGTH),
   };
@@ -272,6 +286,10 @@ export class LinkResolverProcess {
     child.stdin.on("error", (cause) => this.fail(child, `stdin: ${String(cause)}`));
     child.on("error", (cause) => this.fail(child, `process: ${String(cause)}`));
     // `close`, not `exit`: it comes after stdout is drained, so the last answers are read first.
+    // It waits for every holder of the pipes, so on exit what the program started is killed too.
+    child.on("exit", () => {
+      if (!IS_WINDOWS && child.pid !== undefined) killProcessGroup(child.pid);
+    });
     child.on("close", (code, signal) =>
       this.fail(child, `exited (${signal ?? `code ${String(code)}`})`),
     );
@@ -333,11 +351,17 @@ export class LinkResolverProcess {
     const record =
       typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : null;
     const at =
-      typeof record?.id === "string" ? this.pending.findIndex((entry) => entry.id === record.id) : -1;
+      typeof record?.id === "string"
+        ? this.pending.findIndex((entry) => entry.id === record.id)
+        : -1;
     // A line that names no waiting lookup is not an answer, whatever it holds: matching by order
     // would hand every later answer to the wrong link.
     if (record === null || at === -1) {
-      this.logProgramLine(`not an answer to a waiting lookup, dropped: ${text.slice(0, 200)}`);
+      const hint =
+        record !== null && !("id" in record) ? " (no id: a program on the old protocol?)" : "";
+      this.logProgramLine(
+        `not an answer to a waiting lookup${hint}, dropped: ${text.slice(0, 200)}`,
+      );
       return;
     }
     const [entry] = this.pending.splice(at, 1);
