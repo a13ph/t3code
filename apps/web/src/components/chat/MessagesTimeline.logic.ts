@@ -1120,13 +1120,10 @@ function workEntryIsAskUserQuestionCall(entry: WorkLogEntry): boolean {
 }
 
 /**
- * The text an agent wrote right before asking the user a question, and the
- * question itself. The user answered with that text in front of them, so it
- * stays readable after the turn folds. Reasoning and the question's own tool
- * call between the two do not break the pair, and the tool call still folds,
- * so the question renders as its own row; any other work breaks it. A
- * refused question call's lead-in carries to the next question call when
- * the agent writes no new text in between.
+ * The text an agent wrote right before asking the user a question, and the question itself, stay
+ * readable after the turn folds. Reasoning and the question's own tool call between the two keep
+ * the pair, and the call still folds; any other work breaks it. A refused question call's lead-in
+ * carries to the next question call when the agent writes no new text in between.
  */
 function questionContextEntryIds(entries: ReadonlyArray<TimelineEntry>): ReadonlySet<string> {
   const kept = new Set<string>();
