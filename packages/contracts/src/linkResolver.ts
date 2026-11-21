@@ -9,6 +9,30 @@ export const LinkResolverScheme = Schema.String.check(
 );
 export type LinkResolverScheme = typeof LinkResolverScheme.Type;
 
+// Schemes chat must never turn into resolved links, whatever a server is set to resolve: unsafe
+// ones, web ones, and the ones the app already reads itself.
+const RESERVED_LINK_SCHEMES: ReadonlySet<string> = new Set([
+  "javascript",
+  "vbscript",
+  "data",
+  "blob",
+  "about",
+  "file",
+  "http",
+  "https",
+  "mailto",
+  "remote-file",
+  "t3-citation",
+  "t3-context",
+  "t3-resolved",
+  "t3-thread",
+]);
+
+/** Whether `scheme`, lower case, is one no link resolver may take. */
+export function isReservedLinkScheme(scheme: string): boolean {
+  return RESERVED_LINK_SCHEMES.has(scheme);
+}
+
 // No control characters or backslashes, and no `.` or `..` segment, so an id a program reads as
 // a path cannot climb out of where the program looks.
 const LINK_ID_FORBIDDEN = /[\u0000-\u001f\u007f\\]|(?:^|\/)\.{1,2}(?:\/|$)/;
