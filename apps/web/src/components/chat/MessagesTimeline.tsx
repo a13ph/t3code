@@ -899,43 +899,40 @@ const ConversationTimeline = memo(function ConversationTimeline({
   const [minimapCurrentIndex, setMinimapCurrentIndex] = useState<number | null>(null);
   const [minimapAtEnd, setMinimapAtEnd] = useState(false);
   // The turn navigation keys move between the minimap's turns, as its
-  // buttons do. Refs keep the listener from re-binding on every scroll tick.
+  // buttons do. An effect event keeps the listener from re-binding on every scroll tick.
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
-  const minimapCurrentIndexRef = useRef(minimapCurrentIndex);
-  minimapCurrentIndexRef.current = minimapCurrentIndex;
-  const minimapItemsRef = useRef(minimapItems);
-  minimapItemsRef.current = minimapItems;
+  const navigateTurnFromKey = useEffectEvent((event: globalThis.KeyboardEvent) => {
+    if (event.defaultPrevented) return;
+    const command = resolveShortcutCommand(event, keybindings, {
+      context: {
+        terminalFocus: isTerminalFocused(),
+        editableFocus: isEditableFocused(event.target),
+      },
+    });
+    const direction = timelineTurnNavigationFromCommand(command);
+    if (direction === null) return;
+    const targetIndex = resolveTimelineTurnNavigationIndex({
+      itemCount: minimapItems.length,
+      currentIndex: minimapCurrentIndex,
+      direction,
+    });
+    const target = targetIndex === null ? undefined : minimapItems[targetIndex];
+    if (!target) return;
+    event.preventDefault();
+    event.stopPropagation();
+    navigateTimeline();
+    void listRef.current?.scrollToIndex({
+      index: target.rowIndex,
+      animated: !window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+      viewOffset: TIMELINE_MINIMAP_TARGET_OFFSET,
+    });
+  });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- subscribes to window keydown for the turn navigation shortcuts while the timeline is mounted
   useEffect(() => {
-    const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.defaultPrevented) return;
-      const command = resolveShortcutCommand(event, keybindings, {
-        context: {
-          terminalFocus: isTerminalFocused(),
-          editableFocus: isEditableFocused(event.target),
-        },
-      });
-      const direction = timelineTurnNavigationFromCommand(command);
-      if (direction === null) return;
-      const items = minimapItemsRef.current;
-      const targetIndex = resolveTimelineTurnNavigationIndex({
-        itemCount: items.length,
-        currentIndex: minimapCurrentIndexRef.current,
-        direction,
-      });
-      const target = targetIndex === null ? undefined : items[targetIndex];
-      if (!target) return;
-      event.preventDefault();
-      event.stopPropagation();
-      viewportRef.current?.navigate({ releasesFollow: true });
-      void listRef.current?.scrollToIndex({
-        index: target.rowIndex,
-        animated: !window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-        viewOffset: TIMELINE_MINIMAP_TARGET_OFFSET,
-      });
-    };
+    const onKeyDown = (event: globalThis.KeyboardEvent) => navigateTurnFromKey(event);
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [keybindings, listRef]);
+  }, []);
   const handleAnchorReady = (info: { anchorIndex: number | undefined }) => {
     if (anchorMessageId !== null && info.anchorIndex !== undefined) {
       onAnchorReady(anchorMessageId, info.anchorIndex);

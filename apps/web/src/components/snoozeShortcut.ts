@@ -1,6 +1,8 @@
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
+import { msg } from "gt-react";
 
+import { m } from "../i18n/messages";
 import { readLocalApi } from "../localApi";
 import { requestCustomSnooze } from "./CustomSnoozeDialog";
 import {
@@ -26,11 +28,13 @@ export async function pickSnoozePreset(
     [
       ...presets.map((preset) => ({
         id: preset.id,
-        label: `Snooze: ${preset.label} (${preset.whenLabel})`,
+        label: preset.label,
+        detail: preset.whenLabel,
       })),
-      { id: "custom", label: "Snooze: Custom…", separatorBefore: true },
+      { id: "custom", label: m(msg("Custom…")), separatorBefore: presets.length > 0 },
     ],
     position,
+    "keyboard",
   );
   if (picked === null) return null;
   if (picked === "custom") return (await requestCustomSnooze()) ?? null;

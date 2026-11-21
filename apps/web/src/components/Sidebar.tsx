@@ -1488,6 +1488,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     return true;
   };
   // The composer's send-and-jump shortcut opens the last chat through this.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- registers this sidebar's last-thread jump in the module-level jumpToLastThread registry
   useEffect(() => registerJumpToLastThread(openLastQueueThread), [openLastQueueThread]);
 
   const handleThreadFileDrop = async (threadRef: ScopedThreadRef, files: File[]) => {
@@ -2323,6 +2324,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     },
   );
   // The thread.snooze shortcut parks the open thread through this same path.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- registers this sidebar's snooze handler in the module-level snoozeAndAdvance registry
   useEffect(
     () =>
       registerSnoozeAndAdvance((threadRef, snoozedUntil) =>

@@ -533,7 +533,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       ? [gt("Working section")]
       : []),
     ...(settings.sidebarAlwaysShowJumpHints !== DEFAULT_UNIFIED_SETTINGS.sidebarAlwaysShowJumpHints
-      ? ["Thread numbers"]
+      ? [gt("Thread numbers")]
       : []),
     ...(settings.sidebarAutoSettleAfterDays !== DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays
       ? [gt("Auto-settle inactive threads")]
@@ -970,13 +970,15 @@ export function GeneralSettingsPanel() {
           }
         />
         <SettingsRow
-          {...searchableSetting("always-show-jump-numbers")}
-          description="Keep the jump shortcut on the first nine sidebar threads, so you can jump without holding the modifier first."
+          {...setting("always-show-jump-numbers")}
+          description={gt(
+            "Keep the jump shortcut on the first nine sidebar threads, so you can jump without holding the modifier first.",
+          )}
           resetAction={
             settings.sidebarAlwaysShowJumpHints !==
             DEFAULT_UNIFIED_SETTINGS.sidebarAlwaysShowJumpHints ? (
               <SettingResetButton
-                label="thread numbers"
+                ariaLabel={gt("Reset thread numbers to default")}
                 onClick={() =>
                   updateSettings({
                     sidebarAlwaysShowJumpHints: DEFAULT_UNIFIED_SETTINGS.sidebarAlwaysShowJumpHints,
@@ -991,7 +993,7 @@ export function GeneralSettingsPanel() {
               onCheckedChange={(checked) =>
                 updateSettings({ sidebarAlwaysShowJumpHints: Boolean(checked) })
               }
-              aria-label="Always show thread numbers"
+              aria-label={gt("Always show thread numbers")}
             />
           }
         />

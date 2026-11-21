@@ -762,7 +762,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
         void snoozeThreadMutation({
           environmentId: threadRef.environmentId,
           input: { threadId: threadRef.threadId, snoozedUntil: preset.snoozedUntil },
-        }).then(toastThreadActionFailure("Failed to snooze thread"));
+        }).then(toastThreadActionFailure(m(msg("Failed to snooze thread"))));
       });
     },
   } satisfies ChatShortcutCommands;
