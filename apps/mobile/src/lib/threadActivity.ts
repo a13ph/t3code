@@ -12,6 +12,11 @@ import {
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import { extractToolActivityPresentation } from "@t3tools/client-runtime/work-log/tool-presentation";
 import {
+  replacedReplyIds,
+  workEntryReplyStep,
+  type ReplyTimelineStep,
+} from "@t3tools/client-runtime/work-log/replaced-replies";
+import {
   turnItemDetailRevision,
   turnItemHasDetail,
   turnItemNeedsDetailFetch,
@@ -212,6 +217,8 @@ type RawThreadFeedEntry =
 export type ThreadFeedEntry = ThreadFeedEntryContent & {
   readonly continuesWorkLog?: boolean;
   readonly checkpointSummary?: ThreadCheckpointSummary;
+  /** A reply the agent wrote again later in its settled turn; it renders collapsed. */
+  readonly replacedReply?: { readonly groupId: string; readonly expanded: boolean };
 };
 
 type ThreadFeedEntryContent =
@@ -378,6 +385,20 @@ const runFoldRowsCache = new WeakMap<
   Extract<ThreadFeedEntry, { readonly type: "run-fold" }>
 >();
 let cachedThinkingRow: Extract<ThreadFeedEntry, { readonly type: "thinking" }> | null = null;
+const replacedReplyRowsCache = new WeakMap<ThreadFeedEntry, ThreadFeedEntry>();
+
+function replacedReplyRow(
+  entry: ThreadFeedEntry,
+  expandedWorkGroupIds: ReadonlySet<string>,
+): ThreadFeedEntry {
+  const groupId = `replaced-reply:${entry.id}`;
+  const expanded = expandedWorkGroupIds.has(groupId);
+  const cached = replacedReplyRowsCache.get(entry);
+  if (cached?.replacedReply?.expanded === expanded) return cached;
+  const row = { ...entry, replacedReply: { groupId, expanded } };
+  replacedReplyRowsCache.set(entry, row);
+  return row;
+}
 
 export function isContextCompactionActivityGroup(entry: ThreadFeedActivityGroup): boolean {
   return (
@@ -1104,7 +1125,20 @@ interface ThreadFeedRunFold {
   readonly runId: RunId;
   readonly createdAt: string;
   readonly hiddenEntryIds: ReadonlySet<string>;
+  readonly replacedReplyEntryIds?: ReadonlySet<string>;
   readonly label: string;
+}
+
+function feedEntryReplySteps(entry: ThreadFeedEntry): ReadonlyArray<ReplyTimelineStep> {
+  if (entry.type === "message" && entry.message.role === "assistant") {
+    return [{ kind: "reply", id: entry.id, text: entry.message.text }];
+  }
+  if (entry.type === "activity-group") {
+    return entry.activities.map((activity) =>
+      workEntryReplyStep(activity.workEntry, activity.projectedItem.item),
+    );
+  }
+  return [{ kind: "other" }];
 }
 
 export function failedFeedRunIds(
@@ -1373,6 +1407,7 @@ function deriveThreadFeedRunFolds(
         };
       }),
     ];
+    const replacedIds = replacedReplyIds(group.entries.flatMap(feedEntryReplySteps));
     for (const segment of segments) {
       const firstHiddenEntry = segment.entries.find((entry) => hiddenEntryIds.has(entry.id));
       if (!firstHiddenEntry || !hidesNonCompactionWork(segment.entries)) continue;
@@ -1385,13 +1420,18 @@ function deriveThreadFeedRunFolds(
             )
           : [],
       );
+      const segmentHiddenIds = new Set(
+        segment.entries.flatMap((entry) => (hiddenEntryIds.has(entry.id) ? [entry.id] : [])),
+      );
+      const replacedReplyEntryIds = new Set(
+        [...segmentHiddenIds].filter((id) => replacedIds.has(id)),
+      );
       foldsByAnchorId.set(firstHiddenEntry.id, {
         ...(deferredWorkItemIds.length > 0 ? { deferredWorkItemIds } : {}),
+        ...(replacedReplyEntryIds.size > 0 ? { replacedReplyEntryIds } : {}),
         runId: segment.runId,
         createdAt: firstHiddenEntry.createdAt,
-        hiddenEntryIds: new Set(
-          segment.entries.flatMap((entry) => (hiddenEntryIds.has(entry.id) ? [entry.id] : [])),
-        ),
+        hiddenEntryIds: segmentHiddenIds,
         label: segment.label,
       });
     }
@@ -1805,7 +1845,9 @@ export function deriveThreadFeedPresentation(
         resolve,
       );
   const collapsedEntryIds = new Set<string>();
+  const replacedReplyEntryIds = new Set<string>();
   for (const fold of foldsByAnchorId.values()) {
+    for (const entryId of fold.replacedReplyEntryIds ?? []) replacedReplyEntryIds.add(entryId);
     if (!expandedRunIds.has(fold.runId)) {
       for (const entryId of fold.hiddenEntryIds) collapsedEntryIds.add(entryId);
     }
@@ -1916,6 +1958,10 @@ export function deriveThreadFeedPresentation(
           failedActivityGroupsCache.set(entry, rows);
         }
         result.push(...rows);
+        continue;
+      }
+      if (replacedReplyEntryIds.has(entry.id)) {
+        result.push(replacedReplyRow(entry, expandedWorkGroupIds));
         continue;
       }
       appendPresentedFeedEntry(

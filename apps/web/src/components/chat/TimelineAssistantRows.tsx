@@ -3,10 +3,11 @@ import { MessageId, type RunId, type TurnItemId } from "@t3tools/contracts";
 import { canForkProjectedAssistantItem } from "@t3tools/client-runtime/state/thread-workflows";
 import { agentWorkingDirectories } from "@t3tools/client-runtime/workspace-basename-lookup";
 import { T, useGT, useMessages } from "gt-react";
+import { firstLine } from "@t3tools/client-runtime/work-log/replaced-replies";
 import { memo, use, useState } from "react";
 import { type ChatMessage, type TurnDiffSummary } from "../../types";
 import ChatMarkdown from "../ChatMarkdown";
-import { GitForkIcon, ReplyIcon } from "lucide-react";
+import { GitForkIcon, MessageSquareXIcon, ReplyIcon } from "lucide-react";
 import { captureAssistantMessageOpening } from "~/lib/assistantTextSelection";
 import { responseContextRecord } from "~/lib/composerContextRecords";
 import { Button } from "../ui/button";
@@ -39,6 +40,31 @@ import { vcsEnvironment } from "../../state/vcs";
 
 const NO_VCS_STATUS = Atom.make(AsyncResult.initial());
 
+function ReplacedReplyToggle({
+  row,
+  replacedReply,
+}: {
+  row: Extract<TimelineRow, { kind: "message" }>;
+  replacedReply: NonNullable<Extract<TimelineRow, { kind: "message" }>["replacedReply"]>;
+}) {
+  const ctx = use(TimelineRowCtx);
+  const gt = useGT();
+  const summary = firstLine(row.message.text) ?? "";
+  return (
+    <button
+      type="button"
+      aria-expanded={replacedReply.expanded}
+      data-scroll-anchor-ignore
+      onClick={() => ctx.onToggleWorkGroup(replacedReply.groupId, row.id)}
+      className="flex w-full min-w-0 cursor-pointer select-none items-center gap-2 rounded-md px-1 py-1 text-left text-xs transition-colors hover:bg-muted/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
+    >
+      <MessageSquareXIcon className="size-3.5 shrink-0 text-muted-foreground" />
+      <span className="shrink-0 font-medium text-foreground/80">{gt("Replaced reply")}</span>
+      <span className="min-w-0 truncate text-muted-foreground">{summary}</span>
+    </button>
+  );
+}
+
 export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const gt = useGT();
@@ -50,9 +76,14 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
   const text = liveText ?? row.message.text;
   const messageText =
     text || (row.message.streaming || row.suppressEmptyResponse ? "" : gt("(empty response)"));
+  const replacedReply = row.replacedReply;
+  if (replacedReply && !replacedReply.expanded) {
+    return <ReplacedReplyToggle row={row} replacedReply={replacedReply} />;
+  }
 
   return (
     <>
+      {replacedReply ? <ReplacedReplyToggle row={row} replacedReply={replacedReply} /> : null}
       <div className="relative min-w-0 px-1 py-0.5">
         <MessageAuthorHeading>T3 Code</MessageAuthorHeading>
         <div data-thread-find-text="true">

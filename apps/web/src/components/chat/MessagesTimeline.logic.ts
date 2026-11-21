@@ -33,6 +33,11 @@ import {
   workEntryHiddenByToolCallVisibility,
 } from "@t3tools/client-runtime/work-log/presentation";
 import {
+  replacedReplyIds,
+  workEntryReplyStep,
+  type ReplyTimelineStep,
+} from "@t3tools/client-runtime/work-log/replaced-replies";
+import {
   deriveRevertTurnCountByUserMessageId,
   isStreamingMessageTextUpdate,
   isStreamingTurnItemTextUpdate,
@@ -690,6 +695,8 @@ type MessagesTimelineRowContent =
       groupedWithPrevious?: boolean;
       /** Set when the message above is a steer too, so the label shows once. */
       continuesSteer?: boolean;
+      /** A reply the agent wrote again later in its settled turn; it renders collapsed. */
+      replacedReply?: { groupId: string; expanded: boolean };
     }
   | {
       kind: "assistant-meta";
@@ -820,7 +827,18 @@ interface TurnFold {
   hiddenEntryIds: ReadonlySet<string>;
   /** Every entry in the segment, including the cards a fold never hides. */
   entryIds: ReadonlySet<string>;
+  replacedReplyEntryIds: ReadonlySet<string>;
   label: string;
+}
+
+function timelineEntryReplyStep(entry: TimelineEntry): ReplyTimelineStep {
+  if (entry.kind === "message" && entry.message.role === "assistant") {
+    return { kind: "reply", id: entry.id, text: entry.message.text };
+  }
+  if (entry.kind === "work") {
+    return workEntryReplyStep(entry.entry, entry.entry.projectedItem?.item);
+  }
+  return { kind: "other" };
 }
 
 interface SupersededAttemptFold {
@@ -1370,6 +1388,13 @@ function deriveTurnFolds(input: {
     // so each segment opens on its own.
     const segmentHiddenIds = (entries: ReadonlyArray<TimelineEntry>) =>
       new Set(entries.flatMap((entry) => (hiddenEntryIds.has(entry.id) ? [entry.id] : [])));
+    const replacedIds = replacedReplyIds(group.entries.map(timelineEntryReplyStep));
+    const segmentReplacedIds = (entries: ReadonlyArray<TimelineEntry>) =>
+      new Set(
+        entries.flatMap((entry) =>
+          hiddenEntryIds.has(entry.id) && replacedIds.has(entry.id) ? [entry.id] : [],
+        ),
+      );
     const firstSegment = group.entries.slice(0, group.steerSegments[0]?.startIndex);
     foldsByAnchorEntryId.set(group.anchorEntryId, {
       runId,
@@ -1377,6 +1402,7 @@ function deriveTurnFolds(input: {
       createdAt: group.startBoundary ?? firstEntry.createdAt,
       hiddenEntryIds: segmentHiddenIds(firstSegment),
       entryIds: new Set(firstSegment.map((entry) => entry.id)),
+      replacedReplyEntryIds: segmentReplacedIds(firstSegment),
       label,
     });
     for (const [index, { startIndex, steer }] of group.steerSegments.entries()) {
@@ -1396,6 +1422,7 @@ function deriveTurnFolds(input: {
         createdAt: steer.createdAt,
         hiddenEntryIds: segmentHiddenIds(entries),
         entryIds: new Set(entries.map((entry) => entry.id)),
+        replacedReplyEntryIds: segmentReplacedIds(entries),
         label:
           segmentMs !== null
             ? resolve(
@@ -1793,7 +1820,9 @@ export function deriveMessagesTimelineRows(
   const timelineEntryById = new Map(timelineEntries.map((entry) => [entry.id, entry]));
   const collapsedEntryIds = new Set<string>();
   const collapsedFoldMemberIds = new Set<string>();
+  const replacedReplyEntryIds = new Set<string>();
   for (const fold of foldsByAnchorEntryId.values()) {
+    for (const entryId of fold.replacedReplyEntryIds) replacedReplyEntryIds.add(entryId);
     if (!input.expandedRunIds?.has(fold.runId)) {
       for (const entryId of fold.hiddenEntryIds) {
         collapsedEntryIds.add(entryId);
@@ -2402,8 +2431,17 @@ export function deriveMessagesTimelineRows(
       timelineEntry.message.role === "assistant" &&
       terminalAssistantMessageIds.has(timelineEntry.message.id) &&
       !assistantResponseStillInProgress;
+    const replacedReplyGroupId = `replaced-reply:${timelineEntry.id}`;
 
     nextRows.push({
+      ...(replacedReplyEntryIds.has(timelineEntry.id)
+        ? {
+            replacedReply: {
+              groupId: replacedReplyGroupId,
+              expanded: input.expandedWorkGroupIds?.has(replacedReplyGroupId) ?? false,
+            },
+          }
+        : {}),
       kind: "message",
       id: timelineEntry.id,
       createdAt: timelineEntry.createdAt,
@@ -3006,7 +3044,9 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.revertTurnCount === bm.revertTurnCount &&
         a.groupedWithNext === bm.groupedWithNext &&
         a.groupedWithPrevious === bm.groupedWithPrevious &&
-        a.continuesSteer === bm.continuesSteer
+        a.continuesSteer === bm.continuesSteer &&
+        a.replacedReply?.expanded === bm.replacedReply?.expanded &&
+        a.replacedReply?.groupId === bm.replacedReply?.groupId
       );
     }
   }
