@@ -1658,6 +1658,7 @@ function keyExtractor(item: MessagesTimelineRow) {
 // can differ in height by orders of magnitude, so each gets its own type to avoid nested-update loops.
 function getItemType(item: MessagesTimelineRow) {
   if (item.kind !== "message") return item.kind;
+  if (item.replacedReply?.expanded === false) return "message:replaced";
   const lengthBucket = Math.max(0, Math.floor(Math.log2(item.message.text.length / 1000)));
   return lengthBucket < 2
     ? `message:${item.message.role}:${lengthBucket}`

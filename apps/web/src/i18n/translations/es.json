@@ -5,6 +5,7 @@
   "fc7d613e3264439c": "More than one connected server is named {server}: {labels}",
   "364bb679dbb359e6": "This client is not connected to the server with id {id}",
   "3abe1d26c759282d": "No connected server is named {server}",
+  "af358b578b02b76d": "Replaced reply",
   "93703a3a7abc1d0d": "{path} is not an absolute path.",
   "98cfa47273bbfa1a": "The desktop app refused the link.",
   "e0ed44ff25fd1a99": "Composer: Send and Go to Last Thread",
