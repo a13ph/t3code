@@ -6,6 +6,7 @@ import {
 } from "@t3tools/shared/toolOutput";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import { claudeTaskOutputRoot, tailClaudeTaskOutput } from "./ClaudeTaskOutputTail.ts";
+import { keeperSpawnProcess } from "./ClaudeKeeperSpawn.ts";
 import {
   dynamicToolTitle,
   formatReadToolLabel,
@@ -1608,9 +1609,19 @@ export const layerQueryRunner: Layer.Layer<
         stderrTail = (stderrTail + text).slice(-CLAUDE_STDERR_TAIL_LENGTH);
       };
       let refreshDescendants: Effect.Effect<void> = Effect.void;
+      // With T3_KEEPER_SOCKET set, t3-keeper spawns the CLI (ClaudeKeeperSpawn.ts).
+      const keeperSpawn =
+        options.spawnClaudeCodeProcess !== undefined || platform === "win32"
+          ? undefined
+          : keeperSpawnProcess(input.threadId, { env: hostEnvironment, onStderr: appendStderr });
       const spawnProcess =
         options.spawnClaudeCodeProcess ??
         ((spawnOptions: ClaudeSpawnOptions) => {
+          if (keeperSpawn !== undefined) {
+            const child = keeperSpawn(spawnOptions);
+            if (stopScope !== undefined) child.once("exit", stopScope);
+            return child;
+          }
           if (platform !== "win32") {
             // Node can report "exit" before it has read the stderr the CLI wrote.
             let stderrDone = () => {};
