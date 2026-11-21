@@ -99,8 +99,6 @@ const watch = (predicate: (event: OrchestrationV2DomainEvent) => boolean) =>
 
 describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
   "T3 restart during a Claude turn",
-  // The restart test runs just over vitest's 5 s default.
-  { timeout: 30_000 },
   () => {
     // A detached CLI whose thread got no reattach record (a pending approval,
     // a turn state that could not be recorded) would otherwise work on unseen

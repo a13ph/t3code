@@ -3502,6 +3502,7 @@ async function reattachToKeptTurn(input: {
           IdAllocator.layer,
           Path.layer,
           FileSystem.layerNoop({}),
+          layerWorktreeLocation(),
           Layer.mock(GitWorkflow.GitWorkflowService)({}),
           Layer.mock(ProjectService.ProjectService)({}),
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
