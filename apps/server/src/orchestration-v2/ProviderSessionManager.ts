@@ -262,8 +262,6 @@ export interface ProviderSessionManagerV2Shape {
     readonly threadId: ThreadId;
     readonly detail?: string;
     readonly revokeMcpCredential?: boolean;
-    /** The thread goes on in another session: park the wakeups its process holds. */
-    readonly keepWakes?: boolean;
   }) => Effect.Effect<void, ProviderSessionManagerV2Error>;
   /**
    * Releases the session unless, at the moment of removal, a turn is busy on it other than one
@@ -1375,8 +1373,6 @@ export const layerWithOptions = (
         readonly keepIfBusyOtherThan?: OwnBusyTurns;
         readonly keepIf?: Effect.Effect<boolean>;
         readonly gracefulSubscribers?: boolean;
-        readonly eventStreamCause?: Cause.Cause<ProviderAdapter.ProviderAdapterV2Error>;
-        readonly parkWakes?: boolean;
       }) =>
         Effect.acquireUseRelease(
           removeLiveEntry(input),
@@ -1419,8 +1415,10 @@ export const layerWithOptions = (
                       input.detachedThreadId,
                     );
                   }
-                  if (input.parkWakes === true) {
-                    // The thread goes on in another session; its process ends here.
+                  // The process ends here, and its wakeups with it. An idle or a
+                  // shutdown release parked them already; an archived or deleted
+                  // thread's rows are dropped at delivery.
+                  if (input.reason === "manual_shutdown" || input.reason === "runtime_error") {
                     yield* parkWakes(entry.runtime, input.providerSessionId, null).pipe(
                       Effect.timeoutOption(SHUTDOWN_WAKE_PARK_TIMEOUT_MS),
                     );
@@ -3602,7 +3600,6 @@ export const layerWithOptions = (
                 reason: "manual_shutdown",
                 ...(input.detail === undefined ? {} : { detail: input.detail }),
                 detachedThreadId: input.threadId,
-                ...(input.keepWakes === true ? { parkWakes: true } : {}),
               });
               return;
             }
