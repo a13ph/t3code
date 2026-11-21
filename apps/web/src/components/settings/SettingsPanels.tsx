@@ -151,8 +151,8 @@ const SIDEBAR_PROJECT_SORT_ORDER_LABELS: Record<SidebarProjectSortOrder, string>
 const isSidebarProjectSortOrder = Schema.is(SidebarProjectSortOrder);
 
 const AFTER_SETTLE_OR_SNOOZE_LABELS: Record<AfterSettleOrSnooze, string> = {
-  next: "Next thread",
-  oldest_waiting: "Oldest waiting",
+  next: msg("Next thread"),
+  oldest_waiting: msg("Oldest waiting"),
 };
 const isAfterSettleOrSnooze = Schema.is(AfterSettleOrSnooze);
 
@@ -540,7 +540,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       ? [gt("Working section")]
       : []),
     ...(settings.afterSettleOrSnooze !== DEFAULT_UNIFIED_SETTINGS.afterSettleOrSnooze
-      ? ["After settle or snooze"]
+      ? [gt("After settle or snooze")]
       : []),
     ...(settings.sidebarAutoSettleAfterDays !== DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays
       ? [gt("Auto-settle inactive threads")]
@@ -977,12 +977,18 @@ export function GeneralSettingsPanel() {
           }
         />
         <SettingsRow
-          {...searchableSetting("after-settle-or-snooze")}
-          description="Which thread opens after you settle or snooze the open one. Oldest waiting opens the inbox thread that has waited longest for you, also from the thread's own menu while the sidebar is shown."
+          {...setting("after-settle-or-snooze")}
+          description={
+            <T>
+              Which thread opens after you settle or snooze the open one. Oldest waiting opens the
+              inbox thread that has waited longest for you, also from the thread's own menu while
+              the sidebar is shown.
+            </T>
+          }
           resetAction={
             settings.afterSettleOrSnooze !== DEFAULT_UNIFIED_SETTINGS.afterSettleOrSnooze ? (
               <SettingResetButton
-                label="after settle or snooze"
+                ariaLabel={gt("Reset after settle or snooze to default")}
                 onClick={() =>
                   updateSettings({
                     afterSettleOrSnooze: DEFAULT_UNIFIED_SETTINGS.afterSettleOrSnooze,
@@ -1003,16 +1009,16 @@ export function GeneralSettingsPanel() {
               <SelectTrigger
                 size="sm"
                 className="w-full sm:w-44"
-                aria-label="After settle or snooze"
+                aria-label={gt("After settle or snooze")}
               >
                 <SelectValue>
-                  {AFTER_SETTLE_OR_SNOOZE_LABELS[settings.afterSettleOrSnooze]}
+                  {m(AFTER_SETTLE_OR_SNOOZE_LABELS[settings.afterSettleOrSnooze])}
                 </SelectValue>
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>
                 {AfterSettleOrSnooze.literals.map((choice) => (
                   <SelectItem hideIndicator key={choice} value={choice}>
-                    {AFTER_SETTLE_OR_SNOOZE_LABELS[choice]}
+                    {m(AFTER_SETTLE_OR_SNOOZE_LABELS[choice])}
                   </SelectItem>
                 ))}
               </SelectPopup>

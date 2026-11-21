@@ -12205,5 +12205,11 @@
   "27d76249d09eb69f": "Review guide ready",
   "faa3bb26abb39c93": "Review guide failed",
   "b7df38b7d8792d78": "Open guide",
-  "9e91e9a77b664e4e": "Could not start a review guide"
+  "9e91e9a77b664e4e": "Could not start a review guide",
+  "bbe006c34c7324a2": "Next thread",
+  "52b57870b5f9fe04": "Oldest waiting",
+  "df802481a8fbeacd": "After settle or snooze",
+  "32752d3ded23a923": "Reset after settle or snooze to default",
+  "2592bf72065ce9c3": "next oldest waiting thread open advance inbox queue settle snooze",
+  "0228426d82d6c7d4": "Which thread opens after you settle or snooze the open one. Oldest waiting opens the inbox thread that has waited longest for you, also from the thread's own menu while the sidebar is shown."
 }

@@ -489,9 +489,9 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "after-settle-or-snooze",
-    title: "After settle or snooze",
+    title: msg("After settle or snooze"),
     to: "/settings/general",
-    searchTerms: ["next oldest waiting thread open advance inbox queue settle snooze"],
+    searchTerms: [msg("next oldest waiting thread open advance inbox queue settle snooze")],
   },
   {
     id: "boring-sidebar",
