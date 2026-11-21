@@ -5,6 +5,7 @@ import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { act, fakeTimers, render as renderUi } from "../../../test/render";
+import type { OpenInTargetId } from "../../openInApps";
 import type { RemoteOpenState } from "../../remoteOpen";
 
 const state = vi.hoisted(() => ({
@@ -47,7 +48,7 @@ vi.mock(import("../../editorPreferences"), async (importOriginal) => {
   const actual = await importOriginal();
   return {
     ...actual,
-    usePreferredEditor: (available: readonly EditorId[]) => {
+    usePreferredEditor: <T extends OpenInTargetId>(available: readonly T[]) => {
       const [preferred, setPreferred] = actual.usePreferredEditor(available);
       const recordPreferred: typeof setPreferred = (editor) => {
         state.setPreferred(editor);
