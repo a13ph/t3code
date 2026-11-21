@@ -3,7 +3,7 @@ import type { OrchestrationV2TurnItem } from "@t3tools/contracts";
 import {
   type WorkLogPresentationEntry,
   workEntryDisplayIndicatesToolFailure,
-} from "./presentation.js";
+} from "@t3tools/client-runtime/work-log/presentation";
 
 export type ReplyTimelineStep =
   | { readonly kind: "reply"; readonly id: string; readonly text: string }
