@@ -574,7 +574,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       ? [gt("Rich text composer")]
       : []),
     ...(settings.citeOnSelection !== DEFAULT_UNIFIED_SETTINGS.citeOnSelection
-      ? ["Cite on selection"]
+      ? [gt("Cite on selection")]
       : []),
     ...(settings.sendShortcut !== DEFAULT_UNIFIED_SETTINGS.sendShortcut
       ? [gt("Send shortcut")]
@@ -1259,12 +1259,17 @@ export function ChatSettingsPanel() {
           }
         />
         <SettingsRow
-          {...searchableSetting("cite-on-selection")}
-          description="Selecting assistant text with the mouse cites it and opens its comment. Selecting more text keeps a commented citation and drops an empty one."
+          {...setting("cite-on-selection")}
+          description={
+            <T>
+              Selecting assistant text with the mouse cites it and opens its comment. Selecting more
+              text keeps a commented citation and drops an empty one.
+            </T>
+          }
           resetAction={
             settings.citeOnSelection !== DEFAULT_UNIFIED_SETTINGS.citeOnSelection ? (
               <SettingResetButton
-                label="cite on selection"
+                ariaLabel={gt("Reset cite on selection to default")}
                 onClick={() =>
                   updateSettings({ citeOnSelection: DEFAULT_UNIFIED_SETTINGS.citeOnSelection })
                 }
@@ -1275,7 +1280,7 @@ export function ChatSettingsPanel() {
             <Switch
               checked={settings.citeOnSelection}
               onCheckedChange={(checked) => updateSettings({ citeOnSelection: Boolean(checked) })}
-              aria-label="Cite on selection"
+              aria-label={gt("Cite on selection")}
             />
           }
         />

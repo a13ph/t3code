@@ -12140,5 +12140,9 @@
   "27d76249d09eb69f": "검토 가이드 준비됨",
   "faa3bb26abb39c93": "검토 가이드 실패",
   "b7df38b7d8792d78": "가이드 열기",
-  "9e91e9a77b664e4e": "검토 가이드를 시작할 수 없습니다"
+  "9e91e9a77b664e4e": "검토 가이드를 시작할 수 없습니다",
+  "e07119e47a04354d": "Cite on selection",
+  "baf4d40a35c6221a": "Reset cite on selection to default",
+  "5d65a18fb5edc77f": "quote citation select highlight assistant text comment automatic instant",
+  "4b423b62819aed95": "Selecting assistant text with the mouse cites it and opens its comment. Selecting more text keeps a commented citation and drops an empty one."
 }

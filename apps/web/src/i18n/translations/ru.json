@@ -12195,5 +12195,9 @@
   "27d76249d09eb69f": "Гид по ревью готов",
   "faa3bb26abb39c93": "Не удалось создать гид по ревью",
   "b7df38b7d8792d78": "Открыть гид",
-  "9e91e9a77b664e4e": "Не удалось запустить гид по ревью"
+  "9e91e9a77b664e4e": "Не удалось запустить гид по ревью",
+  "e07119e47a04354d": "Cite on selection",
+  "baf4d40a35c6221a": "Reset cite on selection to default",
+  "5d65a18fb5edc77f": "quote citation select highlight assistant text comment automatic instant",
+  "4b423b62819aed95": "Selecting assistant text with the mouse cites it and opens its comment. Selecting more text keeps a commented citation and drops an empty one."
 }
