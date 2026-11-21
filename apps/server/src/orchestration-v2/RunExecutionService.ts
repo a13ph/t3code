@@ -671,6 +671,12 @@ export interface RunExecutionServiceV2StartRootRunInput {
   readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
   /** The run is already running in a provider process that outlived a restart. */
   readonly reattach?: ProviderAdapter.ProviderAdapterV2Reattach;
+  /**
+   * A reattached run's subagent rows from before the restart. The open ones
+   * are tracked as if this server had ingested their events, so the run
+   * waits on them and ends them with it.
+   */
+  readonly reattachedSubagents?: ReadonlyArray<OrchestrationV2Subagent>;
 }
 
 type RunBaselineInput = Pick<
@@ -1245,11 +1251,33 @@ export const layer: Layer.Layer<
         const providerThreadOwnerLost = yield* Ref.make(false);
         const pendingBackgroundProviderTurns = new Set<ProviderTurnId>();
         const activeChildProviderTurns = yield* Ref.make<ReadonlySet<ProviderTurnId>>(new Set());
-        const activeChildSubagents = yield* Ref.make<ReadonlyMap<NodeId, ThreadId>>(new Map());
+        const reattachedOpenSubagents = (input.reattachedSubagents ?? []).filter(
+          (subagent) => !isSettledSubagentStatus(subagent.status),
+        );
+        const activeChildSubagents = yield* Ref.make<ReadonlyMap<NodeId, ThreadId>>(
+          new Map(reattachedOpenSubagents.map((subagent) => [subagent.id, subagent.threadId])),
+        );
         const activeBackgroundTurnItems = yield* Ref.make<
           ReadonlySet<OrchestrationV2TurnItem["id"]>
         >(new Set(inheritedBackgroundTurnItemsById.keys()));
-        const openRunOwnedSubagents = yield* Ref.make(emptyOpenRunOwnedSubagentProjection());
+        const openRunOwnedSubagents = yield* Ref.make<OpenRunOwnedSubagentProjection>({
+          ...emptyOpenRunOwnedSubagentProjection(),
+          subagents: new Map(reattachedOpenSubagents.map((subagent) => [subagent.id, subagent])),
+          turnItems: new Map(
+            (input.reattach?.turnItems ?? []).flatMap((item) =>
+              item.type === "subagent" &&
+              item.runId === input.run.id &&
+              !isSettledTurnItemStatus(item.status)
+                ? [[item.subagentId, item] as const]
+                : [],
+            ),
+          ),
+          linkedChildThreadIds: new Set(
+            (input.reattachedSubagents ?? []).flatMap((subagent) =>
+              subagent.childThreadId === null ? [] : [subagent.childThreadId],
+            ),
+          ),
+        });
         // Open tool calls on the root thread, to end from their stored rows if the runtime is lost.
         const openRootToolCalls = new Set<TurnItemId>();
         // The last stored root snapshot still reports background work, by flag or task roster.
