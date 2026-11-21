@@ -241,6 +241,9 @@ const CHAT_MARKDOWN_SANITIZE_SCHEMA = {
       THREAD_LINK_PROTOCOL,
       // Scheme only: the renderer's URL transform checks the rest of the link shape.
       ...LOCAL_FILE_LINK_SCHEMES,
+      // REMOTE_FILE_LINK_PROTOCOL in apps/web/src/remoteFileLinks.ts. Without it the
+      // sanitizer drops the href and the link renders as a dead anchor.
+      "remote-file",
     ],
     src: IMAGE_SRC_PROTOCOLS,
     dataDarkSrc: IMAGE_SRC_PROTOCOLS,

@@ -201,8 +201,11 @@ function markdownThreadFindText(
         const labelText = (node: TextTree): string =>
           node.value ?? (node.children ?? []).map(labelText).join("");
         const label = labelText(node);
-        if (node.tagName === "a" && !isMarkdownFileLinkLabel(label, candidate)) text += `${label} `;
-        text += fileLinkLabel(resolved.position, parentSuffixes);
+        // A labelled link's chip shows only its label, so only the label is found.
+        text +=
+          node.tagName === "a" && !isMarkdownFileLinkLabel(label, candidate)
+            ? label.trim()
+            : fileLinkLabel(resolved.position, parentSuffixes);
         return;
       }
     }
