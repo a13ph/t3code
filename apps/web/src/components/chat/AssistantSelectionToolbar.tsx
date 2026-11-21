@@ -6,8 +6,9 @@ import {
 } from "@t3tools/contracts";
 import { useGT } from "gt-react";
 import { QuoteIcon } from "lucide-react";
-import { use, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { use, useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useClientSettings } from "~/hooks/useSettings";
 import {
   captureAssistantTextSelection,
   type AssistantCitationSourceAnchor,
@@ -39,6 +40,13 @@ export function AssistantSelectionToolbar({
   const actionsRef = useRef<ReturnType<typeof observeSelectionActions> | null>(null);
   const backgroundThread = use(BackgroundThreadContext);
   const gt = useGT();
+  const citeOnSelection = useClientSettings((settings) => settings.citeOnSelection);
+  const citeOnRelease = useEffectEvent(
+    (citation: AssistantCitation, sourceAnchor: AssistantCitationSourceAnchor) =>
+      citeOnSelection &&
+      citation.text.length <= ASSISTANT_CITATION_MAX_TEXT_LENGTH &&
+      onCite(citation, sourceAnchor),
+  );
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- measures the toolbar DOM node and clamps its position inside the window before paint
   useLayoutEffect(() => {
@@ -113,6 +121,21 @@ export function AssistantSelectionToolbar({
         clear();
         return;
       }
+      const sourceAnchor = { source: captured.source, range: captured.range, viewport };
+      const citation: AssistantCitation = {
+        version: 1,
+        ...threadRef,
+        messageId: MessageId.make(messageId),
+        ...captured.selector,
+      };
+      // Only a mouse release cites at once. Keyboard and scroll-restored selections keep the
+      // button, so extending a selection with Shift+arrows does not cite every step.
+      if (pointer !== null && citeOnRelease(citation, sourceAnchor)) {
+        window.getSelection()?.removeAllRanges();
+        actionsRef.current?.cancel();
+        clear();
+        return;
+      }
       const rects = captured.range.getClientRects();
       const pointerOnText =
         pointer !== null &&
@@ -124,13 +147,8 @@ export function AssistantSelectionToolbar({
             pointer.y <= line.bottom + 8,
         );
       setSelection({
-        sourceAnchor: { source: captured.source, range: captured.range, viewport },
-        citation: {
-          version: 1,
-          ...threadRef,
-          messageId: MessageId.make(messageId),
-          ...captured.selector,
-        },
+        sourceAnchor,
+        citation,
         position: resolveSelectionActionPosition({
           bounds: viewportRect,
           selectionRect: rects.item(rects.length - 1) ?? rect,

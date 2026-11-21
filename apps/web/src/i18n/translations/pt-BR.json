@@ -12216,5 +12216,9 @@
   "faa3bb26abb39c93": "O guia de revisão falhou",
   "b7df38b7d8792d78": "Abrir guia",
   "9e91e9a77b664e4e": "Não foi possível iniciar um guia de revisão",
-  "af358b578b02b76d": "Replaced reply"
+  "af358b578b02b76d": "Replaced reply",
+  "e07119e47a04354d": "Cite on selection",
+  "baf4d40a35c6221a": "Reset cite on selection to default",
+  "5d65a18fb5edc77f": "quote citation select highlight assistant text comment automatic instant",
+  "4b423b62819aed95": "Selecting assistant text with the mouse cites it and opens its comment. Selecting more text keeps a commented citation and drops an empty one."
 }
