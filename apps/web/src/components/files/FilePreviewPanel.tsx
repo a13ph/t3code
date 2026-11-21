@@ -14,7 +14,7 @@ import {
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import { filePreviewDelimiter } from "@t3tools/shared/delimitedPreview";
-import { AuthFilesystemWriteScope } from "@t3tools/contracts";
+import { AuthFilesystemWriteScope, AuthTerminalOperateScope } from "@t3tools/contracts";
 import {
   isWorkspaceAudioPreviewPath,
   isWorkspaceImagePreviewPath,
@@ -1273,6 +1273,9 @@ export default function FilePreviewPanel({
   const fileAccess = useFilesystemReadAccess(environmentId, m);
   const { canReadFiles } = fileAccess;
   const canWriteFiles = useEnvironmentScope(environmentId, AuthFilesystemWriteScope);
+  const canOperateTerminal = useEnvironmentScope(environmentId, AuthTerminalOperateScope);
+  const canEditFile =
+    attachment === undefined && canWriteFiles && (!isHostFile || canOperateTerminal);
   const file = useProjectFileQuery(
     environmentId,
     cwd,
@@ -1624,6 +1627,12 @@ export default function FilePreviewPanel({
           <T>Read-only connection. Unsaved edits are kept until write access returns.</T>
         </div>
       ) : null}
+      {previewPath && !attachment && isHostFile && !canEditFile && !fileAccess.isPending ? (
+        <div className="shrink-0 border-b px-3 py-1.5 text-2xs text-muted-foreground">
+          Read-only: editing a file outside the project needs file write and terminal access on this
+          server.
+        </div>
+      ) : null}
       {previewPath &&
       attachment === undefined &&
       !isMedia &&
@@ -1794,7 +1803,7 @@ export default function FilePreviewPanel({
                 threadRef={threadRef}
                 contents={file.data.contents}
                 workspaceMutationId={workspaceMutationId}
-                readOnly={file.data.truncated || isHostFile || !canWriteFiles}
+                readOnly={file.data.truncated || !canEditFile}
                 onPendingChange={onPendingChange}
               />
             ) : tableDelimiter && renderTable ? (
@@ -1804,7 +1813,7 @@ export default function FilePreviewPanel({
                 text={file.data.contents}
                 delimiter={tableDelimiter}
               />
-            ) : file.data.truncated || isHostFile || !canWriteFiles ? (
+            ) : file.data.truncated || !canEditFile ? (
               <SourceFilePreview
                 name={relativePath}
                 text={file.data.contents}
