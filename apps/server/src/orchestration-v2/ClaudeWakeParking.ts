@@ -363,7 +363,9 @@ export function makeClaudeWakeTracker(): ClaudeWakeTracker {
         if (use === undefined) continue;
         openToolUses.delete(toolUseId);
         settle(toolUseId);
-        if (block.is_error === true) continue;
+        // A stop with nothing pending may come back as an error; the loop is stopped all the same.
+        const isStop = use.name === SCHEDULE_WAKEUP_TOOL && use.input.stop === true;
+        if (block.is_error === true && !isStop) continue;
         applyResult(use, toolUseId, toolResultText(block.content), nowMs);
       }
       return;

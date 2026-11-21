@@ -230,6 +230,54 @@ it.effect("drops a parked wakeup a later process replaced when that process is p
   }).pipe(Effect.scoped, Effect.provide(SqlitePersistence.layerMemory)),
 );
 
+it.effect("drops a parked wakeup that a process kept across a restart replaced", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(NOW);
+    yield* withService(({ service, offers }) =>
+      Effect.gen(function* () {
+        yield* service.parkBeforeRelease({
+          threads: [thread([loopWakeup(NOW + 30 * MINUTE)])],
+          idleTimeoutMs: IDLE,
+        });
+        yield* advance(MINUTE);
+        // Shutdown with the new process mid-turn: it keeps its own wakeup, nothing is parked.
+        yield* service.dropSuperseded([thread([loopWakeup(NOW + 50 * MINUTE, "toolu_2")], NOW + MINUTE)]);
+        assert.equal(yield* parkedRowCount, 0);
+        yield* advance(60 * MINUTE);
+        assert.deepEqual(yield* Ref.get(offers), []);
+      }),
+    );
+  }).pipe(Effect.scoped, Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("removes a due row this build cannot read and goes on delivering", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(NOW);
+    yield* withService(({ service, offers }) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`
+          INSERT INTO claude_parked_wakes (
+            wake_id, thread_id, provider_thread_id, native_session_id, kind,
+            job_id, cron, prompt, recurring, created_at_ms, due_at_ms, parked_at_ms
+          ) VALUES (
+            'future-row', 'thread-wake-service', 'provider-thread-wake-service', 'session-a',
+            'future', NULL, NULL, 'p', 0, ${NOW}, ${NOW + MINUTE}, ${NOW}
+          )
+        `.pipe(Effect.orDie);
+        yield* service.parkBeforeRelease({
+          threads: [thread([loopWakeup(NOW + 30 * MINUTE)])],
+          idleTimeoutMs: IDLE,
+        });
+        yield* advance(MINUTE);
+        assert.equal(yield* parkedRowCount, 1);
+        yield* advance(29 * MINUTE);
+        assert.equal((yield* Ref.get(offers)).length, 1);
+      }),
+    );
+  }).pipe(Effect.scoped, Effect.provide(SqlitePersistence.layerMemory)),
+);
+
 it.effect("sends a recurring job at each due time", () =>
   Effect.gen(function* () {
     yield* TestClock.setTime(NOW);
