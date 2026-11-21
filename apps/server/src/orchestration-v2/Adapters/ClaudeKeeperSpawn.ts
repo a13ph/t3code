@@ -18,7 +18,7 @@ import { attachExisting, request, spawnNew } from "../../t3Keeper/shim.mjs";
  * message it carried was handled, so its events reached the database first. A restart replays the
  * lines after that point; the few handled just before it arrive twice.
  */
-export const KEEPER_ACK_LAG_MS = 1_000;
+const KEEPER_ACK_LAG_MS = 1_000;
 
 function keeperSocketPath(env: NodeJS.ProcessEnv): string | undefined {
   const raw = env.T3_KEEPER_SOCKET;

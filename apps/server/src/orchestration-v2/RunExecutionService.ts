@@ -2357,9 +2357,7 @@ export const layer: Layer.Layer<
                               terminal: makeFailedTerminalEvent(
                                 makeProviderFailure({
                                   cause: Cause.squash(cause),
-                                  class: Exit.isFailure(shouldStart)
-                                    ? "unknown"
-                                    : "provider_error",
+                                  class: Exit.isFailure(shouldStart) ? "unknown" : "provider_error",
                                 }),
                                 latestItemOrdinal + 1,
                               ),

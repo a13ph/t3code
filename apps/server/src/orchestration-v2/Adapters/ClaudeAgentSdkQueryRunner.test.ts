@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- the fake CLI and its leftover child are real processes.
+// @effect-diagnostics processEnvInEffect:off -- the keeper tests set T3_KEEPER_SOCKET for the CLI they start.
 import * as ClaudeSdk from "@anthropic-ai/claude-agent-sdk";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeEvents from "node:events";
@@ -1168,9 +1169,8 @@ interface KeeperListEntry {
 
 /** The processes the keeper at `socketPath` holds. */
 const listKeeper = (socketPath: string) =>
-  Effect.promise(
-    (): Promise<{ readonly handles: ReadonlyArray<KeeperListEntry> }> =>
-      keeperRequest(socketPath, { op: "list" }),
+  Effect.promise((): Promise<{ readonly handles: ReadonlyArray<KeeperListEntry> }> =>
+    keeperRequest(socketPath, { op: "list" }),
   );
 
 describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI in t3-keeper", () => {

@@ -2,7 +2,7 @@
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
+import * as NodeTimersPromises from "node:timers/promises";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ClaudeSettings, ProviderInstanceId } from "@t3tools/contracts";
@@ -138,7 +138,7 @@ const fakeClaudeCliWith = (turn: string, everyPrompt = false) =>
       const cli = NodePath.join(dir, "claude");
       NodeFS.writeFileSync(
         cli,
-        // @effect-diagnostics-next-line preferSchemaOverJson:off - quotes the node path into a shell script.
+        // @effect-diagnostics-next-line globalJsonInEffect:off - quotes the node path into a shell script.
         `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "$(dirname "$0")/cli.mjs"\n`,
         { mode: 0o755 },
       );
@@ -244,9 +244,8 @@ export interface KeeperListEntry {
 
 /** The processes the keeper at `socketPath` holds. */
 export const listKeeper = (socketPath: string) =>
-  Effect.promise(
-    (): Promise<{ readonly handles: ReadonlyArray<KeeperListEntry> }> =>
-      keeperRequest(socketPath, { op: "list" }),
+  Effect.promise((): Promise<{ readonly handles: ReadonlyArray<KeeperListEntry> }> =>
+    keeperRequest(socketPath, { op: "list" }),
   );
 
 /** Resolves with the first line number the keeper confirmed as acknowledged. */
@@ -280,7 +279,7 @@ export const keeperAckedThrough = (threadId: string) =>
       };
       const entry = reply.handles?.find((candidate) => candidate.name === threadId);
       if (entry !== undefined && entry.last > 0 && entry.acked >= entry.last) return entry.acked;
-      await sleep(50);
+      await NodeTimersPromises.setTimeout(50);
     }
     throw new Error(`t3-keeper never acknowledged every line of ${threadId}`);
   });

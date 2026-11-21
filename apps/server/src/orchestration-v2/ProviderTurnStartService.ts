@@ -2180,10 +2180,9 @@ export const layer: Layer.Layer<
       ) {
         const { runId } = input;
         const error = Cause.squash(cause);
-        const reason =
-          isKeeperReattachAbandoned(error)
-            ? error.reason
-            : "the reattach failed before the turn was running again.";
+        const reason = isKeeperReattachAbandoned(error)
+          ? error.reason
+          : "the reattach failed before the turn was running again.";
         yield* Effect.logWarning("t3-keeper reattach failed", { runId, reason, cause });
         const env = yield* HostProcess.Environment;
         yield* Effect.promise(() => closeKeeperThread(input.handle, { env }));
