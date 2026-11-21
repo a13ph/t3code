@@ -9,7 +9,7 @@ import * as ProviderContinuationRequests from "@t3tools/provider-core/server/Pro
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
-import * as Data from "effect/Data";
+import * as Schema from "effect/Schema";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -28,10 +28,13 @@ const DELIVERY_MAX_SLEEP_MS = 60 * 60_000;
 /** The notification summary every delivered wakeup carries. */
 export const DELIVERY_SUMMARY = "Scheduled wakeup";
 
-export class ClaudeWakeParkingError extends Data.TaggedError("ClaudeWakeParkingError")<{
-  readonly detail: string;
-  readonly cause: unknown;
-}> {}
+export class ClaudeWakeParkingError extends Schema.TaggedError<ClaudeWakeParkingError>()(
+  "ClaudeWakeParkingError",
+  {
+    detail: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
 
 export type ClaudeWakeParkOutcome =
   | { readonly type: "none" }
