@@ -113,14 +113,49 @@ it.effect("keeps the process for a wakeup due before the next idle check, parkin
         });
         assert.equal(outcome.type, "pin");
         assert.equal(yield* parkedRowCount, 0);
-        // Spent pin budget or shutdown: the process ends, so it is parked after all.
+        // Spent pin budget or shutdown: the process ends, so it is parked after
+        // all, even one due within the lead time.
         const forced = yield* service.parkBeforeRelease({
-          threads: [thread([loopWakeup(NOW + 6 * MINUTE)])],
+          threads: [thread([loopWakeup(NOW + MINUTE)])],
           idleTimeoutMs: null,
         });
         assert.equal(forced.type, "parked");
-        yield* advance(6 * MINUTE);
+        yield* advance(MINUTE);
         assert.equal((yield* Ref.get(offers)).length, 1);
+      }),
+    );
+  }).pipe(Effect.scoped, Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("keeps the process for a job it cannot read, and parks the rest when forced", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(NOW);
+    yield* withService(({ service }) =>
+      Effect.gen(function* () {
+        const wakes = [
+          {
+            kind: "cron" as const,
+            jobId: "x",
+            cron: "@hourly",
+            prompt: "p",
+            recurring: true,
+            createdAtMs: NOW,
+            dueAtMs: null,
+          },
+          loopWakeup(NOW + 60 * MINUTE),
+        ];
+        const outcome = yield* service.parkBeforeRelease({
+          threads: [thread(wakes)],
+          idleTimeoutMs: IDLE,
+        });
+        assert.equal(outcome.type, "pin");
+        assert.equal(yield* parkedRowCount, 0);
+        const forced = yield* service.parkBeforeRelease({
+          threads: [thread(wakes)],
+          idleTimeoutMs: null,
+        });
+        assert.equal(forced.type, "parked");
+        assert.equal(yield* parkedRowCount, 1);
       }),
     );
   }).pipe(Effect.scoped, Effect.provide(SqlitePersistence.layerMemory)),

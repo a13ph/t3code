@@ -358,8 +358,10 @@ export const layer = Layer.effect(
     }): Effect.fn.Return<ClaudeWakeParkOutcome, ClaudeWakeParkingError> {
       const now = yield* Clock.currentTimeMillis;
       const plan = Parking.planPark({ threads: input.threads, nowMs: now });
-      if (plan.type === "unparkable") return pin(plan.reason);
-      const rows = plan.type === "park" ? plan.rows : [];
+      // An idle check keeps the process for a job it cannot read; a forced
+      // release or a shutdown still parks every job it can read.
+      if (plan.type === "unparkable" && input.idleTimeoutMs !== null) return pin(plan.reason);
+      const rows = plan.type === "none" ? [] : plan.rows;
       const earliest = Parking.earliestDueMs(rows);
       if (
         input.idleTimeoutMs !== null &&
