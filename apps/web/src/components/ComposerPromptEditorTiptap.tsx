@@ -62,6 +62,7 @@ import {
   expandCollapsedComposerCursor,
   pastedPathQueryLength,
 } from "~/composer-logic";
+import { useClientSettings } from "~/hooks/useSettings";
 import { useStableCallback } from "~/hooks/useStableCallback";
 import { caretLineDirection, ComposerTextDirectionExtension } from "~/composer-text-direction";
 import {
@@ -488,7 +489,9 @@ function ComposerCitationNodeView({ node, editor, getPos }: NodeViewProps) {
   };
 
   const removeOnCancel = commentTarget?.removeOnCancel;
-  const onRemove = () => {
+  const citeOnSelection = useClientSettings((settings) => settings.citeOnSelection);
+  // A discard leaves focus where the press put it, so the next selection can start there.
+  const onRemove = ({ focus }: { focus: boolean }) => {
     if (!removeOnCancel) return;
     const pos = nodePos();
     if (pos === null) return;
@@ -500,7 +503,7 @@ function ComposerCitationNodeView({ node, editor, getPos }: NodeViewProps) {
     const to = removeOnCancel.after && doc.textBetween(end, end + 1) === " " ? end + 1 : end;
     // A read-only composer (dictation) can still receive a new citation, so Cancel must undo it.
     const chain = editor.chain();
-    (editor.isEditable ? chain.focus() : chain).deleteRange({ from, to }).run();
+    (focus && editor.isEditable ? chain.focus() : chain).deleteRange({ from, to }).run();
   };
 
   const sentRef = useRef(false);
@@ -555,7 +558,10 @@ function ComposerCitationNodeView({ node, editor, getPos }: NodeViewProps) {
             if (open && !editor.isEditable) return;
             commentContext.onOpenChange(citeKey, open);
           },
-          ...(removeOnCancel ? { onCancel: onRemove } : {}),
+          ...(removeOnCancel ? { onCancel: () => onRemove({ focus: true }) } : {}),
+          ...(removeOnCancel && citeOnSelection
+            ? { onDiscard: () => onRemove({ focus: false }) }
+            : {}),
           onSave: onSaveComment,
           onDraftChange: (comment) => commentContext.onDraftChange(citeKey, comment),
           onSaveAndSend: (comment) => {
