@@ -420,6 +420,15 @@ describe("ServerSettings environment icon", () => {
   it("decodes a kind from a newer server as null instead of failing the snapshot", () => {
     expect(decodeServerSettings({ environmentIcon: "toaster" }).environmentIcon).toBeNull();
   });
+
+  it("accepts the gaming and work machine icons in settings and in a client's patch", () => {
+    for (const kind of ["gamepad", "briefcase"] as const) {
+      expect(decodeServerSettings({ environmentIcon: kind }).environmentIcon).toBe(kind);
+      expect(decodeClientServerSettingsPatch({ environmentIcon: kind })).toEqual({
+        environmentIcon: kind,
+      });
+    }
+  });
 });
 
 const decodeDeviceHostSettings = Schema.decodeSync(ServerSettings);

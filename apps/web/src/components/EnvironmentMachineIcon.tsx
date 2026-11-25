@@ -1,6 +1,14 @@
 import type { EnvironmentMachineKind } from "@t3tools/contracts";
 import { msg } from "gt-react";
-import { CloudIcon, LaptopIcon, MonitorIcon, ServerIcon, type LucideProps } from "lucide-react";
+import {
+  BriefcaseIcon,
+  CloudIcon,
+  Gamepad2Icon,
+  LaptopIcon,
+  MonitorIcon,
+  ServerIcon,
+  type LucideProps,
+} from "lucide-react";
 import type { FunctionComponent, SVGProps } from "react";
 import { LinuxIcon } from "./Icons";
 
@@ -47,6 +55,8 @@ const ICON_BY_KIND: Record<EnvironmentMachineKind, FunctionComponent<LucideProps
   laptop: LaptopIcon,
   "mac-mini": MacMiniIcon,
   "mac-studio": MacStudioIcon,
+  gamepad: Gamepad2Icon,
+  briefcase: BriefcaseIcon,
 };
 
 export const ENVIRONMENT_MACHINE_KIND_LABELS: Record<EnvironmentMachineKind, string> = {
@@ -57,6 +67,8 @@ export const ENVIRONMENT_MACHINE_KIND_LABELS: Record<EnvironmentMachineKind, str
   laptop: msg("Laptop"),
   "mac-mini": msg("Mini PC"),
   "mac-studio": msg("Workstation"),
+  gamepad: msg("Gaming PC"),
+  briefcase: msg("Work PC"),
 };
 
 export function environmentMachineIcon(
