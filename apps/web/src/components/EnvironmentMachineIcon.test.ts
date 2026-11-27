@@ -1,5 +1,5 @@
 import { ENVIRONMENT_MACHINE_KINDS } from "@t3tools/contracts";
-import { BriefcaseIcon, Gamepad2Icon } from "lucide-react";
+import { BriefcaseIcon, Gamepad2Icon, HouseIcon } from "lucide-react";
 import { describe, expect, it } from "vite-plus/test";
 
 import { m } from "../i18n/messages";
@@ -18,5 +18,7 @@ describe("EnvironmentMachineIcon", () => {
     expect(environmentMachineIcon("briefcase")).toBe(BriefcaseIcon);
     expect(m(ENVIRONMENT_MACHINE_KIND_LABELS.gamepad)).toBe("Gaming PC");
     expect(m(ENVIRONMENT_MACHINE_KIND_LABELS.briefcase)).toBe("Work PC");
+    expect(environmentMachineIcon("home")).toBe(HouseIcon);
+    expect(m(ENVIRONMENT_MACHINE_KIND_LABELS.home)).toBe("Home server");
   });
 });

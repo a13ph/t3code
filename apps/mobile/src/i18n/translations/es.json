@@ -5329,5 +5329,6 @@
   "856812e7e1fc445e": "Llamadas a herramientas en el chat",
   "8d545d54c0a9e950": "Oculta los comandos, ediciones y búsquedas que ejecutan los agentes. Ocultar las correctas mantiene los fallos. Zen solo muestra las respuestas finales. Las aprobaciones, preguntas y errores siempre se muestran.",
   "20c4b4f29e95db8f": "Gaming PC",
-  "0c0582c09cebbef2": "Work PC"
+  "0c0582c09cebbef2": "Work PC",
+  "893def5bee27e4bb": "Home server"
 }

@@ -4,6 +4,7 @@ import {
   BriefcaseIcon,
   CloudIcon,
   Gamepad2Icon,
+  HouseIcon,
   LaptopIcon,
   MonitorIcon,
   ServerIcon,
@@ -57,6 +58,7 @@ const ICON_BY_KIND: Record<EnvironmentMachineKind, FunctionComponent<LucideProps
   "mac-studio": MacStudioIcon,
   gamepad: Gamepad2Icon,
   briefcase: BriefcaseIcon,
+  home: HouseIcon,
 };
 
 export const ENVIRONMENT_MACHINE_KIND_LABELS: Record<EnvironmentMachineKind, string> = {
@@ -69,6 +71,7 @@ export const ENVIRONMENT_MACHINE_KIND_LABELS: Record<EnvironmentMachineKind, str
   "mac-studio": msg("Workstation"),
   gamepad: msg("Gaming PC"),
   briefcase: msg("Work PC"),
+  home: msg("Home server"),
 };
 
 export function environmentMachineIcon(

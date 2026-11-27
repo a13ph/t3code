@@ -13,6 +13,7 @@ export const ENVIRONMENT_MACHINE_SYMBOLS = {
   "mac-studio": "macstudio",
   gamepad: "gamecontroller",
   briefcase: "briefcase",
+  home: "house",
 } as const satisfies Record<EnvironmentMachineKind, AppSymbolName>;
 
 const ENVIRONMENT_MACHINE_KIND_LABELS: Record<EnvironmentMachineKind, string> = {
@@ -25,6 +26,7 @@ const ENVIRONMENT_MACHINE_KIND_LABELS: Record<EnvironmentMachineKind, string> = 
   "mac-studio": msg("Workstation"),
   gamepad: msg("Gaming PC"),
   briefcase: msg("Work PC"),
+  home: msg("Home server"),
 };
 
 export function EnvironmentMachineSymbol(props: {
