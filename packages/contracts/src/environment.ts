@@ -41,6 +41,7 @@ export const ENVIRONMENT_MACHINE_KINDS = [
   "mac-studio",
   "gamepad",
   "briefcase",
+  "home",
 ] as const;
 export const EnvironmentMachineKind = Schema.Literals(ENVIRONMENT_MACHINE_KINDS);
 export type EnvironmentMachineKind = typeof EnvironmentMachineKind.Type;

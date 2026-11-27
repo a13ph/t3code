@@ -422,7 +422,7 @@ describe("ServerSettings environment icon", () => {
   });
 
   it("accepts the gaming and work machine icons in settings and in a client's patch", () => {
-    for (const kind of ["gamepad", "briefcase"] as const) {
+    for (const kind of ["gamepad", "briefcase", "home"] as const) {
       expect(decodeServerSettings({ environmentIcon: kind }).environmentIcon).toBe(kind);
       expect(decodeClientServerSettingsPatch({ environmentIcon: kind })).toEqual({
         environmentIcon: kind,
